@@ -13,7 +13,10 @@
     "dist": "electron-builder",
     "dist:win": "electron-builder --win",
     "dist:mac": "electron-builder --mac",
-    "dist:linux": "electron-builder --linux"
+    "dist:linux": "electron-builder --linux",
+    "icon": "node scripts/gen-icon.js",
+    "test:boot": "node test/boot.js",
+    "test:smoke": "node test/smoke.js"
   },
   "dependencies": {
     "omniroute": "^3.8.48"
@@ -22,6 +25,7 @@
     "appId": "com.omniwork.app",
     "productName": "OmniWork",
     "asar": true,
+    "npmRebuild": false,
     "beforePack": "scripts/stage-node.js",
     "asarUnpack": [
       "node_modules/omniroute/**",
@@ -32,7 +36,8 @@
       "electron/**",
       "renderer/**",
       "assets/**",
-      "package.json"
+      "package.json",
+      "node_modules/**/*"
     ],
     "extraResources": [
       {
@@ -52,8 +57,7 @@
             "x64"
           ]
         }
-      ],
-      "icon": "assets/icon.ico"
+      ]
     },
     "mac": {
       "target": [
@@ -65,7 +69,6 @@
           ]
         }
       ],
-      "icon": "assets/icon.icns",
       "category": "public.app-category.developer-tools"
     },
     "linux": {

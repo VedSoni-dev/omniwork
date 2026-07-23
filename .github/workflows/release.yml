@@ -1,0 +1,56 @@
+name: Release
+
+# Builds native installers for Windows, macOS, and Linux and attaches them to a
+# GitHub Release. Each OS builds on its own runner so the bundled Node binary
+# (staged by scripts/stage-node.js) matches the target platform.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            build: npm run dist:win
+          - os: macos-latest
+            build: npm run dist:mac
+          - os: ubuntu-latest
+            build: npm run dist:linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps
+
+      - name: Generate icon
+        run: node scripts/gen-icon.js
+
+      - name: Build installer
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ${{ matrix.build }}
+
+      - name: Upload artifacts to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.exe
+            dist/*.dmg
+            dist/*.AppImage
+            dist/*.deb
+          fail_on_unmatched_files: false

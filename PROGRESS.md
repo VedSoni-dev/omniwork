@@ -2,36 +2,39 @@
 
 Autonomous build log (loop mode). Newest status at top.
 
-## Status: SCAFFOLD COMPLETE, awaiting first run
+## Status: CORE WORKING · packaging in validation
+
+### Proven working ✅
+- **End-to-end smoke test passes**: bundled-Node gateway boots (~11s cold) → agent
+  tool loop → real file written → free model, zero keys, zero config.
+- OmniRoute serves 99 models on `auto` out of the box with no API key (localhost open).
+- Tool-calling confirmed against the free `auto` model.
 
 ### Done
-- [x] Project init, git, .gitignore
-- [x] `package.json` — Electron app + electron-builder config (win/mac/linux targets)
-- [x] `electron/sidecar.js` — spawns bundled OmniRoute as child process, health-checks, auto API key
-- [x] `electron/agent.js` — OpenAI-compatible tool-use agent loop against local gateway
-- [x] `electron/tools.js` — list_dir/read_file/write_file/edit_file/run_command, workspace-confined
-- [x] `electron/main.js` — app lifecycle, IPC, workspace picker, model select
-- [x] `electron/preload.js` — contextIsolation-safe bridge
-- [x] `renderer/` — Claude Code / Cowork-style dark UI (index.html, styles.css, app.js)
+- [x] Electron app scaffold (main, preload, sidecar, agent, tools)
+- [x] Claude Code / Cowork-style renderer UI
+- [x] **Sidecar** spawns OmniRoute `dist/server.js` (Next standalone) — the core idea
+- [x] Key finding: Electron's embedded Node can't boot the Next server → **bundle a real
+      Node binary** via `beforePack` hook (scripts/stage-node.js) + spawn gateway with it
+- [x] `stream:false` fix (gateway defaults to SSE)
+- [x] App icon generated dependency-free (scripts/gen-icon.js → assets/icon.png)
+- [x] `npmRebuild:false` (we don't run native under Electron; avoids gyp/distutils failure)
+- [x] CI workflow (boot check) + Release workflow (win/mac/linux matrix → GitHub Release)
+- [x] README, LICENSE (MIT), test scripts
 
-### In progress / next
-- [ ] `npm install omniroute` finishing (large: Next 16 + native sqlite)
-- [ ] Install electron + electron-builder devDeps
-- [ ] Verify omniroute sidecar env-var names for data dir + API key (inspect bin/src)
-- [ ] First launch: confirm gateway boots + health check passes on Windows
-- [ ] Smoke test: send a prompt, confirm free model responds + a tool runs
-- [ ] App icons (assets/)
-- [ ] README with install/download instructions
-- [ ] LICENSE (MIT)
-- [ ] GitHub Actions release workflow (build installers for 3 OSes)
-- [ ] Tag + first release
+### In progress
+- [ ] `electron-builder --dir` packaging validation (verify runtime/ + omniroute unpacked)
+- [ ] Launch the *packaged* app and confirm gateway boots from bundled node
+- [ ] Full NSIS installer build
 
-### Open questions to resolve by inspecting node_modules/omniroute
-1. Does `/v1` require auth by default, or is fresh install open? (drives whether our seeded key matters)
-2. Exact env var for data dir + port (README says PORT=20128; confirm OMNIROUTE_* names)
-3. Whether free providers (OpenCode Free, Felo) work headless with no key
+### Next
+- [ ] Push to GitHub, tag v0.1.0, let Actions build installers
+- [ ] Final polish: streaming tokens, session history (nice-to-have)
 
-### Architecture note
-Chose a lean purpose-built Electron app over hard-forking the OpenWork enterprise
-monorepo (2928 files, Docker/MySQL/bun/enterprise). OpenWork kept as UX reference only.
-The novel bit — OmniRoute bundled as an in-app sidecar so users need zero setup — is fully ours.
+### Key facts learned about OmniRoute
+- Bare `omniroute` = `serve` (default cmd) → supervisor that spawns `node dist/server.js`.
+  We bypass the supervisor (it needs `node` on PATH) and spawn `dist/server.js` ourselves.
+- Data dir env is **`DATA_DIR`** (win default: `%APPDATA%/omniroute`).
+- `/v1` on localhost needs **no auth** on fresh install. `model:"auto"` → free provider.
+- `dist/server.js` = Next.js standalone (CommonJS, reads `PORT`/`HOSTNAME`).
+- Needs Node 22+ (uses APIs missing in Electron 33's Node 20).
