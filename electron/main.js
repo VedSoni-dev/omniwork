@@ -75,7 +75,6 @@ async function boot() {
 
   gateway = new Gateway({
     dataDir: app.getPath("userData"),
-    execPath: process.execPath,
     onStatus: (s) => {
       state.gateway = s;
       send("gateway:status", s);

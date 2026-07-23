@@ -13,21 +13,16 @@
     "dist": "electron-builder",
     "dist:win": "electron-builder --win",
     "dist:mac": "electron-builder --mac",
-    "dist:linux": "electron-builder --linux",
-    "postinstall": "electron-builder install-app-deps"
+    "dist:linux": "electron-builder --linux"
   },
   "dependencies": {
     "omniroute": "^3.8.48"
-  },
-  "devDependencies": {
-    "cross-env": "^7.0.3",
-    "electron": "^33.2.0",
-    "electron-builder": "^25.1.8"
   },
   "build": {
     "appId": "com.omniwork.app",
     "productName": "OmniWork",
     "asar": true,
+    "beforePack": "scripts/stage-node.js",
     "asarUnpack": [
       "node_modules/omniroute/**",
       "node_modules/better-sqlite3/**",
@@ -39,21 +34,45 @@
       "assets/**",
       "package.json"
     ],
+    "extraResources": [
+      {
+        "from": "build/runtime",
+        "to": "runtime"
+      }
+    ],
     "directories": {
       "output": "dist",
       "buildResources": "assets"
     },
     "win": {
-      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
       "icon": "assets/icon.ico"
     },
     "mac": {
-      "target": [{ "target": "dmg", "arch": ["x64", "arm64"] }],
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
       "icon": "assets/icon.icns",
       "category": "public.app-category.developer-tools"
     },
     "linux": {
-      "target": ["AppImage", "deb"],
+      "target": [
+        "AppImage",
+        "deb"
+      ],
       "icon": "assets/icon.png",
       "category": "Development"
     },
@@ -62,5 +81,10 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true
     }
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3",
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8"
   }
 }

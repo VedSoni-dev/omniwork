@@ -2,36 +2,50 @@
 // Manages the bundled OmniRoute gateway as a child process ("sidecar").
 // This is the whole point of OmniWork: the AI router ships *inside* the app,
 // so the user never installs or configures anything.
+//
+// We spawn OmniRoute's prebuilt Next.js standalone server (dist/server.js)
+// with a real Node binary that we bundle alongside the app. OmniRoute's server
+// does not boot correctly on Electron's embedded Node (Next.js worker /
+// instrumentation incompatibilities), so a genuine Node runtime is required.
+// In dev we fall back to the system `node` (or $OMNIWORK_NODE).
 
 const { spawn } = require("node:child_process");
 const path = require("node:path");
 const fs = require("node:fs");
 const crypto = require("node:crypto");
 
+// The Node binary used to run the gateway. Packaged builds ship one under
+// resources/runtime (see scripts/stage-node.js); dev uses system node.
+function resolveNodeBinary() {
+  const bin = process.platform === "win32" ? "node.exe" : "node";
+  const bundled = path.join(process.resourcesPath || "", "runtime", bin);
+  if (process.resourcesPath && fs.existsSync(bundled)) return bundled;
+  return process.env.OMNIWORK_NODE || "node";
+}
+
 const PORT = Number(process.env.OMNIWORK_GATEWAY_PORT || 20128);
 const HOST = "127.0.0.1";
 const BASE_URL = `http://${HOST}:${PORT}/v1`;
 
-// Resolve the omniroute CLI entry, accounting for electron-builder's asar unpack.
-function resolveOmnirouteEntry() {
-  let entry;
+// Locate the omniroute package dir, accounting for electron-builder asar unpack.
+function resolveOmnirouteDir() {
+  let pkgJson;
   try {
-    entry = require.resolve("omniroute/bin/omniroute.mjs");
+    pkgJson = require.resolve("omniroute/package.json");
   } catch {
-    // Fall back to a manual path under node_modules.
-    entry = path.join(__dirname, "..", "node_modules", "omniroute", "bin", "omniroute.mjs");
+    pkgJson = path.join(__dirname, "..", "node_modules", "omniroute", "package.json");
   }
-  // When packaged, native + omniroute live in app.asar.unpacked.
-  if (entry.includes("app.asar" + path.sep)) {
-    const unpacked = entry.replace("app.asar" + path.sep, "app.asar.unpacked" + path.sep);
-    if (fs.existsSync(unpacked)) entry = unpacked;
+  let dir = path.dirname(pkgJson);
+  if (dir.includes("app.asar" + path.sep)) {
+    const unpacked = dir.replace("app.asar" + path.sep, "app.asar.unpacked" + path.sep);
+    if (fs.existsSync(unpacked)) dir = unpacked;
   }
-  return entry;
+  return dir;
 }
 
-// A stable local API key. OmniRoute keys are managed in its own store, but we
-// generate/persist one here and hand it to the gateway via env so the agent can
-// authenticate without any user setup. Persisted in the app data dir.
+// A stable local key we keep for future use (provider dashboard, etc.). The
+// gateway serves localhost openly, so requests don't require it, but we persist
+// one so the app has a consistent identity.
 function ensureApiKey(dataDir) {
   const keyFile = path.join(dataDir, "gateway-key.txt");
   try {
@@ -49,9 +63,9 @@ function ensureApiKey(dataDir) {
 }
 
 class Gateway {
-  constructor({ dataDir, execPath, onStatus }) {
+  constructor({ dataDir, onStatus }) {
     this.dataDir = dataDir;
-    this.execPath = execPath; // Electron binary, reused as Node via ELECTRON_RUN_AS_NODE
+    this.nodeBinary = resolveNodeBinary();
     this.onStatus = onStatus || (() => {});
     this.apiKey = ensureApiKey(dataDir);
     this.proc = null;
@@ -65,34 +79,31 @@ class Gateway {
 
   async start() {
     this.status("boot", "Launching OmniRoute…");
-    const entry = resolveOmnirouteEntry();
-    if (!fs.existsSync(entry)) {
-      this.status("error", "OmniRoute not found in bundle");
-      throw new Error("omniroute entry missing: " + entry);
+    const omniDir = resolveOmnirouteDir();
+    const serverEntry = path.join(omniDir, "dist", "server.js");
+    if (!fs.existsSync(serverEntry)) {
+      this.status("error", "OmniRoute server not found in bundle");
+      throw new Error("omniroute dist/server.js missing: " + serverEntry);
     }
 
+    // OmniRoute keeps its encrypted store + config here. Per-user app data dir.
     const gwDataDir = path.join(this.dataDir, "omniroute");
     fs.mkdirSync(gwDataDir, { recursive: true });
 
     const env = {
       ...process.env,
-      ELECTRON_RUN_AS_NODE: "1", // run the Electron binary as plain Node
       NODE_ENV: "production",
       PORT: String(PORT),
-      OMNIROUTE_PORT: String(PORT),
-      HOST,
-      // Point OmniRoute's data/config at our per-user app dir (several common env names).
-      OMNIROUTE_DATA_DIR: gwDataDir,
-      OMNIROUTE_HOME: gwDataDir,
-      XDG_DATA_HOME: gwDataDir,
-      // Seed the API key via the common env conventions; harmless if ignored.
-      OMNIROUTE_API_KEY: this.apiKey,
-      OMNIROUTE_DEFAULT_API_KEY: this.apiKey,
-      OMNIROUTE_MASTER_KEY: this.apiKey,
+      HOSTNAME: HOST, // bind loopback only
+      DATA_DIR: gwDataDir, // OmniRoute reads DATA_DIR for its storage + .env
+      // Let the free "auto" pool fall back to the full pool if a sub-combo is empty.
+      OMNIROUTE_AUTO_FREE_FALLBACK_TO_FULL_POOL: "true",
     };
+    // Ensure no stray Electron-as-node flag leaks into the child.
+    delete env.ELECTRON_RUN_AS_NODE;
 
-    this.proc = spawn(this.execPath, [entry], {
-      cwd: gwDataDir,
+    this.proc = spawn(this.nodeBinary, [serverEntry], {
+      cwd: path.join(omniDir, "dist"),
       env,
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -116,24 +127,19 @@ class Gateway {
 
   async #waitHealthy(timeoutMs = 90000) {
     const started = Date.now();
-    const endpoints = [`http://${HOST}:${PORT}/v1/models`, `http://${HOST}:${PORT}/`];
+    const url = `http://${HOST}:${PORT}/v1/models`;
     while (Date.now() - started < timeoutMs) {
-      for (const url of endpoints) {
-        try {
-          const res = await fetch(url, {
-            headers: { Authorization: `Bearer ${this.apiKey}` },
-          });
-          // Any HTTP response (even 401) means the server is up and listening.
-          if (res.status > 0) {
-            this.ready = true;
-            this.status("ready", "OmniRoute · free models");
-            return;
-          }
-        } catch {
-          // not up yet
+      try {
+        const res = await fetch(url);
+        if (res.ok || res.status === 401) {
+          this.ready = true;
+          this.status("ready", "OmniRoute · free models");
+          return;
         }
+      } catch {
+        // not up yet
       }
-      await new Promise((r) => setTimeout(r, 800));
+      await new Promise((r) => setTimeout(r, 700));
     }
     this.status("error", "Gateway did not start in time");
     throw new Error("gateway health timeout");

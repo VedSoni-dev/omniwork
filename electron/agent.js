@@ -49,6 +49,7 @@ class Agent {
         tools: TOOL_SCHEMA,
         tool_choice: "auto",
         temperature: 0.3,
+        stream: false, // gateway defaults to SSE; force a single JSON body
       }),
     });
     if (!res.ok) {
