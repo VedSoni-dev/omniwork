@@ -12,7 +12,7 @@ let gateway = null;
 let agent = null;
 
 const state = {
-  workspace: process.env.OMNIWORK_WORKSPACE || app?.getPath ? null : null,
+  workspace: null,
   model: "auto",
   gateway: { state: "boot" },
 };
@@ -68,7 +68,9 @@ function buildAgent() {
 
 async function boot() {
   const prefs = loadPrefs();
-  state.workspace = prefs.workspace && fs.existsSync(prefs.workspace) ? prefs.workspace : null;
+  const envWs = process.env.OMNIWORK_WORKSPACE;
+  if (envWs && fs.existsSync(envWs)) state.workspace = envWs;
+  else if (prefs.workspace && fs.existsSync(prefs.workspace)) state.workspace = prefs.workspace;
   state.model = prefs.model || "auto";
 
   createWindow();

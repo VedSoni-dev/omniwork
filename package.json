@@ -1,6 +1,6 @@
 {
   "name": "omniwork",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Open-source Claude Code / Cowork-style desktop agent with OmniRoute baked in. Download, open, and code with free AI models — zero setup.",
   "author": "OmniWork contributors",
   "license": "MIT",
