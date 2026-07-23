@@ -12,87 +12,111 @@
   </head>
   <body>
     <div id="app">
-      <!-- Sidebar -->
+      <!-- ░░ Sidebar: file explorer ░░ -->
       <aside class="sidebar">
         <div class="brand">
           <div class="brand-mark">◇</div>
-          <div class="brand-name">OmniWork</div>
+          <span class="brand-name">OmniWork</span>
+          <span class="brand-tag">agent</span>
         </div>
 
-        <button id="new-session" class="btn-new">
-          <span class="plus">+</span> New session
-        </button>
-
-        <div class="sidebar-section">
-          <div class="section-label">Workspace</div>
-          <button id="pick-workspace" class="workspace-btn" title="Change workspace">
-            <span class="folder-icon">📁</span>
-            <span id="workspace-path" class="workspace-path">No folder open</span>
-          </button>
-        </div>
-
-        <div class="sidebar-spacer"></div>
-
-        <div class="gateway-card" id="gateway-card">
-          <div class="gateway-row">
-            <span id="gateway-dot" class="dot dot-boot"></span>
-            <span id="gateway-label" class="gateway-label">Starting engine…</span>
+        <div class="ws-head">
+          <span class="ws-label">Explorer</span>
+          <div class="ws-actions">
+            <button id="refresh-tree" class="icon-btn" title="Refresh">⟳</button>
+            <button id="open-folder" class="icon-btn" title="Open folder">⊕</button>
           </div>
-          <div class="gateway-sub" id="gateway-sub">OmniRoute · free models</div>
-          <button id="open-dashboard" class="link-btn">Gateway dashboard ↗</button>
+        </div>
+
+        <div id="tree" class="tree">
+          <div class="tree-empty" id="tree-empty">
+            <p>No folder open</p>
+            <button id="open-folder-2" class="btn btn-outline btn-sm">Open folder…</button>
+          </div>
+        </div>
+
+        <div class="sidebar-foot">
+          <button id="new-session" class="btn btn-ghost btn-sm btn-block">
+            <span class="ic">+</span> New session
+          </button>
+          <div class="gateway-pill" id="gateway-pill">
+            <span id="gateway-dot" class="dot dot-boot"></span>
+            <span id="gateway-label">Starting engine…</span>
+          </div>
+          <button id="open-dashboard" class="link-btn">OmniRoute dashboard ↗</button>
         </div>
       </aside>
 
-      <!-- Main -->
+      <!-- ░░ Main ░░ -->
       <main class="main">
         <header class="topbar">
-          <div class="model-picker">
-            <label for="model-select">Model</label>
-            <select id="model-select">
-              <option value="auto">auto (free · smart routing)</option>
-              <option value="claude-3-5-sonnet">claude-3-5-sonnet</option>
-              <option value="gpt-4o">gpt-4o</option>
-              <option value="deepseek-chat">deepseek-chat</option>
-              <option value="gemini-2.0-flash">gemini-2.0-flash</option>
-            </select>
+          <div class="tabs" id="tabs">
+            <button class="tab tab-active" data-tab="chat" id="tab-chat">
+              <span class="tab-ic">◇</span> Conversation
+            </button>
+            <!-- file tabs injected here -->
           </div>
           <div class="topbar-right">
-            <span class="badge">MIT · Open source</span>
+            <div class="path-chip" id="path-chip" title="Workspace">
+              <span class="folder-ic">▤</span>
+              <span id="ws-path">no workspace</span>
+            </div>
+            <div class="select-wrap">
+              <select id="model-select" class="select">
+                <option value="auto">auto · free</option>
+                <option value="claude-3-5-sonnet">claude-3.5-sonnet</option>
+                <option value="gpt-4o">gpt-4o</option>
+                <option value="deepseek-chat">deepseek-chat</option>
+                <option value="gemini-2.0-flash">gemini-2.0-flash</option>
+              </select>
+            </div>
           </div>
         </header>
 
-        <section id="transcript" class="transcript">
-          <div class="welcome" id="welcome">
-            <div class="welcome-mark">◇</div>
-            <h1>Welcome to OmniWork</h1>
-            <p>
-              A Claude&nbsp;Code–style coding agent with
-              <strong>OmniRoute</strong> baked in — 278+ providers, free models,
-              zero setup. Open a folder and describe what you want built.
-            </p>
-            <div class="suggestions">
-              <button class="chip" data-prompt="List the files in this project and summarize what it does.">Summarize this project</button>
-              <button class="chip" data-prompt="Create a simple Node.js HTTP server in server.js that returns Hello World on port 3000.">Scaffold a web server</button>
-              <button class="chip" data-prompt="Find and fix any bugs you can spot in this codebase.">Hunt for bugs</button>
+        <!-- Conversation view -->
+        <section id="view-chat" class="view view-chat">
+          <div id="transcript" class="transcript">
+            <div class="hero" id="hero">
+              <div class="hero-mark">◇</div>
+              <h1>What should we build?</h1>
+              <p class="hero-sub">
+                A local coding agent. Open a folder, describe a task, and it reads,
+                writes, and runs code for you — powered by free models via OmniRoute.
+              </p>
+              <div class="hero-actions">
+                <button id="hero-open" class="btn btn-primary">Open a folder</button>
+              </div>
+              <div class="hero-chips">
+                <button class="suggest" data-prompt="Give me a tour of this codebase: list the top-level files and explain the architecture.">Explain this codebase</button>
+                <button class="suggest" data-prompt="Add a README with a project overview and usage instructions.">Write a README</button>
+                <button class="suggest" data-prompt="Find and fix any bugs you can spot, then explain what you changed.">Find & fix bugs</button>
+              </div>
             </div>
           </div>
+
+          <footer class="composer">
+            <div class="composer-box" id="composer-box">
+              <div id="mentions" class="mentions"></div>
+              <textarea id="input" rows="1" placeholder="Describe a task…  (type @ to reference a file)"></textarea>
+              <div class="composer-bar">
+                <span class="composer-hint" id="status-hint">Ready</span>
+                <div class="composer-btns">
+                  <button id="stop" class="btn btn-outline btn-sm hidden">Stop</button>
+                  <button id="send" class="btn btn-primary btn-sm">Send ↑</button>
+                </div>
+              </div>
+            </div>
+          </footer>
         </section>
 
-        <footer class="composer">
-          <div class="composer-inner">
-            <textarea
-              id="input"
-              rows="1"
-              placeholder="Describe a task, or ask a question…"
-            ></textarea>
-            <button id="send" class="send-btn" title="Send">↑</button>
-            <button id="stop" class="stop-btn hidden" title="Stop">■</button>
+        <!-- File viewer view -->
+        <section id="view-file" class="view view-file hidden">
+          <div class="file-toolbar">
+            <span id="file-name" class="file-name mono"></span>
+            <button id="mention-file" class="btn btn-outline btn-sm">@ mention in chat</button>
           </div>
-          <div class="composer-hint">
-            <span id="status-hint">Ready</span>
-            <span class="dim">Enter to send · Shift+Enter for newline</span>
-          </div>
-        </footer>
+          <pre id="file-content" class="file-content"><code></code></pre>
+        </section>
       </main>
     </div>
 

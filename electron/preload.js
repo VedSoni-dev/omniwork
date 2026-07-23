@@ -8,6 +8,8 @@ contextBridge.exposeInMainWorld("omniwork", {
   stop: () => ipcRenderer.invoke("agent:stop"),
   newSession: () => ipcRenderer.invoke("agent:new"),
   pickWorkspace: () => ipcRenderer.invoke("workspace:pick"),
+  listDir: (relPath) => ipcRenderer.invoke("workspace:list", relPath),
+  readFile: (relPath) => ipcRenderer.invoke("file:read", relPath),
   getState: () => ipcRenderer.invoke("app:state"),
   setModel: (model) => ipcRenderer.invoke("app:setModel", model),
   openDashboard: () => ipcRenderer.invoke("gateway:openDashboard"),

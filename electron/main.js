@@ -37,11 +37,11 @@ function send(channel, payload) {
 
 function createWindow() {
   win = new BrowserWindow({
-    width: 1180,
-    height: 800,
-    minWidth: 900,
-    minHeight: 600,
-    backgroundColor: "#1c1b19",
+    width: 1280,
+    height: 860,
+    minWidth: 960,
+    minHeight: 620,
+    backgroundColor: "#09090b",
     title: "OmniWork",
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
     webPreferences: {
@@ -153,6 +153,66 @@ ipcMain.handle("agent:new", () => {
 ipcMain.handle("gateway:openDashboard", () => {
   if (gateway) shell.openExternal(gateway.dashboardUrl());
   return true;
+});
+
+// ---------- file explorer ----------
+const IGNORE_DIRS = new Set([
+  "node_modules", ".git", "dist", "out", "build", ".next", ".cache",
+  ".DS_Store", "coverage", ".turbo", "__pycache__", ".venv", "venv",
+]);
+
+function readDir(dir) {
+  let entries = [];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const dirs = [];
+  const files = [];
+  for (const e of entries) {
+    if (e.name.startsWith(".") && e.name !== ".env" && e.name !== ".gitignore") {
+      if (IGNORE_DIRS.has(e.name)) continue;
+    }
+    if (e.isDirectory()) {
+      if (IGNORE_DIRS.has(e.name)) continue;
+      dirs.push({ name: e.name, type: "dir", path: path.join(dir, e.name) });
+    } else if (e.isFile()) {
+      files.push({ name: e.name, type: "file", path: path.join(dir, e.name) });
+    }
+  }
+  dirs.sort((a, b) => a.name.localeCompare(b.name));
+  files.sort((a, b) => a.name.localeCompare(b.name));
+  return [...dirs, ...files];
+}
+
+// List a single directory's children (lazy tree expansion). Paths are relative
+// to the workspace root and confined to it.
+ipcMain.handle("workspace:list", (_e, relPath) => {
+  if (!state.workspace) return { root: null, entries: [] };
+  const target = path.resolve(state.workspace, relPath || ".");
+  const rel = path.relative(state.workspace, target);
+  if (rel.startsWith("..") || path.isAbsolute(rel)) return { root: state.workspace, entries: [] };
+  const entries = readDir(target).map((n) => ({
+    name: n.name,
+    type: n.type,
+    path: path.relative(state.workspace, n.path).split(path.sep).join("/"),
+  }));
+  return { root: state.workspace, base: path.basename(state.workspace), entries };
+});
+
+ipcMain.handle("file:read", (_e, relPath) => {
+  if (!state.workspace) return { error: "no workspace" };
+  const target = path.resolve(state.workspace, relPath);
+  const rel = path.relative(state.workspace, target);
+  if (rel.startsWith("..") || path.isAbsolute(rel)) return { error: "path escapes workspace" };
+  try {
+    const stat = fs.statSync(target);
+    if (stat.size > 600 * 1024) return { error: "file too large to preview" };
+    return { content: fs.readFileSync(target, "utf8"), path: relPath };
+  } catch (err) {
+    return { error: err.message };
+  }
 });
 
 // ---------- lifecycle ----------
