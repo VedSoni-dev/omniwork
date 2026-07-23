@@ -1,6 +1,8 @@
 node_modules/
 dist/
 out/
+build/
 *.log
 .DS_Store
 data/
+assets/icon.png
