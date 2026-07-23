@@ -11,115 +11,60 @@
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <div id="app">
-      <!-- ░░ Sidebar: file explorer ░░ -->
-      <aside class="sidebar">
-        <div class="brand">
-          <div class="brand-mark">◇</div>
-          <span class="brand-name">OmniWork</span>
-          <span class="brand-tag">agent</span>
-        </div>
-
-        <div class="ws-head">
-          <span class="ws-label">Explorer</span>
-          <div class="ws-actions">
-            <button id="refresh-tree" class="icon-btn" title="Refresh">⟳</button>
-            <button id="open-folder" class="icon-btn" title="Open folder">⊕</button>
-          </div>
-        </div>
-
-        <div id="tree" class="tree">
-          <div class="tree-empty" id="tree-empty">
-            <p>No folder open</p>
-            <button id="open-folder-2" class="btn btn-outline btn-sm">Open folder…</button>
-          </div>
-        </div>
-
-        <div class="sidebar-foot">
-          <button id="new-session" class="btn btn-ghost btn-sm btn-block">
-            <span class="ic">+</span> New session
-          </button>
-          <div class="gateway-pill" id="gateway-pill">
-            <span id="gateway-dot" class="dot dot-boot"></span>
-            <span id="gateway-label">Starting engine…</span>
-          </div>
-          <button id="open-dashboard" class="link-btn">OmniRoute dashboard ↗</button>
-        </div>
-      </aside>
-
-      <!-- ░░ Main ░░ -->
-      <main class="main">
-        <header class="topbar">
-          <div class="tabs" id="tabs">
-            <button class="tab tab-active" data-tab="chat" id="tab-chat">
-              <span class="tab-ic">◇</span> Conversation
-            </button>
-            <!-- file tabs injected here -->
-          </div>
-          <div class="topbar-right">
-            <div class="path-chip" id="path-chip" title="Workspace">
-              <span class="folder-ic">▤</span>
-              <span id="ws-path">no workspace</span>
+    <div id="term">
+      <div id="scroll" class="scroll">
+        <!-- welcome banner -->
+        <div class="welcome" id="welcome">
+          <div class="wbox">
+            <div class="wline"><span class="accent">✻</span> Welcome to <b>OmniWork</b></div>
+            <div class="wline dim"></div>
+            <div class="wline dim">Claude&nbsp;Code–style agent · free models via OmniRoute, no setup</div>
+            <div class="wline dim">
+              cwd: <span id="cwd" class="cwd">—</span>
+              <button id="change-cwd" class="inline-btn">change</button>
             </div>
-            <div class="select-wrap">
-              <select id="model-select" class="select">
-                <option value="auto">auto · free</option>
+            <div class="wline dim"><span class="accent">/</span> type <span class="kbd">@</span> to reference a file · <span class="kbd">Enter</span> to send</div>
+          </div>
+          <div class="tips">
+            <button class="tip" data-prompt="Give me a tour of this codebase — list the top-level files and explain the architecture.">explain this codebase</button>
+            <button class="tip" data-prompt="Write a README with an overview and usage.">write a README</button>
+            <button class="tip" data-prompt="Find and fix any bugs you can spot, then summarize the changes.">find &amp; fix bugs</button>
+          </div>
+        </div>
+        <!-- transcript lines injected here -->
+      </div>
+
+      <div class="dock">
+        <div class="inputbox" id="inputbox">
+          <span class="prompt-caret">&gt;</span>
+          <textarea id="input" rows="1" placeholder="Try &quot;explain this project&quot; — or type @ to add a file"></textarea>
+          <button id="stop" class="stopbtn hidden" title="Stop (Esc)">esc ✕</button>
+        </div>
+        <div class="statusline">
+          <div class="status-left">
+            <span class="s-dot" id="gw-dot"></span>
+            <span id="gw-label">starting…</span>
+            <span class="sep">·</span>
+            <span class="model-wrap">
+              <select id="model" class="model-select">
+                <option value="auto">auto (free)</option>
                 <option value="claude-3-5-sonnet">claude-3.5-sonnet</option>
                 <option value="gpt-4o">gpt-4o</option>
                 <option value="deepseek-chat">deepseek-chat</option>
                 <option value="gemini-2.0-flash">gemini-2.0-flash</option>
               </select>
-            </div>
+            </span>
           </div>
-        </header>
-
-        <!-- Conversation view -->
-        <section id="view-chat" class="view view-chat">
-          <div id="transcript" class="transcript">
-            <div class="hero" id="hero">
-              <div class="hero-mark">◇</div>
-              <h1>What should we build?</h1>
-              <p class="hero-sub">
-                A local coding agent. Open a folder, describe a task, and it reads,
-                writes, and runs code for you — powered by free models via OmniRoute.
-              </p>
-              <div class="hero-actions">
-                <button id="hero-open" class="btn btn-primary">Open a folder</button>
-              </div>
-              <div class="hero-chips">
-                <button class="suggest" data-prompt="Give me a tour of this codebase: list the top-level files and explain the architecture.">Explain this codebase</button>
-                <button class="suggest" data-prompt="Add a README with a project overview and usage instructions.">Write a README</button>
-                <button class="suggest" data-prompt="Find and fix any bugs you can spot, then explain what you changed.">Find & fix bugs</button>
-              </div>
-            </div>
+          <div class="status-right">
+            <span id="cwd-mini" class="cwd-mini"></span>
+            <span class="sep">·</span>
+            <button id="new-session" class="inline-btn">new</button>
+            <button id="dashboard" class="inline-btn">router ↗</button>
+            <span class="dim">? shortcuts</span>
           </div>
-
-          <footer class="composer">
-            <div class="composer-box" id="composer-box">
-              <div id="mentions" class="mentions"></div>
-              <textarea id="input" rows="1" placeholder="Describe a task…  (type @ to reference a file)"></textarea>
-              <div class="composer-bar">
-                <span class="composer-hint" id="status-hint">Ready</span>
-                <div class="composer-btns">
-                  <button id="stop" class="btn btn-outline btn-sm hidden">Stop</button>
-                  <button id="send" class="btn btn-primary btn-sm">Send ↑</button>
-                </div>
-              </div>
-            </div>
-          </footer>
-        </section>
-
-        <!-- File viewer view -->
-        <section id="view-file" class="view view-file hidden">
-          <div class="file-toolbar">
-            <span id="file-name" class="file-name mono"></span>
-            <button id="mention-file" class="btn btn-outline btn-sm">@ mention in chat</button>
-          </div>
-          <pre id="file-content" class="file-content"><code></code></pre>
-        </section>
-      </main>
+        </div>
+      </div>
     </div>
-
     <script src="app.js"></script>
   </body>
 </html>

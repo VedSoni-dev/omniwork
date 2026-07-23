@@ -1,8 +1,5 @@
 "use strict";
-// Falls back to a no-op stub when the Electron preload bridge is absent
-// (e.g. opened in a plain browser for design preview), so the UI still renders.
 const stub = {
-  _demo: true,
   sendMessage: async () => {}, stop: async () => {}, newSession: async () => {},
   pickWorkspace: async () => {}, listDir: async () => ({ root: null, entries: [] }),
   readFile: async () => ({ content: "" }), getState: async () => ({ model: "auto" }),
@@ -11,368 +8,275 @@ const stub = {
 const api = window.omniwork || stub;
 const $ = (id) => document.getElementById(id);
 
-const transcript = $("transcript");
+const scroll = $("scroll");
 const input = $("input");
-const sendBtn = $("send");
 const stopBtn = $("stop");
-const statusHint = $("status-hint");
-const treeEl = $("tree");
 
 let busy = false;
-let thinkingEl = null;
-let hasWorkspace = false;
+let thinkingEl = null, thinkTimer = null;
 const toolEls = new Map();
-const openTabs = new Map(); // path -> {tabBtn}
 const mentions = new Set();
-let fileIndex = null; // cached flat list for @-search
+let fileIndex = null;
+let cwd = null;
 
-// ── util ───────────────────────────────────────────────────────────
-const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-function scrollDown() { transcript.scrollTop = transcript.scrollHeight; }
+const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const scrollDown = () => (scroll.scrollTop = scroll.scrollHeight);
+const clearWelcome = () => { const w = $("welcome"); if (w) w.remove(); };
 
-function iconFor(name, isDir) {
-  if (isDir) return "▸";
-  const ext = name.split(".").pop().toLowerCase();
-  const map = { js: "🟨", ts: "🟦", jsx: "⚛", tsx: "⚛", json: "◍", md: "▮", css: "◈", html: "◇", py: "🐍", go: "◎", rs: "◆", sh: "▷", yml: "⚙", yaml: "⚙", lock: "🔒", txt: "▤", png: "▦", svg: "◇" };
-  return map[ext] || "▪";
-}
-
-function renderMarkdown(text) {
+function md(text) {
   const parts = text.split(/```/);
   let html = "";
   for (let i = 0; i < parts.length; i++) {
-    if (i % 2 === 1) {
-      const body = parts[i].replace(/^[a-zA-Z0-9]*\n/, "");
-      html += `<pre><code>${esc(body)}</code></pre>`;
-    } else {
-      html += esc(parts[i]).replace(/`([^`]+)`/g, "<code>$1</code>");
-    }
+    if (i % 2 === 1) html += `<pre><code>${esc(parts[i].replace(/^[a-zA-Z0-9]*\n/, ""))}</code></pre>`;
+    else html += esc(parts[i]).replace(/`([^`]+)`/g, "<code>$1</code>");
   }
   return html;
 }
 
-// ── file tree ──────────────────────────────────────────────────────
-async function loadTree() {
-  const res = await api.listDir(".");
-  treeEl.innerHTML = "";
-  if (!res.root) {
-    treeEl.innerHTML = `<div class="tree-empty"><p>No folder open</p><button id="open-folder-3" class="btn btn-outline btn-sm">Open folder…</button></div>`;
-    $("open-folder-3").addEventListener("click", pickFolder);
-    hasWorkspace = false;
-    return;
-  }
-  hasWorkspace = true;
-  fileIndex = null;
-  for (const entry of res.entries) treeEl.appendChild(renderNode(entry, 0));
+// ── transcript ─────────────────────────────────────────────────────
+function addUser(text) {
+  clearWelcome(); stopThinking();
+  const el = document.createElement("div");
+  el.className = "blk user";
+  el.innerHTML = `<span class="caret">&gt;</span><span class="utext">${esc(text)}</span>`;
+  scroll.appendChild(el); scrollDown();
 }
-
-function renderNode(entry) {
-  const node = document.createElement("div");
-  node.className = "node";
-  const row = document.createElement("div");
-  row.className = "node-row";
-  const isDir = entry.type === "dir";
-  row.innerHTML =
-    `<span class="node-caret">${isDir ? "›" : ""}</span>` +
-    `<span class="node-ic">${iconFor(entry.name, isDir)}</span>` +
-    `<span class="node-name">${esc(entry.name)}</span>`;
-  node.appendChild(row);
-
-  if (isDir) {
-    const children = document.createElement("div");
-    children.className = "node-children";
-    node.appendChild(children);
-    let loaded = false;
-    row.addEventListener("click", async () => {
-      node.classList.toggle("open");
-      if (!loaded && node.classList.contains("open")) {
-        loaded = true;
-        const res = await api.listDir(entry.path);
-        for (const c of res.entries) children.appendChild(renderNode(c));
-      }
-    });
-  } else {
-    row.addEventListener("click", () => openFile(entry.path, row));
-  }
-  return node;
+function addAssistant(text) {
+  clearWelcome(); stopThinking();
+  const el = document.createElement("div");
+  el.className = "blk assistant";
+  el.innerHTML = md(text);
+  scroll.appendChild(el); scrollDown();
 }
-
-// ── file viewer + tabs ─────────────────────────────────────────────
-function showView(which) {
-  $("view-chat").classList.toggle("hidden", which !== "chat");
-  $("view-file").classList.toggle("hidden", which !== "file");
-  document.querySelectorAll(".tab").forEach((t) => t.classList.remove("tab-active"));
-  if (which === "chat") $("tab-chat").classList.add("tab-active");
-}
-
-async function openFile(relPath, rowEl) {
-  document.querySelectorAll(".node-row.active").forEach((r) => r.classList.remove("active"));
-  if (rowEl) rowEl.classList.add("active");
-  const res = await api.readFile(relPath);
-  const base = relPath.split("/").pop();
-  $("file-name").textContent = relPath;
-  const code = $("file-content").querySelector("code") || $("file-content");
-  $("file-content").textContent = res.error ? `// ${res.error}` : res.content;
-  $("mention-file").onclick = () => { addMention(relPath); showView("chat"); input.focus(); };
-
-  // tab
-  let tab = openTabs.get(relPath);
-  if (!tab) {
-    tab = document.createElement("button");
-    tab.className = "tab";
-    tab.innerHTML = `<span class="tab-ic">${iconFor(base, false)}</span> ${esc(base)} <span class="tab-close">×</span>`;
-    tab.addEventListener("click", (e) => {
-      if (e.target.classList.contains("tab-close")) { closeTab(relPath); return; }
-      openFile(relPath);
-    });
-    $("tabs").appendChild(tab);
-    openTabs.set(relPath, tab);
-  }
-  document.querySelectorAll(".tab").forEach((t) => t.classList.remove("tab-active"));
-  tab.classList.add("tab-active");
-  $("view-chat").classList.add("hidden");
-  $("view-file").classList.remove("hidden");
-}
-
-function closeTab(relPath) {
-  const tab = openTabs.get(relPath);
-  if (tab) tab.remove();
-  openTabs.delete(relPath);
-  showView("chat");
-}
-
-$("tab-chat").addEventListener("click", () => showView("chat"));
-
-// ── @-mentions ─────────────────────────────────────────────────────
-function renderMentions() {
-  const box = $("mentions");
-  box.innerHTML = "";
-  mentions.forEach((p) => {
-    const chip = document.createElement("span");
-    chip.className = "mention";
-    chip.innerHTML = `@${esc(p)} <span class="x">×</span>`;
-    chip.querySelector(".x").addEventListener("click", () => { mentions.delete(p); renderMentions(); });
-    box.appendChild(chip);
-  });
-}
-function addMention(p) { mentions.add(p); renderMentions(); }
-
-async function buildFileIndex() {
-  if (fileIndex) return fileIndex;
-  const out = [];
-  async function walk(rel, depth) {
-    if (depth > 4) return;
-    const res = await api.listDir(rel);
-    if (!res.entries) return;
-    for (const e of res.entries) {
-      if (e.type === "file") out.push(e.path);
-      else if (depth < 4 && out.length < 2000) await walk(e.path, depth + 1);
-    }
-  }
-  await walk(".", 0);
-  fileIndex = out;
-  return out;
-}
-
-let mentionPop = null;
-async function showMentionPop(query) {
-  const idx = await buildFileIndex();
-  const q = query.toLowerCase();
-  const matches = idx.filter((p) => p.toLowerCase().includes(q)).slice(0, 30);
-  hideMentionPop();
-  if (!matches.length) return;
-  mentionPop = document.createElement("div");
-  mentionPop.className = "mention-pop";
-  matches.forEach((p, i) => {
-    const item = document.createElement("div");
-    item.className = "mention-item" + (i === 0 ? " sel" : "");
-    const base = p.split("/").pop();
-    item.innerHTML = `<span>${esc(base)}</span> <span class="p">${esc(p)}</span>`;
-    item.addEventListener("mousedown", (e) => { e.preventDefault(); pickMention(p); });
-    mentionPop.appendChild(item);
-  });
-  const box = $("composer-box");
-  const r = box.getBoundingClientRect();
-  document.body.appendChild(mentionPop);
-  mentionPop.style.left = r.left + "px";
-  mentionPop.style.bottom = window.innerHeight - r.top + 6 + "px";
-  mentionPop.style.width = r.width + "px";
-}
-function hideMentionPop() { if (mentionPop) { mentionPop.remove(); mentionPop = null; } }
-function pickMention(p) {
-  addMention(p);
-  input.value = input.value.replace(/@[^\s]*$/, "").trimEnd();
-  hideMentionPop();
-  input.focus();
-}
-
-// ── rendering agent output ─────────────────────────────────────────
-function clearHero() { const h = $("hero"); if (h) h.remove(); }
-function removeThinking() { if (thinkingEl) { thinkingEl.remove(); thinkingEl = null; } }
-
-function addMessage(role, content) {
-  clearHero(); removeThinking();
-  const row = document.createElement("div");
-  row.className = "row";
-  const isUser = role === "user";
-  row.innerHTML =
-    `<div class="msg"><div class="avatar ${isUser ? "user" : "assistant"}">${isUser ? "U" : "◇"}</div>` +
-    `<div class="msg-body"><div class="msg-role">${isUser ? "You" : "OmniWork"}</div>` +
-    `<div class="msg-content">${renderMarkdown(content)}</div></div></div>`;
-  transcript.appendChild(row);
-  scrollDown();
+function addError(msg) {
+  stopThinking();
+  const el = document.createElement("div");
+  el.className = "errline";
+  el.textContent = "✗ " + msg;
+  scroll.appendChild(el); scrollDown();
 }
 
 function diffHtml(oldS, newS) {
-  const o = (oldS || "").split("\n");
-  const n = (newS || "").split("\n");
   let html = "";
-  o.forEach((l) => (html += `<div class="del">- ${esc(l)}</div>`));
-  n.forEach((l) => (html += `<div class="add">+ ${esc(l)}</div>`));
+  (oldS || "").split("\n").forEach((l) => (html += `<span class="del">- ${esc(l)}</span>\n`));
+  (newS || "").split("\n").forEach((l) => (html += `<span class="add">+ ${esc(l)}</span>\n`));
   return html;
 }
-
-function toolMeta(name, args) {
-  const badges = { run_command: "run", read_file: "read", write_file: "write", edit_file: "edit", list_dir: "ls" };
-  let arg = "";
-  if (name === "run_command") arg = args.command || "";
-  else if (args.path) arg = args.path;
-  return { badge: badges[name] || name, arg };
+function toolTitle(name, args) {
+  const label = { run_command: "Bash", read_file: "Read", write_file: "Write", edit_file: "Edit", list_dir: "List" }[name] || name;
+  let a = "";
+  if (name === "run_command") a = args.command || "";
+  else if (args.path) a = args.path;
+  return { label, a };
 }
 
 function addToolCard(id, name, args) {
-  clearHero(); removeThinking();
-  const { badge, arg } = toolMeta(name, args);
-  const card = document.createElement("div");
-  card.className = "tool";
+  clearWelcome(); stopThinking();
+  const { label, a } = toolTitle(name, args);
+  const el = document.createElement("div");
+  el.className = "tool";
   const isDiff = name === "edit_file" || name === "write_file";
-  card.innerHTML =
-    `<div class="tool-card"><div class="tool-head">` +
-    `<span class="tool-caret">›</span><span class="tool-badge">${badge}</span>` +
-    `<span class="tool-arg">${esc(arg)}</span>` +
-    `<span class="tool-status"><span class="spinner"></span></span></div>` +
-    `<div class="tool-out"></div></div>`;
-  const cardInner = card.querySelector(".tool-card");
-  card.querySelector(".tool-head").addEventListener("click", () => cardInner.classList.toggle("open"));
-  const out = card.querySelector(".tool-out");
-  if (name === "edit_file") { out.innerHTML = diffHtml(args.old_string, args.new_string); cardInner.classList.add("open"); }
-  else if (name === "write_file") { out.innerHTML = `<div class="add">+ ${esc(args.path || "")}</div>` + esc((args.content || "").slice(0, 4000)); }
-  transcript.appendChild(card);
-  toolEls.set(id, { card, cardInner, out, status: card.querySelector(".tool-status"), isDiff });
+  el.innerHTML =
+    `<div class="tool-line"><span class="tool-dot">⏺</span>` +
+    `<span class="tool-title"><span class="tname">${label}</span>` +
+    `<span class="targs">(${esc(a)})</span></span>` +
+    `<span class="spin" style="margin-left:auto">…</span></div>` +
+    `<div class="tool-body"><span class="tool-elbow">⎿</span><div class="tool-out"></div></div>`;
+  const out = el.querySelector(".tool-out");
+  const body = el.querySelector(".tool-body");
+  if (name === "edit_file") out.innerHTML = diffHtml(args.old_string, args.new_string);
+  else if (name === "write_file") out.innerHTML = `<span class="add">+ created ${esc(args.path || "")}</span>\n` + esc((args.content || "").slice(0, 2000));
+  else body.style.display = "none"; // show body once we have output
+  scroll.appendChild(el);
+  toolEls.set(id, { el, out, body, spin: el.querySelector(".spin"), dot: el.querySelector(".tool-dot"), isDiff });
+  scrollDown();
+}
+function streamTool(id, chunk) {
+  const t = toolEls.get(id);
+  if (!t || t.isDiff) return;
+  t.body.style.display = "flex";
+  t.out.textContent += chunk;
+  scrollDown();
+}
+function finishTool(id, result) {
+  const t = toolEls.get(id);
+  if (!t) return;
+  t.spin.remove();
+  t.dot.classList.add("done");
+  if (!t.isDiff && !t.out.textContent) { t.body.style.display = "flex"; t.out.textContent = result; }
   scrollDown();
 }
 
-function streamTool(id, chunk) { const el = toolEls.get(id); if (el && !el.isDiff) el.out.textContent += chunk; }
-function finishToolCard(id, result) {
-  const el = toolEls.get(id);
-  if (!el) return;
-  el.status.innerHTML = `<span class="tool-check">✓</span>`;
-  if (!el.isDiff && !el.out.textContent) el.out.textContent = result;
-  scrollDown();
-}
-
-function showThinking() {
-  removeThinking();
+// thinking with cycling Claude glyph
+const GLYPHS = ["✻", "✳", "✶", "✽", "✢", "✦"];
+function startThinking() {
+  stopThinking();
   thinkingEl = document.createElement("div");
   thinkingEl.className = "thinking";
-  thinkingEl.innerHTML = `<span class="spinner"></span> Working…`;
-  transcript.appendChild(thinkingEl);
-  scrollDown();
+  thinkingEl.innerHTML = `<span class="glyph">✻</span> Working…`;
+  scroll.appendChild(thinkingEl); scrollDown();
+  let i = 0;
+  thinkTimer = setInterval(() => {
+    const g = thinkingEl && thinkingEl.querySelector(".glyph");
+    if (g) g.textContent = GLYPHS[i++ % GLYPHS.length];
+  }, 260);
 }
-function showError(msg) {
-  removeThinking();
-  const el = document.createElement("div");
-  el.className = "err";
-  el.innerHTML = `<div class="err-in">⚠ ${esc(msg)}</div>`;
-  transcript.appendChild(el);
-  scrollDown();
+function stopThinking() {
+  if (thinkTimer) { clearInterval(thinkTimer); thinkTimer = null; }
+  if (thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
 }
 
 function setBusy(v) {
   busy = v;
-  sendBtn.classList.toggle("hidden", v);
   stopBtn.classList.toggle("hidden", !v);
-  statusHint.textContent = v ? "Working…" : "Ready";
 }
 
+// ── agent events ───────────────────────────────────────────────────
 api.on("agent:event", (ev) => {
   switch (ev.type) {
-    case "thinking": showThinking(); break;
-    case "assistant": addMessage("assistant", ev.content); break;
+    case "thinking": startThinking(); break;
+    case "assistant": addAssistant(ev.content); break;
     case "tool_call": addToolCard(ev.id, ev.name, ev.args); break;
     case "tool_stream": streamTool(ev.id, ev.chunk); break;
-    case "tool_result": finishToolCard(ev.id, ev.result); refreshTreeSoon(); break;
-    case "error": showError(ev.message); setBusy(false); break;
-    case "aborted": removeThinking(); setBusy(false); break;
-    case "done": removeThinking(); setBusy(false); refreshTreeSoon(); break;
+    case "tool_result": finishTool(ev.id, ev.result); break;
+    case "error": addError(ev.message); setBusy(false); break;
+    case "aborted": stopThinking(); setBusy(false); break;
+    case "done": stopThinking(); setBusy(false); break;
   }
 });
 
-let refreshTimer = null;
-function refreshTreeSoon() { clearTimeout(refreshTimer); refreshTimer = setTimeout(loadTree, 600); }
-
 api.on("gateway:status", (s) => {
-  const dot = $("gateway-dot");
-  dot.className = "dot " + (s.state === "ready" ? "dot-ok" : s.state === "error" ? "dot-err" : "dot-boot");
-  $("gateway-label").textContent =
-    s.state === "ready" ? "Engine ready" : s.state === "error" ? "Engine error" : "Starting engine…";
+  const dot = $("gw-dot");
+  dot.className = "s-dot " + (s.state === "ready" ? "ok" : s.state === "error" ? "err" : "boot");
+  $("gw-label").textContent = s.state === "ready" ? "ready" : s.state === "error" ? "engine error" : "starting…";
 });
+api.on("workspace:changed", (w) => setCwd(w.path));
 
-api.on("workspace:changed", (w) => {
-  $("ws-path").textContent = w.path || "no workspace";
-  loadTree();
-});
+function setCwd(p) {
+  cwd = p;
+  $("cwd").textContent = p || "—";
+  $("cwd-mini").textContent = p || "";
+  fileIndex = null;
+}
+
+// ── @-mentions ─────────────────────────────────────────────────────
+let chipsEl = null;
+function chipsBox() {
+  if (!chipsEl) {
+    chipsEl = document.createElement("div");
+    chipsEl.className = "chips";
+    $("inputbox").parentNode.insertBefore(chipsEl, $("inputbox"));
+  }
+  return chipsEl;
+}
+function renderChips() {
+  const box = chipsBox();
+  box.innerHTML = "";
+  mentions.forEach((p) => {
+    const c = document.createElement("span");
+    c.className = "chip";
+    c.innerHTML = `@${esc(p)} <span class="x">✕</span>`;
+    c.querySelector(".x").addEventListener("click", () => { mentions.delete(p); renderChips(); });
+    box.appendChild(c);
+  });
+}
+async function buildIndex() {
+  if (fileIndex) return fileIndex;
+  const out = [];
+  async function walk(rel, d) {
+    if (d > 4 || out.length > 2000) return;
+    const res = await api.listDir(rel);
+    if (!res.entries) return;
+    for (const e of res.entries) {
+      if (e.type === "file") out.push(e.path);
+      else await walk(e.path, d + 1);
+    }
+  }
+  await walk(".", 0);
+  return (fileIndex = out);
+}
+let mpop = null, mSel = 0, mMatches = [];
+async function showPop(q) {
+  const idx = await buildIndex();
+  mMatches = idx.filter((p) => p.toLowerCase().includes(q.toLowerCase())).slice(0, 20);
+  hidePop();
+  if (!mMatches.length) return;
+  mSel = 0;
+  mpop = document.createElement("div");
+  mpop.className = "mpop";
+  mMatches.forEach((p, i) => {
+    const it = document.createElement("div");
+    it.className = "mitem" + (i === 0 ? " sel" : "");
+    it.innerHTML = `<span>${esc(p.split("/").pop())}</span><span class="mp">${esc(p)}</span>`;
+    it.addEventListener("mousedown", (e) => { e.preventDefault(); pick(p); });
+    mpop.appendChild(it);
+  });
+  document.body.appendChild(mpop);
+  const r = $("inputbox").getBoundingClientRect();
+  mpop.style.left = r.left + "px";
+  mpop.style.bottom = window.innerHeight - r.top + 6 + "px";
+  mpop.style.width = Math.min(r.width, 480) + "px";
+}
+function hidePop() { if (mpop) { mpop.remove(); mpop = null; } mMatches = []; }
+function moveSel(d) {
+  if (!mpop) return;
+  const items = [...mpop.querySelectorAll(".mitem")];
+  items[mSel]?.classList.remove("sel");
+  mSel = (mSel + d + items.length) % items.length;
+  items[mSel]?.classList.add("sel");
+  items[mSel]?.scrollIntoView({ block: "nearest" });
+}
+function pick(p) {
+  mentions.add(p); renderChips();
+  input.value = input.value.replace(/@[^\s]*$/, "").trimEnd();
+  hidePop(); input.focus();
+}
 
 // ── composer ───────────────────────────────────────────────────────
-function autoGrow() { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 220) + "px"; }
+function grow() { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 200) + "px"; }
 input.addEventListener("input", () => {
-  autoGrow();
+  grow();
   const m = input.value.match(/@([^\s]*)$/);
-  if (m) showMentionPop(m[1]); else hideMentionPop();
+  if (m) showPop(m[1]); else hidePop();
+});
+input.addEventListener("keydown", (e) => {
+  if (mpop) {
+    if (e.key === "ArrowDown") { e.preventDefault(); moveSel(1); return; }
+    if (e.key === "ArrowUp") { e.preventDefault(); moveSel(-1); return; }
+    if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); pick(mMatches[mSel]); return; }
+    if (e.key === "Escape") { hidePop(); return; }
+  }
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+  if (e.key === "Escape" && busy) api.stop();
 });
 
 async function send() {
   const text = input.value.trim();
   if ((!text && !mentions.size) || busy) return;
   let full = text;
-  if (mentions.size) {
-    const list = [...mentions].map((p) => `@${p}`).join(", ");
-    full = `${text}\n\nReferenced files: ${list}`;
-  }
-  addMessage("user", text + (mentions.size ? "\n" + [...mentions].map((p) => "📎 " + p).join("  ") : ""));
-  input.value = ""; mentions.clear(); renderMentions(); autoGrow(); hideMentionPop();
-  showView("chat");
+  if (mentions.size) full = `${text}\n\nReferenced files: ${[...mentions].map((p) => "@" + p).join(", ")}`;
+  addUser(text + (mentions.size ? "  " + [...mentions].map((p) => "@" + p).join(" ") : ""));
+  input.value = ""; mentions.clear(); renderChips(); grow(); hidePop();
   setBusy(true);
   await api.sendMessage(full);
 }
-
-sendBtn.addEventListener("click", send);
 stopBtn.addEventListener("click", () => api.stop());
-input.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
-  if (e.key === "Escape") hideMentionPop();
-});
 document.addEventListener("click", (e) => {
-  const s = e.target.closest(".suggest");
-  if (s) { input.value = s.dataset.prompt; autoGrow(); input.focus(); }
+  const t = e.target.closest(".tip");
+  if (t) { input.value = t.dataset.prompt; grow(); input.focus(); }
 });
 
 // ── wiring ─────────────────────────────────────────────────────────
-async function pickFolder() { await api.pickWorkspace(); }
-$("open-folder").addEventListener("click", pickFolder);
-$("open-folder-2")?.addEventListener("click", pickFolder);
-$("hero-open").addEventListener("click", pickFolder);
-$("refresh-tree").addEventListener("click", loadTree);
-$("new-session").addEventListener("click", async () => { await api.newSession(); transcript.innerHTML = ""; location.reload(); });
-$("open-dashboard").addEventListener("click", () => api.openDashboard());
-$("model-select").addEventListener("change", (e) => api.setModel(e.target.value));
+$("change-cwd").addEventListener("click", () => api.pickWorkspace());
+$("new-session").addEventListener("click", async () => { await api.newSession(); location.reload(); });
+$("dashboard").addEventListener("click", () => api.openDashboard());
+$("model").addEventListener("change", (e) => api.setModel(e.target.value));
 
-// ── init ───────────────────────────────────────────────────────────
 (async () => {
   const st = await api.getState();
   if (st) {
-    if (st.workspace) $("ws-path").textContent = st.workspace;
-    if (st.model) $("model-select").value = st.model;
+    if (st.workspace) setCwd(st.workspace);
+    if (st.model) $("model").value = st.model;
   }
-  await loadTree();
+  input.focus();
 })();
