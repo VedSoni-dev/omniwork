@@ -5,7 +5,7 @@ Thanks for helping build a truly zero-setup, open-source AI coding agent.
 ## Dev setup
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/omniwork.git
+git clone https://github.com/VedSoni-dev/omniwork.git
 cd omniwork
 npm install --legacy-peer-deps   # OmniRoute has a benign marked peer conflict
 node scripts/gen-icon.js         # generate the app icon

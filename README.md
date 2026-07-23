@@ -69,7 +69,7 @@ Then just open it. First launch takes a few seconds while the gateway warms up.
 Requires Node.js 22+ (24 recommended).
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/omniwork.git
+git clone https://github.com/VedSoni-dev/omniwork.git
 cd omniwork
 npm install          # pulls Electron + bundles OmniRoute
 npm start            # run the app
