@@ -2,39 +2,33 @@
 
 Autonomous build log (loop mode). Newest status at top.
 
-## Status: CORE WORKING · packaging in validation
+## Status: PUBLISHED · validating CI, then tag release
+
+Repo live: **https://github.com/VedSoni-dev/omniwork** (public, MIT)
 
 ### Proven working ✅
-- **End-to-end smoke test passes**: bundled-Node gateway boots (~11s cold) → agent
-  tool loop → real file written → free model, zero keys, zero config.
-- OmniRoute serves 99 models on `auto` out of the box with no API key (localhost open).
-- Tool-calling confirmed against the free `auto` model.
+- **Packaged app runs**: `OmniWork.exe` boots the gateway from the bundled Node,
+  native SQLite works, `/v1/models` → 200, real completion "PACKAGED OK" from a free
+  model — zero keys, zero config.
+- **End-to-end smoke test passes** (gateway → agent tool loop → file written).
+- Source published to GitHub; 87MB node binary purged from history; clean tree.
 
 ### Done
-- [x] Electron app scaffold (main, preload, sidecar, agent, tools)
-- [x] Claude Code / Cowork-style renderer UI
-- [x] **Sidecar** spawns OmniRoute `dist/server.js` (Next standalone) — the core idea
-- [x] Key finding: Electron's embedded Node can't boot the Next server → **bundle a real
-      Node binary** via `beforePack` hook (scripts/stage-node.js) + spawn gateway with it
-- [x] `stream:false` fix (gateway defaults to SSE)
-- [x] App icon generated dependency-free (scripts/gen-icon.js → assets/icon.png)
-- [x] `npmRebuild:false` (we don't run native under Electron; avoids gyp/distutils failure)
-- [x] CI workflow (boot check) + Release workflow (win/mac/linux matrix → GitHub Release)
-- [x] README, LICENSE (MIT), test scripts
+- [x] Full Electron app: sidecar + agent + tools + Claude-Code/Cowork UI
+- [x] OmniRoute bundled + spawned on a bundled real Node binary
+- [x] App icon, README, CONTRIBUTING, LICENSE (MIT), tests
+- [x] CI + Release GitHub workflows
+- [x] Public repo created + pushed (history cleaned)
 
 ### In progress
-- [ ] `electron-builder --dir` packaging validation (verify runtime/ + omniroute unpacked)
-- [ ] Launch the *packaged* app and confirm gateway boots from bundled node
-- [ ] Full NSIS installer build
+- [ ] CI boot-check green on clean Ubuntu runner (validates fresh clone)
+- [ ] Local NSIS installer (flaky on this box — file locks; not blocking, release CI builds it)
 
 ### Next
-- [ ] Push to GitHub, tag v0.1.0, let Actions build installers
-- [ ] Final polish: streaming tokens, session history (nice-to-have)
+- [ ] Tag `v0.1.0` → release workflow builds win/mac/linux installers → GitHub Release
+- [ ] Confirm release artifacts attach; update README download links
 
-### Key facts learned about OmniRoute
-- Bare `omniroute` = `serve` (default cmd) → supervisor that spawns `node dist/server.js`.
-  We bypass the supervisor (it needs `node` on PATH) and spawn `dist/server.js` ourselves.
-- Data dir env is **`DATA_DIR`** (win default: `%APPDATA%/omniroute`).
-- `/v1` on localhost needs **no auth** on fresh install. `model:"auto"` → free provider.
-- `dist/server.js` = Next.js standalone (CommonJS, reads `PORT`/`HOSTNAME`).
-- Needs Node 22+ (uses APIs missing in Electron 33's Node 20).
+### Notes
+- Local Windows installer build is finicky (ffmpeg.dll lock after running the app;
+  long NSIS compression). The GitHub Actions release job is the real distribution path —
+  each OS builds natively and attaches installers to the Release.

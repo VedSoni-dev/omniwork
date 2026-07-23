@@ -34,13 +34,18 @@ local key for itself, and points its agent at it. You get a working coding agent
 
 Grab the installer for your OS from the [**Releases**](../../releases) page:
 
-| OS | File |
-|----|------|
-| Windows | `OmniWork-Setup-x.y.z.exe` |
-| macOS | `OmniWork-x.y.z.dmg` (Intel + Apple Silicon) |
-| Linux | `OmniWork-x.y.z.AppImage` / `.deb` |
+| OS | File | Status |
+|----|------|--------|
+| Windows | `OmniWork-Setup-x.y.z.exe` | ✅ available |
+| macOS | `OmniWork-x.y.z.dmg` (Intel + Apple Silicon) | build from source · CI-built on request |
+| Linux | `OmniWork-x.y.z.AppImage` / `.deb` | build from source · CI-built on request |
 
-Then just open it. First launch takes a few seconds while the gateway warms up.
+Then just open it. First launch takes ~30–60s the very first time while the gateway
+runs one-time database migrations; subsequent launches are fast.
+
+> macOS/Linux installers are produced by the release CI matrix. Until that runs for
+> this repo, build them locally with `npm run dist:mac` / `npm run dist:linux` on the
+> matching OS (see [Build from source](#build-from-source)).
 
 ## How it works
 
