@@ -37,7 +37,12 @@
       "renderer/**",
       "assets/**",
       "package.json",
-      "node_modules/**/*"
+      "node_modules/**/*",
+      "!node_modules/omniroute/node_modules/**",
+      "!node_modules/omniroute/dist/node_modules/typescript/**",
+      "!node_modules/omniroute/dist/node_modules/playwright-core/**",
+      "!node_modules/omniroute/dist/node_modules/@img/**",
+      "!node_modules/omniroute/dist/node_modules/@ngrok/**"
     ],
     "extraResources": [
       {
