@@ -98,6 +98,9 @@ class Gateway {
       DATA_DIR: gwDataDir, // OmniRoute reads DATA_DIR for its storage + .env
       // Let the free "auto" pool fall back to the full pool if a sub-combo is empty.
       OMNIROUTE_AUTO_FREE_FALLBACK_TO_FULL_POOL: "true",
+      // Skip outbound startup syncs — faster, quieter, works offline.
+      ARENA_ELO_SYNC_ENABLED: "false",
+      PRICING_SYNC_ENABLED: "false",
     };
     // Ensure no stray Electron-as-node flag leaks into the child.
     delete env.ELECTRON_RUN_AS_NODE;
