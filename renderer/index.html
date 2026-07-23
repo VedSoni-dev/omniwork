@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self';"
+    />
+    <title>OmniWork</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <!-- Sidebar -->
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">◇</div>
+          <div class="brand-name">OmniWork</div>
+        </div>
+
+        <button id="new-session" class="btn-new">
+          <span class="plus">+</span> New session
+        </button>
+
+        <div class="sidebar-section">
+          <div class="section-label">Workspace</div>
+          <button id="pick-workspace" class="workspace-btn" title="Change workspace">
+            <span class="folder-icon">📁</span>
+            <span id="workspace-path" class="workspace-path">No folder open</span>
+          </button>
+        </div>
+
+        <div class="sidebar-spacer"></div>
+
+        <div class="gateway-card" id="gateway-card">
+          <div class="gateway-row">
+            <span id="gateway-dot" class="dot dot-boot"></span>
+            <span id="gateway-label" class="gateway-label">Starting engine…</span>
+          </div>
+          <div class="gateway-sub" id="gateway-sub">OmniRoute · free models</div>
+          <button id="open-dashboard" class="link-btn">Gateway dashboard ↗</button>
+        </div>
+      </aside>
+
+      <!-- Main -->
+      <main class="main">
+        <header class="topbar">
+          <div class="model-picker">
+            <label for="model-select">Model</label>
+            <select id="model-select">
+              <option value="auto">auto (free · smart routing)</option>
+              <option value="claude-3-5-sonnet">claude-3-5-sonnet</option>
+              <option value="gpt-4o">gpt-4o</option>
+              <option value="deepseek-chat">deepseek-chat</option>
+              <option value="gemini-2.0-flash">gemini-2.0-flash</option>
+            </select>
+          </div>
+          <div class="topbar-right">
+            <span class="badge">MIT · Open source</span>
+          </div>
+        </header>
+
+        <section id="transcript" class="transcript">
+          <div class="welcome" id="welcome">
+            <div class="welcome-mark">◇</div>
+            <h1>Welcome to OmniWork</h1>
+            <p>
+              A Claude&nbsp;Code–style coding agent with
+              <strong>OmniRoute</strong> baked in — 278+ providers, free models,
+              zero setup. Open a folder and describe what you want built.
+            </p>
+            <div class="suggestions">
+              <button class="chip" data-prompt="List the files in this project and summarize what it does.">Summarize this project</button>
+              <button class="chip" data-prompt="Create a simple Node.js HTTP server in server.js that returns Hello World on port 3000.">Scaffold a web server</button>
+              <button class="chip" data-prompt="Find and fix any bugs you can spot in this codebase.">Hunt for bugs</button>
+            </div>
+          </div>
+        </section>
+
+        <footer class="composer">
+          <div class="composer-inner">
+            <textarea
+              id="input"
+              rows="1"
+              placeholder="Describe a task, or ask a question…"
+            ></textarea>
+            <button id="send" class="send-btn" title="Send">↑</button>
+            <button id="stop" class="stop-btn hidden" title="Stop">■</button>
+          </div>
+          <div class="composer-hint">
+            <span id="status-hint">Ready</span>
+            <span class="dim">Enter to send · Shift+Enter for newline</span>
+          </div>
+        </footer>
+      </main>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
