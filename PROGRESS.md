@@ -1,34 +1,29 @@
 # OmniWork — build progress
 
-Autonomous build log (loop mode). Newest status at top.
+## Status: ✅ SHIPPED — v0.1.0
 
-## Status: PUBLISHED · validating CI, then tag release
+- **Repo:** https://github.com/VedSoni-dev/omniwork (public, MIT)
+- **Release:** https://github.com/VedSoni-dev/omniwork/releases/tag/v0.1.0
+  - `OmniWork.Setup.0.1.0.exe` (318 MB) — Windows installer, downloadable now
 
-Repo live: **https://github.com/VedSoni-dev/omniwork** (public, MIT)
+### Delivered
+- [x] Electron desktop app, Claude-Code / Cowork-style UI
+- [x] **OmniRoute bundled + auto-started** as an in-app sidecar (the core idea) — zero setup
+- [x] Bundled real Node runtime to run the gateway (Electron's Node can't boot Next standalone)
+- [x] Real coding agent: read/write/edit files + run commands, workspace-confined
+- [x] Zero-config free models (OmniRoute `auto`, no API key)
+- [x] **Validated end-to-end**: smoke test + packaged `OmniWork.exe` boot + live completion
+- [x] App icon, README, CONTRIBUTING, LICENSE, tests, CI + release workflows
+- [x] Windows installer built + attached to GitHub Release
 
-### Proven working ✅
-- **Packaged app runs**: `OmniWork.exe` boots the gateway from the bundled Node,
-  native SQLite works, `/v1/models` → 200, real completion "PACKAGED OK" from a free
-  model — zero keys, zero config.
-- **End-to-end smoke test passes** (gateway → agent tool loop → file written).
-- Source published to GitHub; 87MB node binary purged from history; clean tree.
+### Known limitations / needs the user
+- **GitHub Actions is blocked by a billing lock on the account** → multi-OS auto-build
+  can't run. Windows installer built locally + uploaded manually. Resolve billing and
+  the release workflow will produce macOS + Linux installers on the next tag.
+- macOS / Linux: build from source for now (`npm run dist:mac` / `dist:linux`).
+- Installer is ~318 MB (OmniRoute bundles a full Next.js server). Future: prune
+  omniroute `.build`/`node_modules` to shrink.
 
-### Done
-- [x] Full Electron app: sidecar + agent + tools + Claude-Code/Cowork UI
-- [x] OmniRoute bundled + spawned on a bundled real Node binary
-- [x] App icon, README, CONTRIBUTING, LICENSE (MIT), tests
-- [x] CI + Release GitHub workflows
-- [x] Public repo created + pushed (history cleaned)
-
-### In progress
-- [ ] CI boot-check green on clean Ubuntu runner (validates fresh clone)
-- [ ] Local NSIS installer (flaky on this box — file locks; not blocking, release CI builds it)
-
-### Next
-- [ ] Tag `v0.1.0` → release workflow builds win/mac/linux installers → GitHub Release
-- [ ] Confirm release artifacts attach; update README download links
-
-### Notes
-- Local Windows installer build is finicky (ffmpeg.dll lock after running the app;
-  long NSIS compression). The GitHub Actions release job is the real distribution path —
-  each OS builds natively and attaches installers to the Release.
+### Possible next iterations
+- Streaming token output in the UI, session history, diff previews before writes, MCP tools.
+- Size optimization pass.

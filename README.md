@@ -36,7 +36,7 @@ Grab the installer for your OS from the [**Releases**](../../releases) page:
 
 | OS | File | Status |
 |----|------|--------|
-| Windows | `OmniWork-Setup-x.y.z.exe` | ✅ available |
+| Windows | `OmniWork.Setup.0.1.0.exe` | ✅ [download](https://github.com/VedSoni-dev/omniwork/releases/latest) |
 | macOS | `OmniWork-x.y.z.dmg` (Intel + Apple Silicon) | build from source · CI-built on request |
 | Linux | `OmniWork-x.y.z.AppImage` / `.deb` | build from source · CI-built on request |
 
