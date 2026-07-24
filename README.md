@@ -54,7 +54,7 @@ Grab the installer from the [**latest release**](https://github.com/VedSoni-dev/
 | OS | File | Notes |
 |----|------|-------|
 | Windows (full) | `OmniWork.Setup.x.y.z.exe` | ~317 MB, engine bundled — usable instantly |
-| Windows (lite) | `OmniWork-Lite-Setup-x.y.z.exe` | ~192 MB, downloads the engine on first run (~1–3 min once) |
+| Windows (lite) | `OmniWork-Lite-Setup-x.y.z.exe` | ~137 MB, downloads the engine on first run (~1–3 min once) |
 | macOS | `.dmg` (Intel + Apple Silicon) | build from source |
 | Linux | `.AppImage` | build from source |
 
