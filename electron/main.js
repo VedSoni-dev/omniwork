@@ -13,7 +13,7 @@ let gateway = null;
 let sessions = null;
 let mcp = null;
 
-const state = { model: "auto", lastWorkspace: null, gateway: { state: "boot" } };
+const state = { model: "auto", approval: "auto", lastWorkspace: null, gateway: { state: "boot" } };
 
 function prefsPath() { return path.join(app.getPath("userData"), "prefs.json"); }
 function loadPrefs() {
@@ -21,7 +21,7 @@ function loadPrefs() {
   return {};
 }
 function savePrefs() {
-  try { fs.writeFileSync(prefsPath(), JSON.stringify({ workspace: state.lastWorkspace, model: state.model }, null, 2)); } catch {}
+  try { fs.writeFileSync(prefsPath(), JSON.stringify({ workspace: state.lastWorkspace, model: state.model, approval: state.approval }, null, 2)); } catch {}
 }
 function send(channel, payload) { if (win && !win.isDestroyed()) win.webContents.send(channel, payload); }
 function activeWorkspace() {
@@ -49,6 +49,7 @@ async function boot() {
   if (envWs && fs.existsSync(envWs)) state.lastWorkspace = envWs;
   else if (prefs.workspace && fs.existsSync(prefs.workspace)) state.lastWorkspace = prefs.workspace;
   state.model = prefs.model || "auto";
+  state.approval = prefs.approval === "ask" ? "ask" : "auto";
 
   createWindow();
 
@@ -67,6 +68,7 @@ async function boot() {
       },
     });
     sessions.setModel(state.model);
+    sessions.setApprovalMode(state.approval);
     sessions.create({ workspace: state.lastWorkspace, title: "Main" });
     // Bring up MCP servers in the background; refresh connection list when ready.
     mcp.startAll().then(() => send("mcp:list", { servers: mcp.list() })).catch(() => {});
@@ -76,6 +78,7 @@ async function boot() {
 // ── IPC: app ────────────────────────────────────────────────────────
 ipcMain.handle("app:state", () => ({
   model: state.model,
+  approval: state.approval,
   gateway: state.gateway,
   sessions: sessions ? sessions.list() : [],
   activeId: sessions ? sessions.activeId : null,
@@ -99,6 +102,14 @@ ipcMain.handle("session:send", async (_e, { id, text }) => {
 });
 ipcMain.handle("session:stop", (_e, id) => { if (sessions) sessions.stop(id); return true; });
 ipcMain.handle("session:remove", (_e, id) => { if (sessions) sessions.remove(id); return true; });
+ipcMain.handle("session:undo", (_e, id) => { if (sessions) sessions.undo(id); return true; });
+ipcMain.handle("agent:approve", (_e, { callId, ok }) => { if (sessions) sessions.resolveApproval(callId, ok); return true; });
+ipcMain.handle("app:setApproval", (_e, mode) => {
+  if (!sessions) return "auto";
+  const m = sessions.setApprovalMode(mode);
+  state.approval = m; savePrefs();
+  return m;
+});
 ipcMain.handle("session:pickWorkspace", async (_e, id) => {
   const r = await dialog.showOpenDialog(win, { properties: ["openDirectory", "createDirectory"], title: "Choose a folder for this session" });
   if (!r.canceled && r.filePaths[0]) {

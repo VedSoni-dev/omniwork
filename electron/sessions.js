@@ -17,6 +17,28 @@ class SessionManager {
     this.sessions = new Map();
     this.activeId = null;
     this.model = "auto";
+    this.approvalMode = "auto";        // "auto" | "ask"
+    this.pendingApprovals = new Map();  // callId -> resolve
+  }
+
+  resolveApproval(callId, ok) {
+    const r = this.pendingApprovals.get(callId);
+    if (r) { this.pendingApprovals.delete(callId); r(!!ok); }
+  }
+
+  setApprovalMode(mode) {
+    this.approvalMode = mode === "ask" ? "ask" : "auto";
+    for (const s of this.sessions.values()) if (s.agent) s.agent.approvalMode = this.approvalMode;
+    return this.approvalMode;
+  }
+
+  undo(id) {
+    const s = this.sessions.get(id);
+    if (!s || !s.agent) return;
+    const msg = s.agent.undo();
+    s.transcript.push({ type: "system", content: msg });
+    this.emit(id, "system", { content: msg });
+    this.#pushList();
   }
 
   create({ workspace, title } = {}) {
@@ -37,6 +59,12 @@ class SessionManager {
       model: this.model,
       workspace: ws,
       mcp: this.mcp,
+      approvalMode: this.approvalMode,
+      approver: (callId, name, args) =>
+        new Promise((resolve) => {
+          this.pendingApprovals.set(callId, resolve);
+          this.emit(id, "approval_request", { callId, name, args });
+        }),
       emit: (type, payload) => this.#onAgentEvent(id, type, payload),
     });
     this.sessions.set(id, sess);
@@ -50,9 +78,11 @@ class SessionManager {
     if (!sess) return;
     if (type === "error") sess.status = "error";
     else if (type === "done" || type === "aborted") sess.status = "done";
-    // record for replay (skip pure stream noise to bound memory)
-    sess.transcript.push({ type, ...payload });
-    if (sess.transcript.length > 4000) sess.transcript.splice(0, 1000);
+    // Record for replay, but skip high-frequency transient events.
+    if (type !== "assistant_delta" && type !== "tool_stream" && type !== "thinking" && type !== "approval_request") {
+      sess.transcript.push({ type, ...payload });
+      if (sess.transcript.length > 4000) sess.transcript.splice(0, 1000);
+    }
     this.emit(id, type, payload);
     if (type === "error" || type === "done" || type === "aborted") this.#pushList();
   }

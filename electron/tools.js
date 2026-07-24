@@ -189,6 +189,7 @@ async function executeTool(name, args, ctx) {
       }
       case "write_file": {
         const file = confine(workspace, args.path);
+        if (ctx.recordUndo) ctx.recordUndo(args.path, fs.existsSync(file) ? fs.readFileSync(file, "utf8") : null);
         fs.mkdirSync(path.dirname(file), { recursive: true });
         fs.writeFileSync(file, args.content ?? "", "utf8");
         return `Wrote ${Buffer.byteLength(args.content ?? "")} bytes to ${args.path}`;
@@ -199,6 +200,7 @@ async function executeTool(name, args, ctx) {
         if (!cur.includes(args.old_string)) {
           return `old_string not found in ${args.path}. Read the file first to copy exact text.`;
         }
+        if (ctx.recordUndo) ctx.recordUndo(args.path, cur);
         const next = cur.replace(args.old_string, args.new_string);
         fs.writeFileSync(file, next, "utf8");
         return `Edited ${args.path}`;

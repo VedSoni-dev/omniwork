@@ -63,7 +63,7 @@ function subLabel(name, args) {
 }
 
 class Agent {
-  constructor({ baseUrl, apiKey, model, workspace, emit, mcp, canSpawn = true, depth = 0 }) {
+  constructor({ baseUrl, apiKey, model, workspace, emit, mcp, canSpawn = true, depth = 0, approvalMode = "auto", approver = null }) {
     this.baseUrl = baseUrl.replace(/\/$/, "");
     this.apiKey = apiKey;
     this.model = model || "auto";
@@ -72,10 +72,33 @@ class Agent {
     this.mcp = mcp || null;
     this.canSpawn = canSpawn;
     this.depth = depth;
+    this.approvalMode = approvalMode;   // "auto" | "ask"
+    this.approver = approver;           // async (name, args) => boolean
     this.lastText = "";
+    this.turnUndo = new Map();           // path -> original content (or null if newly created)
+    this.undoAvailable = false;
     const sys = BASE_PROMPT + (canSpawn ? ORCHESTRATOR_EXTRA : "");
     this.messages = [{ role: "system", content: sys }];
     this.aborted = false;
+  }
+
+  // Restore files changed during the last turn.
+  undo() {
+    const fs = require("node:fs");
+    const path = require("node:path");
+    if (!this.turnUndo.size) return "Nothing to undo.";
+    let n = 0;
+    for (const [rel, original] of this.turnUndo.entries()) {
+      const abs = path.resolve(this.workspace, rel);
+      try {
+        if (original === null) { if (fs.existsSync(abs)) fs.unlinkSync(abs); }
+        else fs.writeFileSync(abs, original, "utf8");
+        n++;
+      } catch {}
+    }
+    this.turnUndo = new Map();
+    this.undoAvailable = false;
+    return `Undid ${n} file change${n === 1 ? "" : "s"} from the last turn.`;
   }
 
   toolSchema() {
@@ -88,6 +111,18 @@ class Agent {
   setWorkspace(dir) { this.workspace = dir; }
 
   async callModel() {
+    // Try streaming for a live feel. Free `auto` routing hits many providers and
+    // some return empty streams — if that happens, fall back to a reliable
+    // non-streaming request.
+    let streamed = null;
+    try { streamed = await this.#requestModel(true); } catch { streamed = null; }
+    if (streamed && ((streamed.content && streamed.content.trim()) || (streamed.tool_calls && streamed.tool_calls.length))) {
+      return streamed;
+    }
+    return await this.#requestModel(false);
+  }
+
+  async #requestModel(stream) {
     const res = await fetch(`${this.baseUrl}/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}` },
@@ -97,17 +132,62 @@ class Agent {
         tools: this.toolSchema(),
         tool_choice: "auto",
         temperature: 0.3,
-        stream: false,
+        stream,
       }),
     });
     if (!res.ok) {
       const body = await res.text().catch(() => "");
       throw new Error(`Gateway ${res.status}: ${body.slice(0, 500)}`);
     }
+    const ctype = res.headers.get("content-type") || "";
+    if (stream && ctype.includes("event-stream") && res.body) {
+      return await this.#readStream(res.body);
+    }
     const data = await res.json();
     const choice = data.choices && data.choices[0];
     if (!choice) throw new Error("No choices returned from gateway");
+    if (choice.message && choice.message.content) this.emit("assistant_delta", { chunk: choice.message.content });
     return choice.message;
+  }
+
+  // Parse an OpenAI-style SSE stream, emitting text deltas live and assembling
+  // the final message (content + tool_calls).
+  async #readStream(body) {
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    let content = "";
+    const toolCalls = [];
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line.startsWith("data:")) continue;
+        const data = line.slice(5).trim();
+        if (data === "[DONE]") { try { reader.cancel(); } catch {} break; }
+        let json;
+        try { json = JSON.parse(data); } catch { continue; }
+        const choice = json.choices && json.choices[0];
+        if (!choice) continue;
+        const delta = choice.delta || {};
+        if (delta.content) { content += delta.content; this.emit("assistant_delta", { chunk: delta.content }); }
+        if (delta.tool_calls) {
+          for (const tc of delta.tool_calls) {
+            const i = tc.index || 0;
+            toolCalls[i] = toolCalls[i] || { id: "", type: "function", function: { name: "", arguments: "" } };
+            if (tc.id) toolCalls[i].id = tc.id;
+            if (tc.function && tc.function.name) toolCalls[i].function.name = tc.function.name;
+            if (tc.function && tc.function.arguments) toolCalls[i].function.arguments += tc.function.arguments;
+          }
+        }
+      }
+    }
+    const calls = toolCalls.filter(Boolean);
+    return { role: "assistant", content: content || "", tool_calls: calls.length ? calls : undefined };
   }
 
   // Fan out to parallel subagents and return the combined summaries.
@@ -144,6 +224,8 @@ class Agent {
 
   async send(userText) {
     this.aborted = false;
+    this.turnUndo = new Map();
+    this.undoAvailable = false;
     this.messages.push({ role: "user", content: userText });
 
     for (let step = 0; step < MAX_STEPS; step++) {
@@ -171,6 +253,18 @@ class Agent {
         try { parsedArgs = JSON.parse(call.function.arguments || "{}"); } catch { parsedArgs = {}; }
         this.emit("tool_call", { id: call.id, name, args: parsedArgs });
 
+        // Approval gate (top-level agents only): pause for destructive tools.
+        const needsApproval = ["run_command", "write_file", "edit_file"].includes(name) || (this.mcp && this.mcp.isMcpTool(name));
+        if (this.approvalMode === "ask" && this.approver && needsApproval) {
+          const ok = await this.approver(call.id, name, parsedArgs);
+          if (!ok) {
+            const denied = "❌ Denied by user.";
+            this.emit("tool_result", { id: call.id, name, result: denied });
+            this.messages.push({ role: "tool", tool_call_id: call.id, content: denied });
+            continue;
+          }
+        }
+
         let result;
         if (name === "spawn_subagents" && this.canSpawn) {
           result = await this.runSubagents(parsedArgs.tasks);
@@ -180,6 +274,9 @@ class Agent {
           result = await executeTool(name, parsedArgs, {
             workspace: this.workspace,
             onChunk: (chunk) => this.emit("tool_stream", { id: call.id, chunk }),
+            recordUndo: (rel, original) => {
+              if (!this.turnUndo.has(rel)) { this.turnUndo.set(rel, original); this.undoAvailable = true; }
+            },
           });
         }
 

@@ -19,6 +19,8 @@ let activeId = null;
 let sessionsCache = [];
 let fileIndex = null;
 let thinkingEl = null, thinkTimer = null;
+let streamEl = null, streamText = "";
+let approvalMode = "auto";
 const mentions = new Set();
 
 const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -56,9 +58,42 @@ function welcome() {
   $("w-cwd")?.addEventListener("click", () => api.pickWorkspace(activeId));
 }
 
-function addUser(text) { stopThinking(); const e = document.createElement("div"); e.className = "blk user"; e.innerHTML = `<span class="caret">&gt;</span><span class="utext">${esc(text)}</span>`; scroll.appendChild(e); scrollDown(); }
+function addUser(text) { stopThinking(); endStream(); const e = document.createElement("div"); e.className = "blk user"; e.innerHTML = `<span class="caret">&gt;</span><span class="utext">${esc(text)}</span>`; scroll.appendChild(e); scrollDown(); }
 function addAssistant(text) { stopThinking(); const e = document.createElement("div"); e.className = "blk assistant"; e.innerHTML = md(text); scroll.appendChild(e); scrollDown(); }
-function addError(msg) { stopThinking(); const e = document.createElement("div"); e.className = "errline"; e.textContent = "✗ " + msg; scroll.appendChild(e); scrollDown(); }
+function addError(msg) { stopThinking(); endStream(); const e = document.createElement("div"); e.className = "errline"; e.textContent = "✗ " + msg; scroll.appendChild(e); scrollDown(); }
+function addSystem(text) { const e = document.createElement("div"); e.className = "sysline"; e.textContent = text; scroll.appendChild(e); scrollDown(); }
+
+// live streaming assistant text
+function streamDelta(chunk) {
+  stopThinking();
+  if (!streamEl) { streamEl = document.createElement("div"); streamEl.className = "blk assistant streaming"; streamText = ""; scroll.appendChild(streamEl); }
+  streamText += chunk;
+  streamEl.textContent = streamText;
+  scrollDown();
+}
+function endStream(finalText) {
+  if (!streamEl) { return false; }
+  streamEl.classList.remove("streaming");
+  streamEl.innerHTML = md(finalText != null ? finalText : streamText);
+  streamEl = null; streamText = "";
+  return true;
+}
+
+// approval prompt card
+function addApproval(callId, name, args) {
+  stopThinking(); endStream();
+  const label = { run_command: "run a command", write_file: "write a file", edit_file: "edit a file" }[name] || (name.startsWith("mcp__") ? "call " + name.slice(5).replace("__", " · ") : name);
+  const detail = name === "run_command" ? args.command : (args.path || args.url || JSON.stringify(args).slice(0, 200));
+  const el = document.createElement("div");
+  el.className = "approval";
+  el.innerHTML = `<div class="ap-q">⚠ Allow OmniWork to <b>${esc(label)}</b>?</div><div class="ap-detail mono">${esc(String(detail || ""))}</div><div class="ap-btns"><button class="ap-yes">Approve</button><button class="ap-no">Deny</button><span class="ap-hint dim">y / n</span></div>`;
+  const decide = (ok) => { el.querySelector(".ap-btns").innerHTML = `<span class="${ok ? "green" : "dim"}">${ok ? "✓ approved" : "✕ denied"}</span>`; api.approve(callId, ok); pendingApproval = null; };
+  el.querySelector(".ap-yes").addEventListener("click", () => decide(true));
+  el.querySelector(".ap-no").addEventListener("click", () => decide(false));
+  scroll.appendChild(el); scrollDown();
+  pendingApproval = decide;
+}
+let pendingApproval = null;
 
 function diffHtml(o, n) { let h = ""; (o || "").split("\n").forEach((l) => (h += `<span class="del">- ${esc(l)}</span>\n`)); (n || "").split("\n").forEach((l) => (h += `<span class="add">+ ${esc(l)}</span>\n`)); return h; }
 function toolTitle(name, args) {
@@ -94,14 +129,17 @@ function stopThinking() { if (thinkTimer) { clearInterval(thinkTimer); thinkTime
 function renderEvent(ev, live) {
   switch (ev.type) {
     case "user": addUser(ev.content); break;
-    case "assistant": addAssistant(ev.content); break;
-    case "tool_call": addToolCard(ev.id, ev.name, ev.args); break;
+    case "assistant_delta": if (live) streamDelta(ev.chunk); break;
+    case "assistant": if (!endStream(ev.content)) addAssistant(ev.content); break;
+    case "system": addSystem(ev.content); break;
+    case "approval_request": if (live) addApproval(ev.callId, ev.name, ev.args); break;
+    case "tool_call": endStream(); addToolCard(ev.id, ev.name, ev.args); break;
     case "tool_stream": if (live) streamTool(ev.id, ev.chunk); break;
     case "tool_result": finishTool(ev.id, ev.result); break;
-    case "thinking": if (live) startThinking(); break;
+    case "thinking": if (live && !streamEl) startThinking(); break;
     case "subagent": handleSubagent(ev); break;
     case "error": addError(ev.message); break;
-    case "done": case "aborted": if (live) stopThinking(); break;
+    case "done": case "aborted": if (live) { endStream(); stopThinking(); } break;
   }
 }
 
@@ -151,6 +189,7 @@ async function switchTo(id) {
   activeId = id;
   await api.setActiveSession(id);
   toolEls.clear(); decks.clear(); stopThinking();
+  streamEl = null; streamText = ""; pendingApproval = null;
   scroll.innerHTML = "";
   const t = await api.getTranscript(id);
   if (!t || !t.length) welcome();
@@ -208,17 +247,44 @@ function pick(p) { mentions.add(p); renderChips(); input.value = input.value.rep
 function grow() { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 200) + "px"; }
 input.addEventListener("input", () => { grow(); const m = input.value.match(/@([^\s]*)$/); if (m) showPop(m[1]); else hidePop(); });
 input.addEventListener("keydown", (e) => {
+  if (pendingApproval && !input.value.trim() && (e.key === "y" || e.key === "n")) { e.preventDefault(); pendingApproval(e.key === "y"); return; }
   if (mpop) { if (e.key === "ArrowDown") { e.preventDefault(); moveSel(1); return; } if (e.key === "ArrowUp") { e.preventDefault(); moveSel(-1); return; } if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); pick(mMatches[mSel]); return; } if (e.key === "Escape") { hidePop(); return; } }
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
   if (e.key === "Escape") api.stopSession(activeId);
 });
+$("approval-toggle").addEventListener("click", () => setApproval(approvalMode === "ask" ? "auto" : "ask"));
 async function send() {
   const text = input.value.trim();
   if ((!text && !mentions.size) || !activeId) return;
+  if (text.startsWith("/")) { input.value = ""; grow(); hidePop(); handleSlash(text); return; }
   let full = text; if (mentions.size) full = `${text}\n\nReferenced files: ${[...mentions].map((p) => "@" + p).join(", ")}`;
   const w = $("welcome"); if (w) w.remove();
-  input.value = ""; const m = [...mentions]; mentions.clear(); renderChips(); grow(); hidePop();
+  input.value = ""; mentions.clear(); renderChips(); grow(); hidePop();
   await api.sendMessage(activeId, full);
+}
+
+async function handleSlash(text) {
+  const [cmd, ...rest] = text.slice(1).split(/\s+/);
+  const arg = rest.join(" ").trim();
+  const w = $("welcome"); if (w) w.remove();
+  switch (cmd) {
+    case "help": addSystem("commands:  /clear  /undo  /model <name>  /cwd  /approve [ask|auto]  /help"); break;
+    case "clear": { const s = await api.createSession({}); if (s) { fileIndex = null; await switchTo(s.id); } break; }
+    case "undo": api.undo(activeId); break;
+    case "model": if (arg) { $("model").value = arg; api.setModel(arg); addSystem("model → " + arg); } else addSystem("usage: /model <name>"); break;
+    case "cwd": api.pickWorkspace(activeId); break;
+    case "approve": setApproval(arg === "ask" ? "ask" : "auto"); break;
+    default: addSystem("unknown command: /" + cmd + "  (try /help)");
+  }
+}
+
+function setApproval(mode) {
+  approvalMode = mode === "ask" ? "ask" : "auto";
+  api.setApproval(approvalMode);
+  const btn = $("approval-toggle");
+  btn.textContent = approvalMode === "ask" ? "🛡 ask" : "🛡 auto";
+  btn.classList.toggle("on", approvalMode === "ask");
+  addSystem(approvalMode === "ask" ? "approval: ask before commands & file writes" : "approval: auto (runs without asking)");
 }
 stopBtn.addEventListener("click", () => api.stopSession(activeId));
 document.addEventListener("click", (e) => { const t = e.target.closest(".tip"); if (t) { input.value = t.dataset.p; grow(); input.focus(); } });
@@ -247,6 +313,7 @@ $("m-add").addEventListener("click", async () => {
   const st = await api.getState();
   if (st) {
     if (st.model) $("model").value = st.model;
+    if (st.approval) { approvalMode = st.approval; const b = $("approval-toggle"); b.textContent = approvalMode === "ask" ? "🛡 ask" : "🛡 auto"; b.classList.toggle("on", approvalMode === "ask"); }
     if (st.mcp) renderMcp(st.mcp);
     if (st.sessions && st.sessions.length) { renderSessions(st.sessions, st.activeId); await switchTo(st.activeId || st.sessions[0].id); }
     else welcome();

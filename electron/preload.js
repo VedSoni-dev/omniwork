@@ -11,6 +11,9 @@ contextBridge.exposeInMainWorld("omniwork", {
   stopSession: (id) => ipcRenderer.invoke("session:stop", id),
   removeSession: (id) => ipcRenderer.invoke("session:remove", id),
   pickWorkspace: (id) => ipcRenderer.invoke("session:pickWorkspace", id),
+  undo: (id) => ipcRenderer.invoke("session:undo", id),
+  approve: (callId, ok) => ipcRenderer.invoke("agent:approve", { callId, ok }),
+  setApproval: (mode) => ipcRenderer.invoke("app:setApproval", mode),
 
   // mcp / connections
   listMcp: () => ipcRenderer.invoke("mcp:list"),
