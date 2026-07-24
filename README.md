@@ -1,89 +1,74 @@
 <div align="center">
 
-# ◇ OmniWork
+<img src="assets/icon.png" width="76" alt="OmniWork" />
 
-**An open-source Claude Code / Cowork-style desktop coding agent — with [OmniRoute](https://github.com/diegosouzapw/OmniRoute) baked in.**
+# OmniWork
 
-Download it, open a folder, and start building with AI. No API keys. No config. No accounts.
-The AI router ships *inside* the app, so free models work the second you launch.
+**A free, local, Claude&nbsp;Code–style coding agent — with a whole AI gateway baked in.**
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-d97757.svg)](LICENSE)
-![Platform](https://img.shields.io/badge/platform-win%20%7C%20mac%20%7C%20linux-2c2a27)
+Download it, open a folder, and start building. No API key. No login. No config.
+Free models work the second you launch — and you can run a whole *team* of agents at once.
+
+[![License: MIT](https://img.shields.io/badge/license-MIT-d97757.svg)](LICENSE)
+![Platforms](https://img.shields.io/badge/windows%20·%20macOS%20·%20linux-2c2a27)
+[![Release](https://img.shields.io/github/v/release/VedSoni-dev/omniwork?color=8bb072&label=release)](https://github.com/VedSoni-dev/omniwork/releases/latest)
+![Free](https://img.shields.io/badge/free-no%20API%20key-8bb072)
+
+<br/>
+
+<img src="assets/demo.svg" width="820" alt="OmniWork — parallel agents, Agent Deck, MCP connections" />
 
 </div>
 
 ---
 
-## Why
+## Why OmniWork
 
-Every AI coding tool makes you bring your own keys and wire up a provider. OmniWork doesn't.
-It bundles **OmniRoute** — a local AI gateway that fronts 278+ providers (90+ free) — as an
-in-app sidecar. On first launch OmniWork starts the gateway on `localhost:20128`, provisions a
-local key for itself, and points its agent at it. You get a working coding agent with **zero setup**.
+Every other AI coding tool makes you bring an API key, sign in, or pay per token. OmniWork
+doesn't. It bundles **[OmniRoute](https://github.com/diegosouzapw/OmniRoute)** — a local AI
+gateway fronting 278+ providers (90+ free) — as an in-app sidecar. On launch it starts the
+gateway, points its agent at it, and you're coding with **zero setup**.
 
-- **Zero config** — free models (`auto` routing) work out of the box.
-- **Real agent** — reads, writes, and edits files and runs commands in a workspace you choose, like Claude Code.
-- **Cowork mode** — spawn many agent sessions and run them **in parallel**, each with its own folder and task. A rail on the left shows every agent's status.
-- **MCP connections** — plug in tools (filesystem, fetch, memory, git, Slack, databases…) via any stdio MCP server. Standard `mcpServers` config; add them from the UI.
-- **Plugs into the web** — `web_fetch` reads pages/APIs, `open_url` opens links in your browser.
-- **Token saver for Claude Code / Codex** — OmniWork is *also* an MCP server your premium agent can delegate grunt work to, so it burns **free** tokens instead of yours ([details](#use-omniwork-inside-claude-code--codex-token-saver-)).
-- **Private** — everything runs locally. The gateway never phones home; your code stays on your machine.
-- **Not locked in** — switch to Claude, GPT, Gemini, DeepSeek, or your own keys anytime via the gateway dashboard.
-- **Open source, MIT.** Fork it, ship it, sell it.
+Then it goes further than a single chat agent: run **many agents in parallel**, let one agent
+**fan work out to subagents**, plug in **MCP tools**, and even use OmniWork as a **token-saving
+delegate** *inside* Claude Code or Codex.
 
-> Design + UX inspired by [Claude Code](https://claude.com/claude-code) and the open-source
-> [OpenWork](https://github.com/different-ai/openwork). Routing powered by [OmniRoute](https://github.com/diegosouzapw/OmniRoute).
+## Features
+
+| | |
+|---|---|
+| 🆓 **Free & keyless** | Free models via `auto` routing, out of the box. Never rate-limited (auto-fallback across providers). |
+| 🖥️ **Claude Code UI** | A clean terminal: `⏺`/`⎿` tool calls, `✻` thinking, `>` prompt, `@`-file mentions. |
+| 🤝 **Cowork** | Spawn many agent sessions and run them **in parallel**, each with its own folder + task. |
+| 🃏 **Agent Deck** | One agent **fans work out to parallel subagents** — watch them live as a deck of cards. |
+| 🔌 **MCP connections** | Plug in tools (filesystem, GitHub, Postgres, Slack…) via any stdio MCP server. Add from the UI. |
+| 🪙 **Delegate tool** | OmniWork is *also* an MCP server — let Claude Code / Codex offload grunt work to its free models. |
+| 🌐 **Web-aware** | `web_fetch` reads pages/APIs; `open_url` opens links in your browser. |
+| 🔒 **100% local** | Everything runs on your machine. The gateway never phones home. |
+| 🧩 **MIT, hackable** | Plain CommonJS, no build step for the UI. Fork it, ship it, sell it. |
 
 ## Download
 
-Grab the installer for your OS from the [**Releases**](../../releases) page:
+Grab the installer from the [**latest release**](https://github.com/VedSoni-dev/omniwork/releases/latest):
 
 | OS | File | Status |
 |----|------|--------|
-| Windows | `OmniWork.Setup.0.1.0.exe` | ✅ [download](https://github.com/VedSoni-dev/omniwork/releases/latest) |
-| macOS | `OmniWork-x.y.z.dmg` (Intel + Apple Silicon) | build from source · CI-built on request |
-| Linux | `OmniWork-x.y.z.AppImage` / `.deb` | build from source · CI-built on request |
+| Windows | `OmniWork.Setup.x.y.z.exe` | ✅ available |
+| macOS | `.dmg` (Intel + Apple Silicon) | build from source |
+| Linux | `.AppImage` / `.deb` | build from source |
 
-Then just open it. First launch takes ~30–60s the very first time while the gateway
-runs one-time database migrations; subsequent launches are fast.
+Open it, pick a folder, type a task. First launch takes ~30–60s (one-time DB setup); fast after.
 
-> macOS/Linux installers are produced by the release CI matrix. Until that runs for
-> this repo, build them locally with `npm run dist:mac` / `npm run dist:linux` on the
-> matching OS (see [Build from source](#build-from-source)).
+## Use OmniWork *inside* Claude Code / Codex — token saver 🪙
 
-## How it works
-
-```
-┌─ OmniWork (Electron desktop app) ───────────────────────────┐
-│                                                             │
-│  Renderer (Claude Code / Cowork-style UI)                   │
-│        │  IPC                                                │
-│  Main process                                               │
-│    ├─ Agent loop  ── OpenAI-compatible ──┐                  │
-│    └─ spawns OmniRoute sidecar           │                  │
-│         (localhost:20128, free models)  ◄┘                  │
-└───────────────────────────┬─────────────────────────────────┘
-                            │
-              OmniRoute ──► 278+ providers (free tier by default)
-```
-
-1. On boot, `electron/sidecar.js` spawns the bundled `omniroute` binary using Electron's own
-   Node runtime (`ELECTRON_RUN_AS_NODE`), so no separate Node install is needed.
-2. It health-checks `http://localhost:20128/v1` and reports status in the sidebar.
-3. `electron/agent.js` runs a tool-use loop against that endpoint with the model set to `auto`.
-4. Tools (`electron/tools.js`) are confined to the workspace folder you pick.
-
-## Use OmniWork *inside* Claude Code / Codex (token saver) 🪙
-
-Don't want to fully switch? Keep your premium agent as the orchestrator and let it
-**delegate the token-heavy grunt work to OmniWork's free models.** OmniWork ships an
-MCP server — add it to your agent's `mcpServers` and it gains two tools:
+Don't want to fully switch? Keep your premium agent as the orchestrator and let it **delegate the
+token-heavy grunt work to OmniWork's free models.** OmniWork ships an MCP server exposing two tools:
 
 - `delegate(task, cwd?)` — OmniWork does the subtask autonomously on free models and returns a summary + changes
 - `delegate_parallel(tasks[], cwd?)` — fan a batch out to parallel free-model subagents
 
-Your expensive model spends tokens on the hard reasoning; OmniWork burns **free** tokens
-on the mechanical work, in the same project folder.
+Your expensive model spends tokens on the hard reasoning; OmniWork burns **free** tokens on the
+mechanical work, in the same project folder.
 
 **Claude Code** — add to `.mcp.json` (or `claude mcp add`):
 ```json
@@ -93,70 +78,90 @@ on the mechanical work, in the same project folder.
   }
 }
 ```
-Then just ask Claude Code to *"delegate writing the tests to omniwork"* and it will.
+Then: *"delegate writing the tests to omniwork."* Works with Codex / Cursor / any MCP client — it
+speaks standard MCP over stdio, and reuses the desktop app's gateway if it's already running.
 
-**Codex / Cursor / any MCP client** — same idea: point an `mcpServers` entry at
-`node .../electron/mcp-server.js`. It speaks standard MCP over stdio. If the OmniWork
-desktop app is already running, the server reuses its gateway; otherwise it boots its own.
-
-> Env: `OMNIWORK_MODEL` to pin a model (default `auto`/free), `OMNIWORK_GATEWAY_PORT` to change the port.
-
-## Build from source
+## Quick start (from source)
 
 Requires Node.js 22+ (24 recommended).
 
 ```bash
 git clone https://github.com/VedSoni-dev/omniwork.git
 cd omniwork
-npm install          # pulls Electron + bundles OmniRoute
-npm start            # run the app
+npm install --legacy-peer-deps   # OmniRoute has a benign marked peer conflict
+node scripts/gen-icon.js         # generate the app icon
+npm start                        # launch the app
 ```
 
-Package installers:
+Package installers (build on the matching OS):
 
 ```bash
-npm run dist:win     # Windows NSIS installer
-npm run dist:mac     # macOS dmg
-npm run dist:linux   # AppImage + deb
+npm run dist:win     # or dist:mac / dist:linux  →  output in dist/
 ```
 
-Output lands in `dist/`.
+## How it works
+
+```
+┌─ OmniWork (Electron) ─────────────────────────────────────┐
+│  Terminal UI  ·  Cowork rail  ·  Agent Deck               │
+│      │ IPC                                                │
+│  Main process                                             │
+│    ├─ SessionManager → N parallel agents                  │
+│    │      └─ each agent: tools + MCP + subagents          │
+│    └─ spawns OmniRoute sidecar (bundled Node)             │
+│           localhost:20128  ◄── free models, no key        │
+└───────────────────────────┬───────────────────────────────┘
+                            │
+              OmniRoute ──► 278+ providers (free tier default)
+
+  mcp-server.js  ──►  Claude Code / Codex delegate here
+```
+
+- On boot, `electron/sidecar.js` runs OmniRoute's prebuilt server on a **bundled Node** runtime
+  (Electron's own Node can't boot it), and health-checks `localhost:20128/v1`.
+- `electron/agent.js` runs an OpenAI-compatible tool-use loop; `spawn_subagents` fans out; MCP
+  tools merge in namespaced as `mcp__<server>__<tool>`.
+- `electron/sessions.js` runs many agents in parallel; `electron/mcp.js` is the MCP client;
+  `electron/mcp-server.js` exposes OmniWork *as* an MCP server (the delegate tool).
+- Agent tools are confined to the workspace folder you pick.
 
 ## Configuration
 
-OmniWork works with no configuration. To go beyond the free tier:
+Works with zero config. To go beyond the free tier, click **router dashboard** in the app to add
+provider keys (stored encrypted, locally), or pick a specific model in the status bar.
 
-1. Click **Gateway dashboard ↗** in the sidebar (opens OmniRoute at `localhost:20128`).
-2. Add provider API keys there (Claude, OpenAI, etc.) — stored encrypted, locally.
-3. Pick a specific model in the top bar, or leave it on `auto` for smart free routing.
-
-Environment overrides (optional):
-
-| Var | Default | Purpose |
+| Env | Default | Purpose |
 |-----|---------|---------|
-| `OMNIWORK_GATEWAY_PORT` | `20128` | Port for the bundled gateway |
-| `OMNIWORK_WORKSPACE` | — | Start with a specific workspace folder |
-| `OMNIWORK_DEV` | — | Open devtools + verbose gateway logs |
+| `OMNIWORK_GATEWAY_PORT` | `20128` | Gateway port |
+| `OMNIWORK_WORKSPACE` | — | Open a folder on launch |
+| `OMNIWORK_MODEL` | `auto` | Pin a model (delegate server) |
+| `OMNIWORK_DEV` | — | Devtools + verbose logs |
 
 ## Project layout
 
 ```
 electron/
-  main.js       app lifecycle, windows, IPC
-  sidecar.js    bundled OmniRoute process manager  ← the core idea
-  agent.js      OpenAI-compatible tool-use loop
-  tools.js      file + shell tools (workspace-confined)
-  preload.js    contextIsolation-safe IPC bridge
-renderer/
-  index.html    UI markup
-  styles.css    Claude Code / Cowork-style theme
-  app.js        UI logic
+  main.js        app lifecycle, windows, IPC
+  sidecar.js     bundled OmniRoute process manager  ← the core idea
+  sessions.js    Cowork: parallel agent sessions
+  agent.js       tool-use loop + subagent fan-out (Agent Deck)
+  tools.js       file/shell/web tools (workspace-confined)
+  mcp.js         MCP client (connect external tool servers)
+  mcp-server.js  MCP server (delegate tool for Claude Code / Codex)
+  preload.js     contextIsolation-safe IPC bridge
+renderer/        the terminal UI (index.html, styles.css, app.js)
 ```
 
 ## Contributing
 
-PRs welcome. This is meant to be a clean, hackable base. Good first issues: streaming token
-output, session history, MCP tool support, diff previews before writes.
+PRs welcome — this is meant to be a clean, hackable base. Good first issues: streaming token
+output, approval/permission mode, git checkpoints + undo, session persistence, an MCP one-click gallery.
+
+## Credits
+
+UX inspired by [Claude Code](https://claude.com/claude-code) and the open-source
+[OpenWork](https://github.com/different-ai/openwork). Routing powered by
+[OmniRoute](https://github.com/diegosouzapw/OmniRoute).
 
 ## License
 

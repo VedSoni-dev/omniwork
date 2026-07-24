@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="560" viewBox="0 0 880 560" font-family="ui-monospace, 'SF Mono', 'JetBrains Mono', Consolas, monospace">
+  <defs>
+    <clipPath id="r"><rect width="880" height="560" rx="10"/></clipPath>
+  </defs>
+  <g clip-path="url(#r)">
+    <rect width="880" height="560" fill="#1c1b19"/>
+
+    <!-- ── rail ── -->
+    <rect width="216" height="560" fill="#191816"/>
+    <line x1="216" y1="0" x2="216" y2="560" stroke="#38352f"/>
+    <text x="16" y="30" font-size="14" font-weight="700" fill="#d8d3c8"><tspan fill="#d97757">◇</tspan> OmniWork</text>
+
+    <text x="16" y="60" font-size="10.5" letter-spacing="1" fill="#5f5a50">SESSIONS</text>
+    <text x="198" y="60" font-size="15" fill="#857f73" text-anchor="end">+</text>
+    <!-- session rows -->
+    <rect x="8" y="70" width="200" height="30" rx="6" fill="#2a2824"/>
+    <circle cx="22" cy="85" r="3.5" fill="#d97757"/>
+    <text x="34" y="83" font-size="12.5" fill="#d8d3c8">Main</text><text x="34" y="95" font-size="10" fill="#5f5a50">omniwork</text>
+    <circle cx="22" cy="120" r="3.5" fill="#8bb072"/>
+    <text x="34" y="118" font-size="12.5" fill="#d8d3c8">refactor-api</text><text x="34" y="130" font-size="10" fill="#5f5a50">api</text>
+    <circle cx="22" cy="155" r="3.5" fill="#d97757"/>
+    <text x="34" y="153" font-size="12.5" fill="#d8d3c8">write-tests</text><text x="34" y="165" font-size="10" fill="#5f5a50">web</text>
+
+    <text x="16" y="470" font-size="10.5" letter-spacing="1" fill="#5f5a50">CONNECTIONS</text>
+    <text x="198" y="470" font-size="15" fill="#857f73" text-anchor="end">+</text>
+    <circle cx="22" cy="493" r="3.5" fill="#8bb072"/>
+    <text x="34" y="497" font-size="12" fill="#d8d3c8">filesystem</text><text x="200" y="497" font-size="10.5" fill="#5f5a50" text-anchor="end">11 tools</text>
+    <circle cx="22" cy="516" r="3.5" fill="#8bb072"/>
+    <text x="34" y="520" font-size="12" fill="#d8d3c8">github</text><text x="200" y="520" font-size="10.5" fill="#5f5a50" text-anchor="end">26 tools</text>
+    <line x1="0" y1="536" x2="216" y2="536" stroke="#38352f"/>
+    <text x="16" y="552" font-size="11.5" fill="#857f73">router dashboard ↗</text>
+
+    <!-- ── terminal ── -->
+    <text x="244" y="34" font-size="13" fill="#d8d3c8"><tspan fill="#d97757" font-weight="700">&gt;</tspan> scaffold a REST API with auth, users and posts — split across subagents</text>
+    <text x="244" y="62" font-size="13" fill="#d8d3c8">On it — fanning this out to three subagents in parallel.</text>
+
+    <!-- deck -->
+    <rect x="244" y="80" width="612" height="120" rx="9" fill="#211f1c" stroke="#38352f"/>
+    <text x="258" y="103" font-size="12.5" fill="#d8d3c8"><tspan fill="#d97757">⛁</tspan> Agent Deck <tspan fill="#857f73">· 3 subagents</tspan></text>
+    <line x1="244" y1="114" x2="856" y2="114" stroke="#302e29"/>
+    <!-- cards -->
+    <g>
+      <rect x="258" y="126" width="188" height="60" rx="7" fill="#232220" stroke="#302e29"/>
+      <circle cx="272" cy="142" r="3.5" fill="#8bb072"/><text x="284" y="146" font-size="12" font-weight="700" fill="#d8d3c8">auth</text>
+      <text x="270" y="170" font-size="11" fill="#857f73">✓ done</text>
+    </g>
+    <g>
+      <rect x="456" y="126" width="188" height="60" rx="7" fill="#232220" stroke="#302e29"/>
+      <circle cx="470" cy="142" r="3.5" fill="#d97757"/><text x="482" y="146" font-size="12" font-weight="700" fill="#d8d3c8">users</text>
+      <text x="468" y="170" font-size="11" fill="#857f73">⏺ Write routes/users.js</text>
+    </g>
+    <g>
+      <rect x="654" y="126" width="188" height="60" rx="7" fill="#232220" stroke="#302e29"/>
+      <circle cx="668" cy="142" r="3.5" fill="#d97757"/><text x="680" y="146" font-size="12" font-weight="700" fill="#d8d3c8">posts</text>
+      <text x="666" y="170" font-size="11" fill="#857f73">⏺ Edit models/post.js</text>
+    </g>
+
+    <!-- tool line -->
+    <text x="244" y="228" font-size="13" fill="#d8d3c8"><tspan fill="#8bb072">⏺</tspan> <tspan font-weight="700">Bash</tspan><tspan fill="#857f73">(npm test)</tspan></text>
+    <text x="256" y="248" font-size="12" fill="#857f73">⎿  Tests: 12 passed, 0 failed</text>
+
+    <!-- result -->
+    <text x="244" y="284" font-size="13" fill="#d8d3c8">Done. Scaffolded the API — auth, users and posts routes with JWT</text>
+    <text x="244" y="302" font-size="13" fill="#d8d3c8">middleware. All 12 tests pass.</text>
+
+    <!-- input -->
+    <rect x="244" y="486" width="612" height="42" rx="9" fill="#232220" stroke="#38352f"/>
+    <text x="260" y="512" font-size="13" fill="#d97757" font-weight="700">&gt;</text>
+    <text x="278" y="512" font-size="13" fill="#5f5a50">Try "explain this project" — @ for a file</text>
+    <circle cx="250" cy="548" r="3.5" fill="#8bb072"/>
+    <text x="262" y="552" font-size="11.5" fill="#857f73">ready · auto (free)</text>
+    <text x="856" y="552" font-size="11.5" fill="#5f5a50" text-anchor="end">C:\project · ? shortcuts</text>
+  </g>
+  <rect x="0.5" y="0.5" width="879" height="559" rx="10" fill="none" stroke="#38352f"/>
+</svg>
