@@ -1,0 +1,47 @@
+{
+  "appId": "com.omniwork.lite",
+  "productName": "OmniWork Lite",
+  "asar": true,
+  "npmRebuild": false,
+  "beforePack": "scripts/stage-node.js",
+  "asarUnpack": [
+    "node_modules/better-sqlite3/**",
+    "node_modules/sql.js/**"
+  ],
+  "files": [
+    "electron/**",
+    "renderer/**",
+    "assets/**",
+    "package.json",
+    "node_modules/**/*",
+    "!node_modules/omniroute/**"
+  ],
+  "extraResources": [
+    { "from": "build/runtime", "to": "runtime" }
+  ],
+  "directories": {
+    "output": "dist",
+    "buildResources": "assets"
+  },
+  "win": {
+    "target": [{ "target": "nsis", "arch": ["x64"] }],
+    "artifactName": "OmniWork-Lite-Setup-${version}.${ext}"
+  },
+  "mac": {
+    "target": [{ "target": "dmg", "arch": ["x64", "arm64"] }],
+    "artifactName": "OmniWork-Lite-${version}.${ext}",
+    "category": "public.app-category.developer-tools"
+  },
+  "linux": {
+    "target": ["AppImage"],
+    "artifactName": "OmniWork-Lite-${version}.${ext}",
+    "icon": "assets/icon.png",
+    "category": "Development"
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "differentialPackage": false
+  }
+}

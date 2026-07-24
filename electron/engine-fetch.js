@@ -52,8 +52,39 @@ async function downloadEngine(dataDir, onProgress) {
   );
 
   if (!engineReady(dir)) throw new Error("engine extracted but dist/server.js missing");
+
+  // The published tarball ships better-sqlite3 WITHOUT a native binary (npm builds
+  // it on install). Copy the app's bundled, platform-correct build into the engine.
+  try { copyNativeSqlite(dir); } catch (e) { onProgress && onProgress({ phase: "warn", detail: "sqlite copy: " + e.message }); }
+
   onProgress && onProgress({ phase: "ready", detail: "Engine ready" });
   return dir;
+}
+
+// Locate the app's bundled better-sqlite3 (complete, with build/*.node), mapping
+// out of the asar archive if packaged.
+function bundledBetterSqliteDir() {
+  let dir = null;
+  try { dir = path.dirname(require.resolve("better-sqlite3/package.json")); } catch {}
+  if (!dir) {
+    const p = path.join(__dirname, "..", "node_modules", "better-sqlite3");
+    if (fs.existsSync(p)) dir = p;
+  }
+  if (dir && dir.includes("app.asar" + path.sep)) {
+    const unpacked = dir.replace("app.asar" + path.sep, "app.asar.unpacked" + path.sep);
+    if (fs.existsSync(unpacked)) dir = unpacked;
+  }
+  return dir;
+}
+
+function copyNativeSqlite(engineRoot) {
+  const src = bundledBetterSqliteDir();
+  const dest = path.join(engineRoot, "dist", "node_modules", "better-sqlite3");
+  if (!src || !fs.existsSync(dest)) return;
+  for (const sub of ["build", "prebuilds"]) {
+    const from = path.join(src, sub);
+    if (fs.existsSync(from)) fs.cpSync(from, path.join(dest, sub), { recursive: true, force: true });
+  }
 }
 
 module.exports = { engineDir, engineReady, downloadEngine };

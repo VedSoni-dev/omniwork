@@ -27,20 +27,22 @@ const PORT = Number(process.env.OMNIWORK_GATEWAY_PORT || 20128);
 const HOST = "127.0.0.1";
 const BASE_URL = `http://${HOST}:${PORT}/v1`;
 
-// Locate the omniroute package dir, accounting for electron-builder asar unpack.
-function resolveOmnirouteDir() {
-  let pkgJson;
-  try {
-    pkgJson = require.resolve("omniroute/package.json");
-  } catch {
-    pkgJson = path.join(__dirname, "..", "node_modules", "omniroute", "package.json");
+// Locate a BUNDLED omniroute package dir (full build). Returns null if the
+// engine isn't packaged with the app (lite build) — the caller then downloads it.
+function resolveBundledOmniroute() {
+  let pkgJson = null;
+  try { pkgJson = require.resolve("omniroute/package.json"); } catch {}
+  if (!pkgJson) {
+    const p = path.join(__dirname, "..", "node_modules", "omniroute", "package.json");
+    if (fs.existsSync(p)) pkgJson = p;
   }
+  if (!pkgJson) return null;
   let dir = path.dirname(pkgJson);
   if (dir.includes("app.asar" + path.sep)) {
     const unpacked = dir.replace("app.asar" + path.sep, "app.asar.unpacked" + path.sep);
     if (fs.existsSync(unpacked)) dir = unpacked;
   }
-  return dir;
+  return fs.existsSync(path.join(dir, "dist", "server.js")) ? dir : null;
 }
 
 // A stable local key we keep for future use (provider dashboard, etc.). The
@@ -79,10 +81,26 @@ class Gateway {
 
   async start() {
     this.status("boot", "Launching OmniRoute…");
-    const omniDir = resolveOmnirouteDir();
+    // Full build: engine is bundled. Lite build: download it to the data dir once.
+    let omniDir = resolveBundledOmniroute();
+    if (!omniDir) {
+      const { engineDir, engineReady, downloadEngine } = require("./engine-fetch");
+      const ed = engineDir(this.dataDir);
+      if (engineReady(ed)) {
+        omniDir = ed;
+      } else {
+        this.status("boot", "Downloading engine (first run, ~1 min)…");
+        try {
+          omniDir = await downloadEngine(this.dataDir, (s) => this.status("boot", s.detail));
+        } catch (e) {
+          this.status("error", "Engine download failed: " + e.message);
+          throw e;
+        }
+      }
+    }
     const serverEntry = path.join(omniDir, "dist", "server.js");
     if (!fs.existsSync(serverEntry)) {
-      this.status("error", "OmniRoute server not found in bundle");
+      this.status("error", "OmniRoute server not found");
       throw new Error("omniroute dist/server.js missing: " + serverEntry);
     }
 
