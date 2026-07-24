@@ -12,6 +12,13 @@ const { Agent } = require("./agent");
 let counter = 0;
 function newId() { return "s" + (++counter) + "_" + Date.now().toString(36); }
 
+// Replace base64 image parts with a light placeholder so persisted sessions stay small.
+function stripImages(m) {
+  if (!m || !Array.isArray(m.content)) return m;
+  const content = m.content.map((c) => (c && c.type === "image_url" ? { type: "text", text: "[image]" } : c));
+  return { ...m, content };
+}
+
 class SessionManager {
   constructor({ gateway, mcp, emit, persistPath }) {
     this.gateway = gateway;
@@ -38,7 +45,7 @@ class SessionManager {
             id: s.id, title: s.title, workspace: s.workspace,
             status: s.status === "running" ? "done" : s.status,
             transcript: s.transcript.slice(-1500),
-            messages: s.agent ? s.agent.messages.slice(-200) : [],
+            messages: s.agent ? s.agent.messages.slice(-200).map(stripImages) : [],
           })),
         };
         fs.writeFileSync(this.persistPath, JSON.stringify(data));
@@ -143,15 +150,16 @@ class SessionManager {
     if (type === "error" || type === "done" || type === "aborted") { this.#pushList(); this.save(); }
   }
 
-  async send(id, text) {
+  async send(id, text, images) {
     const sess = this.sessions.get(id);
     if (!sess) return;
     sess.status = "running";
     this.#pushList();
-    sess.transcript.push({ type: "user", content: text });
-    this.emit(id, "user", { content: text });
+    const label = text + (images && images.length ? `  📎 ${images.length} image${images.length > 1 ? "s" : ""}` : "");
+    sess.transcript.push({ type: "user", content: label });
+    this.emit(id, "user", { content: label });
     try {
-      await sess.agent.send(text);
+      await sess.agent.send(text, images);
     } catch (e) {
       sess.status = "error";
       this.emit(id, "error", { message: e.message });

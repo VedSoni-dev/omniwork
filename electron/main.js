@@ -106,9 +106,9 @@ ipcMain.handle("session:create", (_e, opts) => {
 ipcMain.handle("session:list", () => (sessions ? { sessions: sessions.list(), activeId: sessions.activeId } : { sessions: [], activeId: null }));
 ipcMain.handle("session:setActive", (_e, id) => { if (sessions) sessions.setActive(id); return true; });
 ipcMain.handle("session:transcript", (_e, id) => (sessions ? sessions.transcript(id) : []));
-ipcMain.handle("session:send", async (_e, { id, text }) => {
+ipcMain.handle("session:send", async (_e, { id, text, images }) => {
   if (!sessions) { send("session:event", { sessionId: id, type: "error", message: "Engine still starting." }); return false; }
-  await sessions.send(id, text);
+  await sessions.send(id, text, images);
   return true;
 });
 ipcMain.handle("session:stop", (_e, id) => { if (sessions) sessions.stop(id); return true; });

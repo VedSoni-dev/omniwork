@@ -25,6 +25,7 @@
         </div>
 
         <div class="rail-foot">
+          <button id="recipes-btn" class="rail-link">⚡ recipes</button>
           <button id="dashboard" class="rail-link">router dashboard ↗</button>
         </div>
       </aside>
@@ -84,6 +85,18 @@
         <div class="modal-actions">
           <button id="m-cancel" class="btn-ghost">Cancel</button>
           <button id="m-add" class="btn-accent">Add &amp; connect</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Recipes modal -->
+    <div id="recipes-modal" class="modal hidden">
+      <div class="modal-box">
+        <div class="modal-title">⚡ Recipes</div>
+        <div class="modal-sub dim">One-click agent tasks. Runs in a new session — many fan out to parallel subagents.</div>
+        <div id="recipes-grid" class="gallery"></div>
+        <div class="modal-actions">
+          <button id="rec-cancel" class="btn-ghost">Close</button>
         </div>
       </div>
     </div>

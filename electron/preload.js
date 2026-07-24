@@ -7,7 +7,7 @@ contextBridge.exposeInMainWorld("omniwork", {
   listSessions: () => ipcRenderer.invoke("session:list"),
   setActiveSession: (id) => ipcRenderer.invoke("session:setActive", id),
   getTranscript: (id) => ipcRenderer.invoke("session:transcript", id),
-  sendMessage: (id, text) => ipcRenderer.invoke("session:send", { id, text }),
+  sendMessage: (id, text, images) => ipcRenderer.invoke("session:send", { id, text, images }),
   stopSession: (id) => ipcRenderer.invoke("session:stop", id),
   removeSession: (id) => ipcRenderer.invoke("session:remove", id),
   pickWorkspace: (id) => ipcRenderer.invoke("session:pickWorkspace", id),

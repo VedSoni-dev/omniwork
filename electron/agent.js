@@ -252,14 +252,19 @@ class Agent {
     return results.map((r) => `## ${r.title}\n${r.result}`).join("\n\n---\n\n");
   }
 
-  async send(userText) {
+  async send(userText, images) {
     this.aborted = false;
     this.turnUndo = new Map();
     this.undoAvailable = false;
     // Refresh the system prompt with current project instructions (AGENTS.md, etc.).
     const mem = this.loadProjectMemory();
     this.messages[0] = { role: "system", content: this.baseSystem + (mem ? `\n\n# Project instructions (from the workspace)\n${mem}` : "") };
-    this.messages.push({ role: "user", content: userText });
+    // Multimodal: attach pasted images (vision) as an OpenAI content array.
+    if (images && images.length) {
+      this.messages.push({ role: "user", content: [{ type: "text", text: userText }, ...images.map((url) => ({ type: "image_url", image_url: { url } }))] });
+    } else {
+      this.messages.push({ role: "user", content: userText });
+    }
 
     for (let step = 0; step < MAX_STEPS; step++) {
       if (this.aborted) { this.emit("aborted", {}); return; }

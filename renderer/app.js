@@ -23,6 +23,7 @@ let streamEl = null, streamText = "";
 let approvalMode = "auto";
 let currentMcp = [];
 const mentions = new Set();
+const pastedImages = []; // data URLs
 
 const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const scrollDown = () => (scroll.scrollTop = scroll.scrollHeight);
@@ -248,7 +249,25 @@ api.on("mcp:list", (p) => renderMcp(p.servers));
 api.on("gateway:status", (s) => { const d = $("gw-dot"); d.className = "s-dot " + (s.state === "ready" ? "ok" : s.state === "error" ? "err" : "boot"); $("gw-label").textContent = s.state === "ready" ? "ready" : s.state === "error" ? "engine error" : "starting…"; });
 
 // ── @-mentions ─────────────────────────────────────────────────────
-function renderChips() { const box = $("chips"); box.innerHTML = ""; mentions.forEach((p) => { const c = document.createElement("span"); c.className = "chip"; c.innerHTML = `@${esc(p)} <span class="x">✕</span>`; c.querySelector(".x").addEventListener("click", () => { mentions.delete(p); renderChips(); }); box.appendChild(c); }); }
+function renderChips() {
+  const box = $("chips"); box.innerHTML = "";
+  mentions.forEach((p) => { const c = document.createElement("span"); c.className = "chip"; c.innerHTML = `@${esc(p)} <span class="x">✕</span>`; c.querySelector(".x").addEventListener("click", () => { mentions.delete(p); renderChips(); }); box.appendChild(c); });
+  pastedImages.forEach((url, i) => { const c = document.createElement("span"); c.className = "chip imgchip"; c.innerHTML = `<img src="${url}" class="imgthumb"/> image <span class="x">✕</span>`; c.querySelector(".x").addEventListener("click", () => { pastedImages.splice(i, 1); renderChips(); }); box.appendChild(c); });
+}
+// paste an image into the composer
+input.addEventListener("paste", (e) => {
+  const items = (e.clipboardData && e.clipboardData.items) || [];
+  for (const it of items) {
+    if (it.type && it.type.startsWith("image/")) {
+      const file = it.getAsFile();
+      if (!file) continue;
+      const reader = new FileReader();
+      reader.onload = () => { pastedImages.push(reader.result); renderChips(); };
+      reader.readAsDataURL(file);
+      e.preventDefault();
+    }
+  }
+});
 async function buildIndex() { if (fileIndex) return fileIndex; const out = []; async function walk(rel, d) { if (d > 4 || out.length > 2000) return; const res = await api.listDir(rel); if (!res.entries) return; for (const e of res.entries) { if (e.type === "file") out.push(e.path); else await walk(e.path, d + 1); } } await walk(".", 0); return (fileIndex = out); }
 let mpop = null, mSel = 0, mMatches = [];
 async function showPop(q) { const idx = await buildIndex(); mMatches = idx.filter((p) => p.toLowerCase().includes(q.toLowerCase())).slice(0, 20); hidePop(); if (!mMatches.length) return; mSel = 0; mpop = document.createElement("div"); mpop.className = "mpop"; mMatches.forEach((p, i) => { const it = document.createElement("div"); it.className = "mpitem" + (i === 0 ? " sel" : ""); it.innerHTML = `<span>${esc(p.split("/").pop())}</span><span class="mp">${esc(p)}</span>`; it.addEventListener("mousedown", (e) => { e.preventDefault(); pick(p); }); mpop.appendChild(it); }); document.body.appendChild(mpop); const r = $("inputbox").getBoundingClientRect(); mpop.style.left = r.left + "px"; mpop.style.bottom = window.innerHeight - r.top + 6 + "px"; mpop.style.width = Math.min(r.width, 480) + "px"; }
@@ -268,12 +287,13 @@ input.addEventListener("keydown", (e) => {
 $("approval-toggle").addEventListener("click", () => setApproval(approvalMode === "ask" ? "auto" : "ask"));
 async function send() {
   const text = input.value.trim();
-  if ((!text && !mentions.size) || !activeId) return;
+  if ((!text && !mentions.size && !pastedImages.length) || !activeId) return;
   if (text.startsWith("/")) { input.value = ""; grow(); hidePop(); handleSlash(text); return; }
   let full = text; if (mentions.size) full = `${text}\n\nReferenced files: ${[...mentions].map((p) => "@" + p).join(", ")}`;
+  const images = pastedImages.slice();
   const w = $("welcome"); if (w) w.remove();
-  input.value = ""; mentions.clear(); renderChips(); grow(); hidePop();
-  await api.sendMessage(activeId, full);
+  input.value = ""; mentions.clear(); pastedImages.length = 0; renderChips(); grow(); hidePop();
+  await api.sendMessage(activeId, full, images);
 }
 
 async function handleSlash(text) {
@@ -362,6 +382,35 @@ $("add-mcp").addEventListener("click", openModal);
 $("m-cancel").addEventListener("click", closeModal);
 $("modal").addEventListener("click", (e) => { if (e.target.id === "modal") closeModal(); });
 $("m-add").addEventListener("click", addFromForm);
+
+// ── Recipes ────────────────────────────────────────────────────────
+const RECIPES = [
+  { name: "Tour the codebase", icon: "🧭", desc: "Map the architecture and key files", prompt: "Give me a guided tour of this codebase: list the top-level structure, explain the architecture, and point out the entry points and the most important files." },
+  { name: "Write tests", icon: "🧪", desc: "Add tests across modules in parallel", prompt: "Add comprehensive tests for this project. Identify the main modules, then use spawn_subagents to write tests for each module in parallel. Finally run the test suite and report results." },
+  { name: "Find & fix bugs", icon: "🐛", desc: "Hunt bugs, fan out fixes", prompt: "Do a bug hunt across this codebase. Use spawn_subagents to inspect different areas in parallel, collect the issues, then fix the real ones and summarize the changes." },
+  { name: "Refactor pass", icon: "♻️", desc: "Safe cleanups and simplifications", prompt: "Review this codebase for refactoring opportunities (duplication, dead code, unclear names, oversized functions). Apply the safe, high-value improvements and summarize what changed." },
+  { name: "Generate docs", icon: "📚", desc: "README + inline documentation", prompt: "Generate documentation for this project: a clear README with overview, setup, and usage, plus concise inline comments where the code is non-obvious." },
+  { name: "Add a feature", icon: "✨", desc: "Scaffold a new feature end-to-end", prompt: "I want to add a new feature. First explore the codebase to understand the conventions, then propose a short plan, then implement it with tests. Ask me for the feature description first." },
+  { name: "Explain this error", icon: "🚨", desc: "Diagnose from logs/stack traces", prompt: "Help me debug an error. Ask me to paste the error or point you at the failing command, then investigate the root cause in the code and propose a fix." },
+  { name: "Speed it up", icon: "⚡", desc: "Find and fix performance issues", prompt: "Profile this project for performance problems: look for slow paths, N+1 patterns, unnecessary work, and heavy dependencies. Suggest and apply safe optimizations." },
+];
+function renderRecipes() {
+  const g = $("recipes-grid"); g.innerHTML = "";
+  RECIPES.forEach((r) => {
+    const el = document.createElement("div");
+    el.className = "gcard";
+    el.innerHTML = `<div class="gc-top"><span class="gc-ic">${r.icon}</span><span class="gc-name">${esc(r.name)}</span></div><div class="gc-desc">${esc(r.desc)}</div><div class="gc-act">run →</div>`;
+    el.addEventListener("click", async () => {
+      $("recipes-modal").classList.add("hidden");
+      const s = await api.createSession({ title: r.name });
+      if (s) { fileIndex = null; await switchTo(s.id); await api.sendMessage(s.id, r.prompt); }
+    });
+    g.appendChild(el);
+  });
+}
+$("recipes-btn").addEventListener("click", () => { renderRecipes(); $("recipes-modal").classList.remove("hidden"); });
+$("rec-cancel").addEventListener("click", () => $("recipes-modal").classList.add("hidden"));
+$("recipes-modal").addEventListener("click", (e) => { if (e.target.id === "recipes-modal") $("recipes-modal").classList.add("hidden"); });
 
 // ── init ───────────────────────────────────────────────────────────
 (async () => {
