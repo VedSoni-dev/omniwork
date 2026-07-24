@@ -23,6 +23,9 @@ local key for itself, and points its agent at it. You get a working coding agent
 
 - **Zero config** — free models (`auto` routing) work out of the box.
 - **Real agent** — reads, writes, and edits files and runs commands in a workspace you choose, like Claude Code.
+- **Cowork mode** — spawn many agent sessions and run them **in parallel**, each with its own folder and task. A rail on the left shows every agent's status.
+- **MCP connections** — plug in tools (filesystem, fetch, memory, git, Slack, databases…) via any stdio MCP server. Standard `mcpServers` config; add them from the UI.
+- **Plugs into the web** — `web_fetch` reads pages/APIs, `open_url` opens links in your browser.
 - **Private** — everything runs locally. The gateway never phones home; your code stays on your machine.
 - **Not locked in** — switch to Claude, GPT, Gemini, DeepSeek, or your own keys anytime via the gateway dashboard.
 - **Open source, MIT.** Fork it, ship it, sell it.

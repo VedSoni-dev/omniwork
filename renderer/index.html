@@ -3,49 +3,46 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta
-      http-equiv="Content-Security-Policy"
-      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self';"
-    />
+    <meta http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self';" />
     <title>OmniWork</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <div id="term">
-      <div id="scroll" class="scroll">
-        <!-- welcome banner -->
-        <div class="welcome" id="welcome">
-          <div class="wbox">
-            <div class="wline"><span class="accent">✻</span> Welcome to <b>OmniWork</b></div>
-            <div class="wline dim"></div>
-            <div class="wline dim">Claude&nbsp;Code–style agent · free models via OmniRoute, no setup</div>
-            <div class="wline dim">
-              cwd: <span id="cwd" class="cwd">—</span>
-              <button id="change-cwd" class="inline-btn">change</button>
-            </div>
-            <div class="wline dim"><span class="accent">/</span> type <span class="kbd">@</span> to reference a file · <span class="kbd">Enter</span> to send</div>
-          </div>
-          <div class="tips">
-            <button class="tip" data-prompt="Give me a tour of this codebase — list the top-level files and explain the architecture.">explain this codebase</button>
-            <button class="tip" data-prompt="Write a README with an overview and usage.">write a README</button>
-            <button class="tip" data-prompt="Find and fix any bugs you can spot, then summarize the changes.">find &amp; fix bugs</button>
-          </div>
-        </div>
-        <!-- transcript lines injected here -->
-      </div>
+    <div id="app">
+      <!-- ░ Cowork rail ░ -->
+      <aside class="rail">
+        <div class="rail-brand"><span class="accent">◇</span> OmniWork</div>
 
-      <div class="dock">
-        <div class="inputbox" id="inputbox">
-          <span class="prompt-caret">&gt;</span>
-          <textarea id="input" rows="1" placeholder="Try &quot;explain this project&quot; — or type @ to add a file"></textarea>
-          <button id="stop" class="stopbtn hidden" title="Stop (Esc)">esc ✕</button>
+        <div class="rail-sec">
+          <div class="rail-head"><span>SESSIONS</span><button id="new-session" class="rail-add" title="New task">+</button></div>
+          <div id="session-list" class="rail-list"></div>
         </div>
-        <div class="statusline">
-          <div class="status-left">
-            <span class="s-dot" id="gw-dot"></span>
-            <span id="gw-label">starting…</span>
-            <span class="sep">·</span>
-            <span class="model-wrap">
+
+        <div class="rail-sec">
+          <div class="rail-head"><span>CONNECTIONS</span><button id="add-mcp" class="rail-add" title="Add MCP server">+</button></div>
+          <div id="mcp-list" class="rail-list mcp-list"></div>
+        </div>
+
+        <div class="rail-foot">
+          <button id="dashboard" class="rail-link">router dashboard ↗</button>
+        </div>
+      </aside>
+
+      <!-- ░ terminal ░ -->
+      <main id="term">
+        <div id="scroll" class="scroll"></div>
+        <div class="dock">
+          <div id="chips" class="chips"></div>
+          <div class="inputbox" id="inputbox">
+            <span class="prompt-caret">&gt;</span>
+            <textarea id="input" rows="1" placeholder="Try &quot;explain this project&quot; — @ for a file"></textarea>
+            <button id="stop" class="stopbtn hidden" title="Stop (Esc)">esc ✕</button>
+          </div>
+          <div class="statusline">
+            <div class="status-left">
+              <span class="s-dot" id="gw-dot"></span><span id="gw-label">starting…</span>
+              <span class="sep">·</span>
               <select id="model" class="model-select">
                 <option value="auto">auto (free)</option>
                 <option value="claude-3-5-sonnet">claude-3.5-sonnet</option>
@@ -53,18 +50,41 @@
                 <option value="deepseek-chat">deepseek-chat</option>
                 <option value="gemini-2.0-flash">gemini-2.0-flash</option>
               </select>
-            </span>
+            </div>
+            <div class="status-right">
+              <span id="cwd-mini" class="cwd-mini"></span>
+              <button id="change-cwd" class="inline-btn">cwd</button>
+              <span class="dim">? shortcuts</span>
+            </div>
           </div>
-          <div class="status-right">
-            <span id="cwd-mini" class="cwd-mini"></span>
-            <span class="sep">·</span>
-            <button id="new-session" class="inline-btn">new</button>
-            <button id="dashboard" class="inline-btn">router ↗</button>
-            <span class="dim">? shortcuts</span>
-          </div>
+        </div>
+      </main>
+    </div>
+
+    <!-- Add-connection modal -->
+    <div id="modal" class="modal hidden">
+      <div class="modal-box">
+        <div class="modal-title">Add MCP connection</div>
+        <div class="modal-sub dim">Plug in tools — filesystem, git, web, Slack, databases… (stdio MCP server)</div>
+        <label>Name</label>
+        <input id="m-name" class="m-input" placeholder="filesystem" />
+        <label>Command</label>
+        <input id="m-cmd" class="m-input" placeholder="npx" />
+        <label>Arguments (space-separated)</label>
+        <input id="m-args" class="m-input" placeholder="-y @modelcontextprotocol/server-filesystem ." />
+        <div class="modal-presets">
+          <span class="dim">presets:</span>
+          <button class="preset" data-name="filesystem" data-cmd="npx" data-args="-y @modelcontextprotocol/server-filesystem .">filesystem</button>
+          <button class="preset" data-name="fetch" data-cmd="npx" data-args="-y @modelcontextprotocol/server-fetch">fetch</button>
+          <button class="preset" data-name="memory" data-cmd="npx" data-args="-y @modelcontextprotocol/server-memory">memory</button>
+        </div>
+        <div class="modal-actions">
+          <button id="m-cancel" class="btn-ghost">Cancel</button>
+          <button id="m-add" class="btn-accent">Add &amp; connect</button>
         </div>
       </div>
     </div>
+
     <script src="app.js"></script>
   </body>
 </html>

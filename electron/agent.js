@@ -18,14 +18,20 @@ Guidelines:
 const MAX_STEPS = 40;
 
 class Agent {
-  constructor({ baseUrl, apiKey, model, workspace, emit }) {
+  constructor({ baseUrl, apiKey, model, workspace, emit, mcp }) {
     this.baseUrl = baseUrl.replace(/\/$/, "");
     this.apiKey = apiKey;
     this.model = model || "auto";
     this.workspace = workspace;
     this.emit = emit; // (event, payload) => void
+    this.mcp = mcp || null; // optional MCPManager for external tools
     this.messages = [{ role: "system", content: SYSTEM_PROMPT }];
     this.aborted = false;
+  }
+
+  toolSchema() {
+    const extra = this.mcp ? this.mcp.toolSchema() : [];
+    return [...TOOL_SCHEMA, ...extra];
   }
 
   abort() {
@@ -46,7 +52,7 @@ class Agent {
       body: JSON.stringify({
         model: this.model,
         messages: this.messages,
-        tools: TOOL_SCHEMA,
+        tools: this.toolSchema(),
         tool_choice: "auto",
         temperature: 0.3,
         stream: false, // gateway defaults to SSE; force a single JSON body
@@ -114,10 +120,15 @@ class Agent {
         }
         this.emit("tool_call", { id: call.id, name, args: parsedArgs });
 
-        const result = await executeTool(name, parsedArgs, {
-          workspace: this.workspace,
-          onChunk: (chunk) => this.emit("tool_stream", { id: call.id, chunk }),
-        });
+        let result;
+        if (this.mcp && this.mcp.isMcpTool(name)) {
+          result = await this.mcp.callTool(name, parsedArgs);
+        } else {
+          result = await executeTool(name, parsedArgs, {
+            workspace: this.workspace,
+            onChunk: (chunk) => this.emit("tool_stream", { id: call.id, chunk }),
+          });
+        }
 
         this.emit("tool_result", { id: call.id, name, result });
         this.messages.push({

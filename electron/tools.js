@@ -87,6 +87,30 @@ const TOOL_SCHEMA = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "web_fetch",
+      description: "Fetch a URL over HTTP and return its text content (HTML is stripped to readable text). Use to read docs, APIs, or web pages.",
+      parameters: {
+        type: "object",
+        properties: { url: { type: "string" } },
+        required: ["url"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "open_url",
+      description: "Open a URL in the user's default browser. Use when the user should see a page, a running dev server, a PR, or docs.",
+      parameters: {
+        type: "object",
+        properties: { url: { type: "string" } },
+        required: ["url"],
+      },
+    },
+  },
 ];
 
 function truncate(s) {
@@ -113,6 +137,32 @@ async function runCommand(workspace, command, onChunk) {
       resolve(truncate(out.trim() + `\n\n[exit code ${code}]`));
     });
   });
+}
+
+async function webFetch(url) {
+  let u = String(url || "");
+  if (!/^https?:\/\//i.test(u)) u = "https://" + u;
+  try {
+    const res = await fetch(u, { redirect: "follow", headers: { "User-Agent": "OmniWork/0.2" } });
+    const type = res.headers.get("content-type") || "";
+    let body = await res.text();
+    if (type.includes("html")) {
+      body = body
+        .replace(/<script[\s\S]*?<\/script>/gi, "")
+        .replace(/<style[\s\S]*?<\/style>/gi, "")
+        .replace(/<[^>]+>/g, " ")
+        .replace(/&nbsp;/g, " ")
+        .replace(/&amp;/g, "&")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/[ \t]+/g, " ")
+        .replace(/\n\s*\n\s*\n+/g, "\n\n")
+        .trim();
+    }
+    return truncate(`[${res.status}] ${u}\n\n${body}`);
+  } catch (err) {
+    return `Failed to fetch ${u}: ${err.message}`;
+  }
 }
 
 // ---- Dispatcher. Returns a string result for the given tool call. ----
@@ -155,6 +205,16 @@ async function executeTool(name, args, ctx) {
       }
       case "run_command": {
         return await runCommand(workspace, args.command, onChunk);
+      }
+      case "web_fetch": {
+        return await webFetch(args.url);
+      }
+      case "open_url": {
+        const { shell } = require("electron");
+        let u = String(args.url || "");
+        if (!/^https?:\/\//i.test(u)) u = "http://" + u;
+        await shell.openExternal(u);
+        return `Opened ${u} in the browser.`;
       }
       default:
         return `Unknown tool: ${name}`;

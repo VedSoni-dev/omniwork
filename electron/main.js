@@ -5,228 +5,167 @@ const os = require("node:os");
 const fs = require("node:fs");
 
 const { Gateway } = require("./sidecar");
-const { Agent } = require("./agent");
+const { SessionManager } = require("./sessions");
+const { MCPManager } = require("./mcp");
 
 let win = null;
 let gateway = null;
-let agent = null;
+let sessions = null;
+let mcp = null;
 
-const state = {
-  workspace: null,
-  model: "auto",
-  gateway: { state: "boot" },
-};
+const state = { model: "auto", lastWorkspace: null, gateway: { state: "boot" } };
 
+function prefsPath() { return path.join(app.getPath("userData"), "prefs.json"); }
 function loadPrefs() {
-  try {
-    const p = path.join(app.getPath("userData"), "prefs.json");
-    if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, "utf8"));
-  } catch {}
+  try { if (fs.existsSync(prefsPath())) return JSON.parse(fs.readFileSync(prefsPath(), "utf8")); } catch {}
   return {};
 }
 function savePrefs() {
-  try {
-    const p = path.join(app.getPath("userData"), "prefs.json");
-    fs.writeFileSync(p, JSON.stringify({ workspace: state.workspace, model: state.model }, null, 2));
-  } catch {}
+  try { fs.writeFileSync(prefsPath(), JSON.stringify({ workspace: state.lastWorkspace, model: state.model }, null, 2)); } catch {}
 }
-
-function send(channel, payload) {
-  if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
+function send(channel, payload) { if (win && !win.isDestroyed()) win.webContents.send(channel, payload); }
+function activeWorkspace() {
+  const list = sessions ? sessions.sessions.get(sessions.activeId) : null;
+  return (list && list.workspace) || state.lastWorkspace || os.homedir();
 }
 
 function createWindow() {
   win = new BrowserWindow({
-    width: 1280,
-    height: 860,
-    minWidth: 960,
-    minHeight: 620,
-    backgroundColor: "#09090b",
-    title: "OmniWork",
+    width: 1300, height: 880, minWidth: 980, minHeight: 640,
+    backgroundColor: "#1c1b19", title: "OmniWork",
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
-      contextIsolation: true,
-      nodeIntegration: false,
+      contextIsolation: true, nodeIntegration: false,
     },
   });
   win.loadFile(path.join(__dirname, "..", "renderer", "index.html"));
   if (process.env.OMNIWORK_DEV) win.webContents.openDevTools({ mode: "detach" });
 }
 
-// Build/refresh the agent bound to the current workspace + gateway.
-function buildAgent() {
-  if (!gateway) return;
-  agent = new Agent({
-    baseUrl: gateway.baseUrl,
-    apiKey: gateway.apiKey,
-    model: state.model,
-    workspace: state.workspace || os.homedir(),
-    emit: (type, payload) => send("agent:event", { type, ...payload }),
-  });
-}
-
 async function boot() {
   const prefs = loadPrefs();
   const envWs = process.env.OMNIWORK_WORKSPACE;
-  if (envWs && fs.existsSync(envWs)) state.workspace = envWs;
-  else if (prefs.workspace && fs.existsSync(prefs.workspace)) state.workspace = prefs.workspace;
+  if (envWs && fs.existsSync(envWs)) state.lastWorkspace = envWs;
+  else if (prefs.workspace && fs.existsSync(prefs.workspace)) state.lastWorkspace = prefs.workspace;
   state.model = prefs.model || "auto";
 
   createWindow();
 
   gateway = new Gateway({
     dataDir: app.getPath("userData"),
-    onStatus: (s) => {
-      state.gateway = s;
-      send("gateway:status", s);
-    },
+    onStatus: (s) => { state.gateway = s; send("gateway:status", s); },
   });
 
-  // Start the sidecar; don't block window creation.
-  gateway
-    .start()
-    .then(() => buildAgent())
-    .catch((e) => {
-      send("gateway:status", { state: "error", detail: e.message });
+  gateway.start().then(() => {
+    mcp = new MCPManager(app.getPath("userData"));
+    sessions = new SessionManager({
+      gateway, mcp,
+      emit: (sessionId, type, payload) => {
+        if (sessionId === null) send(type, payload); // broadcasts (e.g. sessions:list)
+        else send("session:event", { sessionId, type, ...payload });
+      },
     });
+    sessions.setModel(state.model);
+    sessions.create({ workspace: state.lastWorkspace, title: "Main" });
+    // Bring up MCP servers in the background; refresh connection list when ready.
+    mcp.startAll().then(() => send("mcp:list", { servers: mcp.list() })).catch(() => {});
+  }).catch((e) => send("gateway:status", { state: "error", detail: e.message }));
 }
 
-// ---------- IPC ----------
+// ── IPC: app ────────────────────────────────────────────────────────
 ipcMain.handle("app:state", () => ({
-  workspace: state.workspace,
   model: state.model,
   gateway: state.gateway,
+  sessions: sessions ? sessions.list() : [],
+  activeId: sessions ? sessions.activeId : null,
+  mcp: mcp ? mcp.list() : [],
 }));
+ipcMain.handle("app:setModel", (_e, model) => { state.model = model; if (sessions) sessions.setModel(model); savePrefs(); return true; });
+ipcMain.handle("gateway:openDashboard", () => { if (gateway) shell.openExternal(gateway.dashboardUrl()); return true; });
 
-ipcMain.handle("app:setModel", (_e, model) => {
-  state.model = model;
-  if (agent) agent.model = model;
-  savePrefs();
+// ── IPC: sessions (Cowork) ──────────────────────────────────────────
+ipcMain.handle("session:create", (_e, opts) => {
+  if (!sessions) return null;
+  return sessions.create(opts || { workspace: state.lastWorkspace });
+});
+ipcMain.handle("session:list", () => (sessions ? { sessions: sessions.list(), activeId: sessions.activeId } : { sessions: [], activeId: null }));
+ipcMain.handle("session:setActive", (_e, id) => { if (sessions) sessions.setActive(id); return true; });
+ipcMain.handle("session:transcript", (_e, id) => (sessions ? sessions.transcript(id) : []));
+ipcMain.handle("session:send", async (_e, { id, text }) => {
+  if (!sessions) { send("session:event", { sessionId: id, type: "error", message: "Engine still starting." }); return false; }
+  await sessions.send(id, text);
   return true;
 });
-
-ipcMain.handle("workspace:pick", async () => {
-  const r = await dialog.showOpenDialog(win, {
-    properties: ["openDirectory", "createDirectory"],
-    title: "Choose a workspace folder",
-  });
+ipcMain.handle("session:stop", (_e, id) => { if (sessions) sessions.stop(id); return true; });
+ipcMain.handle("session:remove", (_e, id) => { if (sessions) sessions.remove(id); return true; });
+ipcMain.handle("session:pickWorkspace", async (_e, id) => {
+  const r = await dialog.showOpenDialog(win, { properties: ["openDirectory", "createDirectory"], title: "Choose a folder for this session" });
   if (!r.canceled && r.filePaths[0]) {
-    state.workspace = r.filePaths[0];
-    if (agent) agent.setWorkspace(state.workspace);
+    state.lastWorkspace = r.filePaths[0];
+    if (sessions) sessions.setWorkspace(id, r.filePaths[0]);
     savePrefs();
-    send("workspace:changed", { path: state.workspace });
+    return r.filePaths[0];
   }
-  return state.workspace;
+  return null;
 });
 
-ipcMain.handle("agent:send", async (_e, text) => {
-  if (!agent) {
-    send("agent:event", { type: "error", message: "Engine still starting — try again in a moment." });
-    return false;
-  }
-  if (!state.workspace) {
-    // Default to a scratch workspace under the user's home so the app is usable immediately.
-    const scratch = path.join(os.homedir(), "OmniWork");
-    fs.mkdirSync(scratch, { recursive: true });
-    state.workspace = scratch;
-    agent.setWorkspace(scratch);
-    savePrefs();
-    send("workspace:changed", { path: scratch });
-  }
-  try {
-    await agent.send(text);
-  } catch (e) {
-    send("agent:event", { type: "error", message: e.message });
-  }
-  return true;
+// ── IPC: MCP / connections ──────────────────────────────────────────
+ipcMain.handle("mcp:list", () => (mcp ? mcp.list() : []));
+ipcMain.handle("mcp:add", async (_e, { name, conf }) => {
+  if (!mcp) return [];
+  try { await mcp.addServer(name, conf); } catch {}
+  const list = mcp.list();
+  send("mcp:list", { servers: list });
+  return list;
+});
+ipcMain.handle("mcp:remove", (_e, name) => {
+  if (!mcp) return [];
+  const list = mcp.removeServer(name);
+  send("mcp:list", { servers: list });
+  return list;
 });
 
-ipcMain.handle("agent:stop", () => {
-  if (agent) agent.abort();
-  return true;
-});
-
-ipcMain.handle("agent:new", () => {
-  buildAgent();
-  return true;
-});
-
-ipcMain.handle("gateway:openDashboard", () => {
-  if (gateway) shell.openExternal(gateway.dashboardUrl());
-  return true;
-});
-
-// ---------- file explorer ----------
-const IGNORE_DIRS = new Set([
-  "node_modules", ".git", "dist", "out", "build", ".next", ".cache",
-  ".DS_Store", "coverage", ".turbo", "__pycache__", ".venv", "venv",
-]);
-
+// ── IPC: file explorer (active session's workspace) ─────────────────
+const IGNORE_DIRS = new Set(["node_modules", ".git", "dist", "out", "build", ".next", ".cache", "coverage", ".turbo", "__pycache__", ".venv", "venv"]);
 function readDir(dir) {
   let entries = [];
-  try {
-    entries = fs.readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  const dirs = [];
-  const files = [];
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return []; }
+  const dirs = [], files = [];
   for (const e of entries) {
-    if (e.name.startsWith(".") && e.name !== ".env" && e.name !== ".gitignore") {
-      if (IGNORE_DIRS.has(e.name)) continue;
-    }
-    if (e.isDirectory()) {
-      if (IGNORE_DIRS.has(e.name)) continue;
-      dirs.push({ name: e.name, type: "dir", path: path.join(dir, e.name) });
-    } else if (e.isFile()) {
-      files.push({ name: e.name, type: "file", path: path.join(dir, e.name) });
-    }
+    if (e.isDirectory()) { if (!IGNORE_DIRS.has(e.name)) dirs.push({ name: e.name, type: "dir" }); }
+    else if (e.isFile()) files.push({ name: e.name, type: "file" });
   }
   dirs.sort((a, b) => a.name.localeCompare(b.name));
   files.sort((a, b) => a.name.localeCompare(b.name));
   return [...dirs, ...files];
 }
-
-// List a single directory's children (lazy tree expansion). Paths are relative
-// to the workspace root and confined to it.
 ipcMain.handle("workspace:list", (_e, relPath) => {
-  if (!state.workspace) return { root: null, entries: [] };
-  const target = path.resolve(state.workspace, relPath || ".");
-  const rel = path.relative(state.workspace, target);
-  if (rel.startsWith("..") || path.isAbsolute(rel)) return { root: state.workspace, entries: [] };
-  const entries = readDir(target).map((n) => ({
-    name: n.name,
-    type: n.type,
-    path: path.relative(state.workspace, n.path).split(path.sep).join("/"),
-  }));
-  return { root: state.workspace, base: path.basename(state.workspace), entries };
+  const ws = activeWorkspace();
+  const target = path.resolve(ws, relPath || ".");
+  const rel = path.relative(ws, target);
+  if (rel.startsWith("..") || path.isAbsolute(rel)) return { root: ws, entries: [] };
+  const entries = readDir(target).map((n) => ({ name: n.name, type: n.type, path: path.relative(ws, path.join(target, n.name)).split(path.sep).join("/") }));
+  return { root: ws, base: path.basename(ws), entries };
 });
-
 ipcMain.handle("file:read", (_e, relPath) => {
-  if (!state.workspace) return { error: "no workspace" };
-  const target = path.resolve(state.workspace, relPath);
-  const rel = path.relative(state.workspace, target);
+  const ws = activeWorkspace();
+  const target = path.resolve(ws, relPath);
+  const rel = path.relative(ws, target);
   if (rel.startsWith("..") || path.isAbsolute(rel)) return { error: "path escapes workspace" };
   try {
     const stat = fs.statSync(target);
     if (stat.size > 600 * 1024) return { error: "file too large to preview" };
     return { content: fs.readFileSync(target, "utf8"), path: relPath };
-  } catch (err) {
-    return { error: err.message };
-  }
+  } catch (err) { return { error: err.message }; }
 });
 
-// ---------- lifecycle ----------
+// ── lifecycle ───────────────────────────────────────────────────────
 app.whenReady().then(boot);
-
 app.on("window-all-closed", () => {
+  if (mcp) mcp.stopAll();
   if (gateway) gateway.stop();
   if (process.platform !== "darwin") app.quit();
 });
-app.on("activate", () => {
-  if (BrowserWindow.getAllWindows().length === 0) createWindow();
-});
-app.on("before-quit", () => {
-  if (gateway) gateway.stop();
-});
+app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+app.on("before-quit", () => { if (mcp) mcp.stopAll(); if (gateway) gateway.stop(); });
