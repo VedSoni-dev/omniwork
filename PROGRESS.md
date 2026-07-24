@@ -1,10 +1,10 @@
 # OmniWork — build progress
 
-## Status: ✅ SHIPPED — v0.1.1 (coding-agent UI)
+## Status: ✅ SHIPPED — v0.1.2 (Claude Code terminal look)
 
 - **Repo:** https://github.com/VedSoni-dev/omniwork (public, MIT)
-- **Latest release:** https://github.com/VedSoni-dev/omniwork/releases/tag/v0.1.1
-  - `OmniWork.Setup.0.1.1.exe` (~317 MB) — Windows installer
+- **Latest release:** https://github.com/VedSoni-dev/omniwork/releases/tag/v0.1.2
+  - `OmniWork.Setup.0.1.2.exe` (~317 MB) — Windows installer
 
 ### Delivered
 - [x] Electron app, OmniRoute bundled as in-app sidecar (zero setup, free models, no keys)
