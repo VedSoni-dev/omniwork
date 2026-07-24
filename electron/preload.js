@@ -26,6 +26,7 @@ contextBridge.exposeInMainWorld("omniwork", {
 
   // app
   getState: () => ipcRenderer.invoke("app:state"),
+  listModels: () => ipcRenderer.invoke("models:list"),
   setModel: (model) => ipcRenderer.invoke("app:setModel", model),
   openDashboard: () => ipcRenderer.invoke("gateway:openDashboard"),
 

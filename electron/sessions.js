@@ -81,10 +81,10 @@ class SessionManager {
       workspace: sess.workspace,
       mcp: this.mcp,
       approvalMode: this.approvalMode,
-      approver: (callId, name, args) =>
+      approver: (callId, name, args, preview) =>
         new Promise((resolve) => {
           this.pendingApprovals.set(callId, resolve);
-          this.emit(id, "approval_request", { callId, name, args });
+          this.emit(id, "approval_request", { callId, name, args, preview });
         }),
       emit: (type, payload) => this.#onAgentEvent(id, type, payload),
     });

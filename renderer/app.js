@@ -81,13 +81,23 @@ function endStream(finalText) {
 }
 
 // approval prompt card
-function addApproval(callId, name, args) {
+function apDiff(preview) {
+  const cap = (s) => (s.length > 2400 ? s.slice(0, 2400) + "\n…" : s);
+  let h = "";
+  if (preview.created) h += `<span class="add">+ new file ${esc(preview.path || "")}</span>\n`;
+  cap(preview.old || "").split("\n").forEach((l) => { if (l !== "" || preview.old) h += `<span class="del">- ${esc(l)}</span>\n`; });
+  cap(preview.new || "").split("\n").forEach((l) => h += `<span class="add">+ ${esc(l)}</span>\n`);
+  return h;
+}
+function addApproval(callId, name, args, preview) {
   stopThinking(); endStream();
   const label = { run_command: "run a command", write_file: "write a file", edit_file: "edit a file" }[name] || (name.startsWith("mcp__") ? "call " + name.slice(5).replace("__", " · ") : name);
-  const detail = name === "run_command" ? args.command : (args.path || args.url || JSON.stringify(args).slice(0, 200));
+  let detailHtml;
+  if (preview && preview.kind === "diff") detailHtml = `<div class="ap-path dim">${esc(preview.path || "")}</div>${apDiff(preview)}`;
+  else { const detail = name === "run_command" ? args.command : (args.path || args.url || JSON.stringify(args).slice(0, 200)); detailHtml = esc(String(detail || "")); }
   const el = document.createElement("div");
   el.className = "approval";
-  el.innerHTML = `<div class="ap-q">⚠ Allow OmniWork to <b>${esc(label)}</b>?</div><div class="ap-detail mono">${esc(String(detail || ""))}</div><div class="ap-btns"><button class="ap-yes">Approve</button><button class="ap-no">Deny</button><span class="ap-hint dim">y / n</span></div>`;
+  el.innerHTML = `<div class="ap-q">⚠ Allow OmniWork to <b>${esc(label)}</b>?</div><div class="ap-detail mono">${detailHtml}</div><div class="ap-btns"><button class="ap-yes">Approve</button><button class="ap-no">Deny</button><span class="ap-hint dim">y / n</span></div>`;
   const decide = (ok) => { el.querySelector(".ap-btns").innerHTML = `<span class="${ok ? "green" : "dim"}">${ok ? "✓ approved" : "✕ denied"}</span>`; api.approve(callId, ok); pendingApproval = null; };
   el.querySelector(".ap-yes").addEventListener("click", () => decide(true));
   el.querySelector(".ap-no").addEventListener("click", () => decide(false));
@@ -133,7 +143,7 @@ function renderEvent(ev, live) {
     case "assistant_delta": if (live) streamDelta(ev.chunk); break;
     case "assistant": if (!endStream(ev.content)) addAssistant(ev.content); break;
     case "system": addSystem(ev.content); break;
-    case "approval_request": if (live) addApproval(ev.callId, ev.name, ev.args); break;
+    case "approval_request": if (live) addApproval(ev.callId, ev.name, ev.args, ev.preview); break;
     case "tool_call": endStream(); addToolCard(ev.id, ev.name, ev.args); break;
     case "tool_stream": if (live) streamTool(ev.id, ev.chunk); break;
     case "tool_result": finishTool(ev.id, ev.result); break;
@@ -298,6 +308,16 @@ $("change-cwd").addEventListener("click", () => api.pickWorkspace(activeId));
 $("dashboard").addEventListener("click", () => api.openDashboard());
 $("model").addEventListener("change", (e) => api.setModel(e.target.value));
 
+async function populateModels(current) {
+  const models = await api.listModels();
+  if (!models || !models.length) return;
+  const sel = $("model");
+  const chosen = current || sel.value || "auto";
+  sel.innerHTML = '<option value="auto">auto (free)</option>';
+  models.filter((m) => m !== "auto").sort().forEach((m) => { const o = document.createElement("option"); o.value = m; o.textContent = m; sel.appendChild(o); });
+  sel.value = chosen === "auto" || models.includes(chosen) ? chosen : "auto";
+}
+
 // ── MCP gallery + modal ────────────────────────────────────────────
 const MCP_GALLERY = [
   { name: "filesystem", icon: "📁", desc: "Read & write files in a folder", cmd: "npx", args: "-y @modelcontextprotocol/server-filesystem ." },
@@ -350,6 +370,7 @@ $("m-add").addEventListener("click", addFromForm);
     if (st.model) $("model").value = st.model;
     if (st.approval) { approvalMode = st.approval; const b = $("approval-toggle"); b.textContent = approvalMode === "ask" ? "🛡 ask" : "🛡 auto"; b.classList.toggle("on", approvalMode === "ask"); }
     if (st.mcp) renderMcp(st.mcp);
+    populateModels(st.model);
     if (st.sessions && st.sessions.length) { renderSessions(st.sessions, st.activeId); await switchTo(st.activeId || st.sessions[0].id); }
     else welcome();
   } else welcome();

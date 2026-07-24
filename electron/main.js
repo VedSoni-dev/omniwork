@@ -89,6 +89,14 @@ ipcMain.handle("app:state", () => ({
 }));
 ipcMain.handle("app:setModel", (_e, model) => { state.model = model; if (sessions) sessions.setModel(model); savePrefs(); return true; });
 ipcMain.handle("gateway:openDashboard", () => { if (gateway) shell.openExternal(gateway.dashboardUrl()); return true; });
+ipcMain.handle("models:list", async () => {
+  if (!gateway) return [];
+  try {
+    const res = await fetch(`${gateway.baseUrl}/models`, { signal: AbortSignal.timeout(4000) });
+    const data = await res.json();
+    return (data.data || []).map((m) => m.id).filter(Boolean);
+  } catch { return []; }
+});
 
 // ── IPC: sessions (Cowork) ──────────────────────────────────────────
 ipcMain.handle("session:create", (_e, opts) => {

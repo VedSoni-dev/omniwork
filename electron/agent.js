@@ -77,9 +77,24 @@ class Agent {
     this.lastText = "";
     this.turnUndo = new Map();           // path -> original content (or null if newly created)
     this.undoAvailable = false;
-    const sys = BASE_PROMPT + (canSpawn ? ORCHESTRATOR_EXTRA : "");
-    this.messages = [{ role: "system", content: sys }];
+    this.baseSystem = BASE_PROMPT + (canSpawn ? ORCHESTRATOR_EXTRA : "");
+    this.messages = [{ role: "system", content: this.baseSystem }];
     this.aborted = false;
+  }
+
+  // Read project instruction files from the workspace (like Claude Code's CLAUDE.md).
+  loadProjectMemory() {
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const files = ["AGENTS.md", "CLAUDE.md", "CLAUDE.local.md", ".omniwork.md", ".cursorrules"];
+    let mem = "";
+    for (const f of files) {
+      try {
+        const p = path.join(this.workspace, f);
+        if (fs.existsSync(p) && fs.statSync(p).isFile()) mem += `\n\n## ${f}\n${fs.readFileSync(p, "utf8").slice(0, 8000)}`;
+      } catch {}
+    }
+    return mem.trim();
   }
 
   // Restore files changed during the last turn.
@@ -190,6 +205,21 @@ class Agent {
     return { role: "assistant", content: content || "", tool_calls: calls.length ? calls : undefined };
   }
 
+  // Build a diff preview for the approval prompt (file writes/edits).
+  #approvalPreview(name, args) {
+    const fs = require("node:fs");
+    const path = require("node:path");
+    try {
+      if (name === "edit_file") return { kind: "diff", path: args.path, old: args.old_string || "", new: args.new_string || "" };
+      if (name === "write_file") {
+        const abs = path.resolve(this.workspace, args.path || "");
+        const cur = fs.existsSync(abs) ? fs.readFileSync(abs, "utf8") : null;
+        return { kind: "diff", path: args.path, old: cur || "", new: args.content || "", created: cur === null };
+      }
+    } catch {}
+    return null;
+  }
+
   // Fan out to parallel subagents and return the combined summaries.
   async runSubagents(tasks) {
     const list = Array.isArray(tasks) ? tasks.slice(0, 8) : [];
@@ -226,6 +256,9 @@ class Agent {
     this.aborted = false;
     this.turnUndo = new Map();
     this.undoAvailable = false;
+    // Refresh the system prompt with current project instructions (AGENTS.md, etc.).
+    const mem = this.loadProjectMemory();
+    this.messages[0] = { role: "system", content: this.baseSystem + (mem ? `\n\n# Project instructions (from the workspace)\n${mem}` : "") };
     this.messages.push({ role: "user", content: userText });
 
     for (let step = 0; step < MAX_STEPS; step++) {
@@ -256,7 +289,8 @@ class Agent {
         // Approval gate (top-level agents only): pause for destructive tools.
         const needsApproval = ["run_command", "write_file", "edit_file"].includes(name) || (this.mcp && this.mcp.isMcpTool(name));
         if (this.approvalMode === "ask" && this.approver && needsApproval) {
-          const ok = await this.approver(call.id, name, parsedArgs);
+          const preview = this.#approvalPreview(name, parsedArgs);
+          const ok = await this.approver(call.id, name, parsedArgs, preview);
           if (!ok) {
             const denied = "❌ Denied by user.";
             this.emit("tool_result", { id: call.id, name, result: denied });
