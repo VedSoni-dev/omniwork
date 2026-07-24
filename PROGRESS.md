@@ -1,9 +1,9 @@
 # OmniWork — build progress
 
-## Status: ✅ SHIPPED — v0.2.0 (Cowork + MCP connections)
+## Status: ✅ SHIPPED — v0.3.0 (Agent Deck — parallel subagents)
 
 - **Repo:** https://github.com/VedSoni-dev/omniwork (public, MIT)
-- **Latest:** https://github.com/VedSoni-dev/omniwork/releases/tag/v0.2.0 — `OmniWork.Setup.0.2.0.exe`
+- **Latest:** https://github.com/VedSoni-dev/omniwork/releases/tag/v0.3.0 — `OmniWork.Setup.0.3.0.exe`
 
 ### Delivered
 - [x] Electron app, OmniRoute bundled as in-app sidecar (zero setup, free models, no keys)
