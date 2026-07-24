@@ -51,11 +51,12 @@ delegate** *inside* Claude Code or Codex.
 
 Grab the installer from the [**latest release**](https://github.com/VedSoni-dev/omniwork/releases/latest):
 
-| OS | File | Status |
-|----|------|--------|
-| Windows | `OmniWork.Setup.x.y.z.exe` | ✅ available |
+| OS | File | Notes |
+|----|------|-------|
+| Windows (full) | `OmniWork.Setup.x.y.z.exe` | ~317 MB, engine bundled — usable instantly |
+| Windows (lite) | `OmniWork-Lite-Setup-x.y.z.exe` | ~192 MB, downloads the engine on first run (~1–3 min once) |
 | macOS | `.dmg` (Intel + Apple Silicon) | build from source |
-| Linux | `.AppImage` / `.deb` | build from source |
+| Linux | `.AppImage` | build from source |
 
 Open it, pick a folder, type a task. First launch takes ~30–60s (one-time DB setup); fast after.
 
