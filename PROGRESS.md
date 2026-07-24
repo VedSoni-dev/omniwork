@@ -1,9 +1,9 @@
 # OmniWork — build progress
 
-## Status: ✅ SHIPPED — v0.6.0 (session persistence + MCP gallery)
+## Status: ✅ SHIPPED — v0.8.0 (recipes + image + polish)
 
 - **Repo:** https://github.com/VedSoni-dev/omniwork (public, MIT)
-- **Latest:** https://github.com/VedSoni-dev/omniwork/releases/tag/v0.6.0 — `OmniWork.Setup.0.6.0.exe`
+- **Latest:** https://github.com/VedSoni-dev/omniwork/releases/tag/v0.8.0 — `OmniWork.Setup.0.8.0.exe`
 
 ### Delivered
 - [x] Electron app, OmniRoute bundled as in-app sidecar (zero setup, free models, no keys)
