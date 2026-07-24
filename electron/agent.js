@@ -1,61 +1,103 @@
 "use strict";
 // The agent loop. Talks to the local OmniRoute gateway (OpenAI-compatible /v1)
 // and runs a tool-use loop until the model produces a final answer.
+//
+// An orchestrator agent can fan work out to parallel subagents via the
+// `spawn_subagents` tool — the "Agent Deck". Subagents run concurrently, each
+// with its own context/tool-loop, and report a summary back to the parent.
 
 const { TOOL_SCHEMA, executeTool } = require("./tools");
 
-const SYSTEM_PROMPT = `You are OmniWork, an autonomous coding agent running on the user's machine, in the style of Claude Code.
-You have direct access to the user's workspace through tools: list_dir, read_file, write_file, edit_file, run_command.
+const BASE_PROMPT = `You are OmniWork, an autonomous coding agent running on the user's machine, in the style of Claude Code.
+You have direct access to the user's workspace through tools: list_dir, read_file, write_file, edit_file, run_command, web_fetch, open_url.
 
 Guidelines:
 - Be concise and direct. Do the work; don't just describe it.
 - Explore before editing: read files to understand context before changing them.
 - Make focused, correct edits. Prefer edit_file for surgical changes, write_file for new files.
-- Use run_command for builds, tests, git, installing deps, and searching (grep/rg).
+- Use run_command for builds, tests, git, installing deps, and searching.
+- Use web_fetch to read docs/APIs; open_url to show the user a page or running server.
 - After changes, verify by running the relevant build/test/command when possible.
-- When the task is complete, give a short summary of what you did.`;
+- When done, give a short summary of what you did.`;
+
+const ORCHESTRATOR_EXTRA = `
+
+You can also delegate. When a task splits into INDEPENDENT parts that can run at the same time
+(e.g. build several files, research multiple topics, refactor N modules), call spawn_subagents
+with one entry per part. They run in parallel and each returns a summary you then synthesize.
+Do NOT use subagents for small single-step work — just do it yourself.`;
+
+const SUBAGENT_TOOL = {
+  type: "function",
+  function: {
+    name: "spawn_subagents",
+    description:
+      "Fan work out to parallel subagents. Each subagent runs independently in the same workspace and returns a summary. Use for independent parallelizable subtasks; returns all summaries.",
+    parameters: {
+      type: "object",
+      properties: {
+        tasks: {
+          type: "array",
+          description: "The subtasks to run in parallel.",
+          items: {
+            type: "object",
+            properties: {
+              title: { type: "string", description: "Short label for this subagent." },
+              prompt: { type: "string", description: "The full task instruction for the subagent." },
+            },
+            required: ["title", "prompt"],
+          },
+        },
+      },
+      required: ["tasks"],
+    },
+  },
+};
 
 const MAX_STEPS = 40;
 
+function subLabel(name, args) {
+  const label = { run_command: "Bash", read_file: "Read", write_file: "Write", edit_file: "Edit", list_dir: "List", web_fetch: "Fetch", open_url: "Open" }[name] || name;
+  const a = name === "run_command" ? args.command : args.path || args.url || "";
+  return `${label} ${String(a || "").slice(0, 40)}`.trim();
+}
+
 class Agent {
-  constructor({ baseUrl, apiKey, model, workspace, emit, mcp }) {
+  constructor({ baseUrl, apiKey, model, workspace, emit, mcp, canSpawn = true, depth = 0 }) {
     this.baseUrl = baseUrl.replace(/\/$/, "");
     this.apiKey = apiKey;
     this.model = model || "auto";
     this.workspace = workspace;
     this.emit = emit; // (event, payload) => void
-    this.mcp = mcp || null; // optional MCPManager for external tools
-    this.messages = [{ role: "system", content: SYSTEM_PROMPT }];
+    this.mcp = mcp || null;
+    this.canSpawn = canSpawn;
+    this.depth = depth;
+    this.lastText = "";
+    const sys = BASE_PROMPT + (canSpawn ? ORCHESTRATOR_EXTRA : "");
+    this.messages = [{ role: "system", content: sys }];
     this.aborted = false;
   }
 
   toolSchema() {
     const extra = this.mcp ? this.mcp.toolSchema() : [];
-    return [...TOOL_SCHEMA, ...extra];
+    const sub = this.canSpawn ? [SUBAGENT_TOOL] : [];
+    return [...TOOL_SCHEMA, ...sub, ...extra];
   }
 
-  abort() {
-    this.aborted = true;
-  }
-
-  setWorkspace(dir) {
-    this.workspace = dir;
-  }
+  abort() { this.aborted = true; }
+  setWorkspace(dir) { this.workspace = dir; }
 
   async callModel() {
     const res = await fetch(`${this.baseUrl}/chat/completions`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.apiKey}`,
-      },
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}` },
       body: JSON.stringify({
         model: this.model,
         messages: this.messages,
         tools: this.toolSchema(),
         tool_choice: "auto",
         temperature: 0.3,
-        stream: false, // gateway defaults to SSE; force a single JSON body
+        stream: false,
       }),
     });
     if (!res.ok) {
@@ -68,60 +110,71 @@ class Agent {
     return choice.message;
   }
 
-  // Run one user turn to completion (through any number of tool calls).
+  // Fan out to parallel subagents and return the combined summaries.
+  async runSubagents(tasks) {
+    const list = Array.isArray(tasks) ? tasks.slice(0, 8) : [];
+    if (!list.length) return "No subtasks provided.";
+    const groupId = "g" + Date.now().toString(36);
+    this.emit("subagent", { groupId, kind: "group_start", count: list.length, titles: list.map((t) => t.title || "subagent") });
+
+    const results = await Promise.all(
+      list.map(async (t, i) => {
+        const subId = `${groupId}_${i}`;
+        const title = t.title || `subagent ${i + 1}`;
+        this.emit("subagent", { groupId, subId, title, kind: "start" });
+        const child = new Agent({
+          baseUrl: this.baseUrl, apiKey: this.apiKey, model: this.model,
+          workspace: this.workspace, mcp: this.mcp, canSpawn: false, depth: this.depth + 1,
+          emit: (type, payload) => {
+            if (type === "tool_call") this.emit("subagent", { groupId, subId, kind: "tool", tool: subLabel(payload.name, payload.args) });
+            else if (type === "assistant") this.emit("subagent", { groupId, subId, kind: "text", snippet: String(payload.content || "").slice(0, 160) });
+            else if (type === "error") this.emit("subagent", { groupId, subId, kind: "error", message: payload.message });
+          },
+        });
+        try { await child.send(t.prompt || t.task || title); }
+        catch (e) { this.emit("subagent", { groupId, subId, kind: "error", message: e.message }); }
+        this.emit("subagent", { groupId, subId, kind: "done" });
+        return { title, result: child.lastText || "(no summary returned)" };
+      })
+    );
+
+    this.emit("subagent", { groupId, kind: "group_done" });
+    return results.map((r) => `## ${r.title}\n${r.result}`).join("\n\n---\n\n");
+  }
+
   async send(userText) {
     this.aborted = false;
     this.messages.push({ role: "user", content: userText });
 
     for (let step = 0; step < MAX_STEPS; step++) {
-      if (this.aborted) {
-        this.emit("aborted", {});
-        return;
-      }
+      if (this.aborted) { this.emit("aborted", {}); return; }
       this.emit("thinking", { step });
 
       let msg;
-      try {
-        msg = await this.callModel();
-      } catch (err) {
-        this.emit("error", { message: err.message });
-        return;
-      }
+      try { msg = await this.callModel(); }
+      catch (err) { this.emit("error", { message: err.message }); return; }
 
-      // Assistant text (if any)
       if (msg.content && msg.content.trim()) {
+        this.lastText = msg.content;
         this.emit("assistant", { content: msg.content });
       }
 
       const toolCalls = msg.tool_calls || [];
-      // Persist assistant message exactly as returned so tool_call_ids line up.
-      this.messages.push({
-        role: "assistant",
-        content: msg.content || "",
-        tool_calls: toolCalls.length ? toolCalls : undefined,
-      });
+      this.messages.push({ role: "assistant", content: msg.content || "", tool_calls: toolCalls.length ? toolCalls : undefined });
 
-      if (!toolCalls.length) {
-        this.emit("done", {});
-        return;
-      }
+      if (!toolCalls.length) { this.emit("done", {}); return; }
 
       for (const call of toolCalls) {
-        if (this.aborted) {
-          this.emit("aborted", {});
-          return;
-        }
+        if (this.aborted) { this.emit("aborted", {}); return; }
         const name = call.function.name;
         let parsedArgs = {};
-        try {
-          parsedArgs = JSON.parse(call.function.arguments || "{}");
-        } catch {
-          parsedArgs = {};
-        }
+        try { parsedArgs = JSON.parse(call.function.arguments || "{}"); } catch { parsedArgs = {}; }
         this.emit("tool_call", { id: call.id, name, args: parsedArgs });
 
         let result;
-        if (this.mcp && this.mcp.isMcpTool(name)) {
+        if (name === "spawn_subagents" && this.canSpawn) {
+          result = await this.runSubagents(parsedArgs.tasks);
+        } else if (this.mcp && this.mcp.isMcpTool(name)) {
           result = await this.mcp.callTool(name, parsedArgs);
         } else {
           result = await executeTool(name, parsedArgs, {
@@ -131,11 +184,7 @@ class Agent {
         }
 
         this.emit("tool_result", { id: call.id, name, result });
-        this.messages.push({
-          role: "tool",
-          tool_call_id: call.id,
-          content: result,
-        });
+        this.messages.push({ role: "tool", tool_call_id: call.id, content: result });
       }
     }
     this.emit("error", { message: `Reached max steps (${MAX_STEPS}) without finishing.` });

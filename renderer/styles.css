@@ -96,6 +96,22 @@ b { font-weight: 600; color: var(--fg); }
 .spin { color: var(--accent); margin-left: auto; }
 .thinking { max-width: 900px; margin: 3px auto; padding: 2px 0; color: var(--dim); }
 .thinking .glyph { color: var(--accent); }
+
+/* Agent Deck */
+.deck { max-width: 900px; margin: 8px auto; border: 1px solid var(--border); border-radius: 9px; background: rgba(217,119,87,0.03); overflow: hidden; }
+.deck-head { padding: 8px 12px; border-bottom: 1px solid var(--border-soft); font-size: 12.5px; color: var(--fg); }
+.deck-ic { color: var(--accent); }
+.deck-meta { color: var(--dim); }
+.deck-done .deck-head { color: var(--green); }
+.deck-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px; padding: 10px; }
+.dcard { border: 1px solid var(--border-soft); border-radius: 7px; padding: 8px 10px; background: var(--bg-soft); min-width: 0; }
+.dc-top { display: flex; align-items: center; gap: 7px; margin-bottom: 5px; }
+.dc-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); flex-shrink: 0; }
+.dc-dot.running { background: var(--accent); animation: pulse 1.1s infinite; }
+.dc-dot.done { background: var(--green); }
+.dc-dot.error { background: var(--red); }
+.dc-title { font-size: 12px; font-weight: 600; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dc-action { font-size: 11px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .errline { max-width: 900px; margin: 4px auto; color: var(--red); white-space: pre-wrap; }
 
 /* ── dock ──────────────────────────────────────────────────────────── */

@@ -99,16 +99,58 @@ function renderEvent(ev, live) {
     case "tool_stream": if (live) streamTool(ev.id, ev.chunk); break;
     case "tool_result": finishTool(ev.id, ev.result); break;
     case "thinking": if (live) startThinking(); break;
+    case "subagent": handleSubagent(ev); break;
     case "error": addError(ev.message); break;
     case "done": case "aborted": if (live) stopThinking(); break;
   }
+}
+
+// ── Agent Deck ─────────────────────────────────────────────────────
+const decks = new Map(); // groupId -> { grid, head, cards: Map }
+function deckFor(groupId, count) {
+  let d = decks.get(groupId);
+  if (d) return d;
+  stopThinking();
+  const el = document.createElement("div");
+  el.className = "deck";
+  el.innerHTML = `<div class="deck-head"><span class="deck-ic">⛁</span> Agent Deck <span class="deck-meta">· ${count || ""} subagents</span></div><div class="deck-grid"></div>`;
+  scroll.appendChild(el);
+  d = { el, head: el.querySelector(".deck-head"), grid: el.querySelector(".deck-grid"), cards: new Map(), count: count || 0, done: 0 };
+  decks.set(groupId, d);
+  scrollDown();
+  return d;
+}
+function deckCard(d, subId, title) {
+  let c = d.cards.get(subId);
+  if (c) return c;
+  const el = document.createElement("div");
+  el.className = "dcard";
+  el.innerHTML = `<div class="dc-top"><span class="dc-dot"></span><span class="dc-title">${esc(title || subId)}</span></div><div class="dc-action">queued…</div>`;
+  d.grid.appendChild(el);
+  c = { el, dot: el.querySelector(".dc-dot"), action: el.querySelector(".dc-action") };
+  d.cards.set(subId, c);
+  return c;
+}
+function handleSubagent(ev) {
+  if (ev.kind === "group_start") { deckFor(ev.groupId, ev.count); return; }
+  const d = deckFor(ev.groupId, ev.count);
+  if (ev.kind === "group_done") { d.head.querySelector(".deck-meta").textContent = "· done"; d.el.classList.add("deck-done"); return; }
+  const c = deckCard(d, ev.subId, ev.title);
+  switch (ev.kind) {
+    case "start": c.dot.className = "dc-dot running"; c.action.textContent = "starting…"; break;
+    case "tool": c.dot.className = "dc-dot running"; c.action.textContent = "⏺ " + ev.tool; break;
+    case "text": c.action.textContent = ev.snippet; break;
+    case "error": c.dot.className = "dc-dot error"; c.action.textContent = "✗ " + (ev.message || "error"); break;
+    case "done": c.dot.className = "dc-dot done"; if (!c.action.textContent.startsWith("✗")) c.action.textContent = "✓ done"; break;
+  }
+  scrollDown();
 }
 
 // ── session switching ──────────────────────────────────────────────
 async function switchTo(id) {
   activeId = id;
   await api.setActiveSession(id);
-  toolEls.clear(); stopThinking();
+  toolEls.clear(); decks.clear(); stopThinking();
   scroll.innerHTML = "";
   const t = await api.getTranscript(id);
   if (!t || !t.length) welcome();
