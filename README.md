@@ -26,6 +26,7 @@ local key for itself, and points its agent at it. You get a working coding agent
 - **Cowork mode** — spawn many agent sessions and run them **in parallel**, each with its own folder and task. A rail on the left shows every agent's status.
 - **MCP connections** — plug in tools (filesystem, fetch, memory, git, Slack, databases…) via any stdio MCP server. Standard `mcpServers` config; add them from the UI.
 - **Plugs into the web** — `web_fetch` reads pages/APIs, `open_url` opens links in your browser.
+- **Token saver for Claude Code / Codex** — OmniWork is *also* an MCP server your premium agent can delegate grunt work to, so it burns **free** tokens instead of yours ([details](#use-omniwork-inside-claude-code--codex-token-saver-)).
 - **Private** — everything runs locally. The gateway never phones home; your code stays on your machine.
 - **Not locked in** — switch to Claude, GPT, Gemini, DeepSeek, or your own keys anytime via the gateway dashboard.
 - **Open source, MIT.** Fork it, ship it, sell it.
@@ -71,6 +72,34 @@ runs one-time database migrations; subsequent launches are fast.
 2. It health-checks `http://localhost:20128/v1` and reports status in the sidebar.
 3. `electron/agent.js` runs a tool-use loop against that endpoint with the model set to `auto`.
 4. Tools (`electron/tools.js`) are confined to the workspace folder you pick.
+
+## Use OmniWork *inside* Claude Code / Codex (token saver) 🪙
+
+Don't want to fully switch? Keep your premium agent as the orchestrator and let it
+**delegate the token-heavy grunt work to OmniWork's free models.** OmniWork ships an
+MCP server — add it to your agent's `mcpServers` and it gains two tools:
+
+- `delegate(task, cwd?)` — OmniWork does the subtask autonomously on free models and returns a summary + changes
+- `delegate_parallel(tasks[], cwd?)` — fan a batch out to parallel free-model subagents
+
+Your expensive model spends tokens on the hard reasoning; OmniWork burns **free** tokens
+on the mechanical work, in the same project folder.
+
+**Claude Code** — add to `.mcp.json` (or `claude mcp add`):
+```json
+{
+  "mcpServers": {
+    "omniwork": { "command": "node", "args": ["/absolute/path/to/omniwork/electron/mcp-server.js"] }
+  }
+}
+```
+Then just ask Claude Code to *"delegate writing the tests to omniwork"* and it will.
+
+**Codex / Cursor / any MCP client** — same idea: point an `mcpServers` entry at
+`node .../electron/mcp-server.js`. It speaks standard MCP over stdio. If the OmniWork
+desktop app is already running, the server reuses its gateway; otherwise it boots its own.
+
+> Env: `OMNIWORK_MODEL` to pin a model (default `auto`/free), `OMNIWORK_GATEWAY_PORT` to change the port.
 
 ## Build from source
 
