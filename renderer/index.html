@@ -66,20 +66,21 @@
     <!-- Add-connection modal -->
     <div id="modal" class="modal hidden">
       <div class="modal-box">
-        <div class="modal-title">Add MCP connection</div>
-        <div class="modal-sub dim">Plug in tools — filesystem, git, web, Slack, databases… (stdio MCP server)</div>
-        <label>Name</label>
-        <input id="m-name" class="m-input" placeholder="filesystem" />
-        <label>Command</label>
-        <input id="m-cmd" class="m-input" placeholder="npx" />
+        <div class="modal-title">Add a connection</div>
+        <div class="modal-sub dim">Plug in tools your agents can use — one click. (stdio MCP servers)</div>
+
+        <div id="gallery" class="gallery"></div>
+
+        <div class="modal-divider"><span>or configure manually</span></div>
+        <div class="m-grid">
+          <div><label>Name</label><input id="m-name" class="m-input" placeholder="filesystem" /></div>
+          <div><label>Command</label><input id="m-cmd" class="m-input" placeholder="npx" /></div>
+        </div>
         <label>Arguments (space-separated)</label>
         <input id="m-args" class="m-input" placeholder="-y @modelcontextprotocol/server-filesystem ." />
-        <div class="modal-presets">
-          <span class="dim">presets:</span>
-          <button class="preset" data-name="filesystem" data-cmd="npx" data-args="-y @modelcontextprotocol/server-filesystem .">filesystem</button>
-          <button class="preset" data-name="fetch" data-cmd="npx" data-args="-y @modelcontextprotocol/server-fetch">fetch</button>
-          <button class="preset" data-name="memory" data-cmd="npx" data-args="-y @modelcontextprotocol/server-memory">memory</button>
-        </div>
+        <label>Env (optional, one KEY=value per line)</label>
+        <textarea id="m-env" class="m-input m-env" rows="2" placeholder="GITHUB_PERSONAL_ACCESS_TOKEN=ghp_…"></textarea>
+
         <div class="modal-actions">
           <button id="m-cancel" class="btn-ghost">Cancel</button>
           <button id="m-add" class="btn-accent">Add &amp; connect</button>

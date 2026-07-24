@@ -62,6 +62,7 @@ async function boot() {
     mcp = new MCPManager(app.getPath("userData"));
     sessions = new SessionManager({
       gateway, mcp,
+      persistPath: path.join(app.getPath("userData"), "sessions.json"),
       emit: (sessionId, type, payload) => {
         if (sessionId === null) send(type, payload); // broadcasts (e.g. sessions:list)
         else send("session:event", { sessionId, type, ...payload });
@@ -69,7 +70,9 @@ async function boot() {
     });
     sessions.setModel(state.model);
     sessions.setApprovalMode(state.approval);
-    sessions.create({ workspace: state.lastWorkspace, title: "Main" });
+    // Restore saved sessions; start a fresh one only if none were persisted.
+    const restored = sessions.restore();
+    if (!restored) sessions.create({ workspace: state.lastWorkspace, title: "Main" });
     // Bring up MCP servers in the background; refresh connection list when ready.
     mcp.startAll().then(() => send("mcp:list", { servers: mcp.list() })).catch(() => {});
   }).catch((e) => send("gateway:status", { state: "error", detail: e.message }));
@@ -179,4 +182,4 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
-app.on("before-quit", () => { if (mcp) mcp.stopAll(); if (gateway) gateway.stop(); });
+app.on("before-quit", () => { if (sessions) sessions.save(); if (mcp) mcp.stopAll(); if (gateway) gateway.stop(); });

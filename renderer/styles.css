@@ -165,9 +165,22 @@ b { font-weight: 600; color: var(--fg); }
 .modal-box label { display: block; font-size: 11px; color: var(--dim); margin: 10px 0 4px; }
 .m-input { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px; color: var(--fg); font-family: var(--mono); font-size: 12.5px; outline: none; }
 .m-input:focus { border-color: var(--accent); }
-.modal-presets { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 12px; font-size: 11.5px; }
-.preset { font-family: var(--mono); font-size: 11.5px; color: var(--dim); background: none; border: 1px dashed var(--border); border-radius: 5px; padding: 3px 8px; cursor: pointer; }
-.preset:hover { color: var(--fg); border-color: var(--accent); }
+.modal-box { width: 560px; }
+.gallery { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-top: 14px; max-height: 260px; overflow-y: auto; }
+.gcard { border: 1px solid var(--border); border-radius: 8px; padding: 9px 11px; cursor: pointer; background: var(--bg); transition: border-color .15s, background .15s; }
+.gcard:hover { border-color: var(--accent); background: rgba(217,119,87,0.05); }
+.gcard-on { opacity: .55; cursor: default; }
+.gcard-on:hover { border-color: var(--border); background: var(--bg); }
+.gc-top { display: flex; align-items: center; gap: 7px; }
+.gc-ic { font-size: 14px; }
+.gc-name { font-size: 12.5px; font-weight: 600; color: var(--fg); }
+.gc-desc { font-size: 11px; color: var(--dim); margin: 4px 0 6px; line-height: 1.4; }
+.gc-act { font-size: 11px; color: var(--accent); }
+.gcard-on .gc-act { color: var(--green); }
+.modal-divider { display: flex; align-items: center; gap: 10px; margin: 16px 0 10px; color: var(--dimmer); font-size: 11px; }
+.modal-divider::before, .modal-divider::after { content: ""; flex: 1; height: 1px; background: var(--border-soft); }
+.m-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.m-env { resize: vertical; min-height: 34px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 .btn-ghost { font-family: var(--mono); background: none; border: 1px solid var(--border); color: var(--fg); border-radius: 6px; padding: 7px 14px; cursor: pointer; font-size: 12.5px; }
 .btn-ghost:hover { background: var(--bg); }

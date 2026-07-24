@@ -21,6 +21,7 @@ let fileIndex = null;
 let thinkingEl = null, thinkTimer = null;
 let streamEl = null, streamText = "";
 let approvalMode = "auto";
+let currentMcp = [];
 const mentions = new Set();
 
 const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -217,6 +218,8 @@ function renderSessions(list, act) {
 }
 
 function renderMcp(servers) {
+  currentMcp = servers || [];
+  if (!$("modal").classList.contains("hidden")) renderGallery();
   const box = $("mcp-list"); box.innerHTML = "";
   if (!servers || !servers.length) { box.innerHTML = `<div class="rail-empty">No connections. + to add tools.</div>`; return; }
   servers.forEach((s) => {
@@ -295,18 +298,50 @@ $("change-cwd").addEventListener("click", () => api.pickWorkspace(activeId));
 $("dashboard").addEventListener("click", () => api.openDashboard());
 $("model").addEventListener("change", (e) => api.setModel(e.target.value));
 
-// ── MCP modal ──────────────────────────────────────────────────────
-$("add-mcp").addEventListener("click", () => $("modal").classList.remove("hidden"));
-$("m-cancel").addEventListener("click", () => $("modal").classList.add("hidden"));
-$("modal").addEventListener("click", (e) => { if (e.target.id === "modal") $("modal").classList.add("hidden"); });
-document.querySelectorAll(".preset").forEach((b) => b.addEventListener("click", () => { $("m-name").value = b.dataset.name; $("m-cmd").value = b.dataset.cmd; $("m-args").value = b.dataset.args; }));
-$("m-add").addEventListener("click", async () => {
+// ── MCP gallery + modal ────────────────────────────────────────────
+const MCP_GALLERY = [
+  { name: "filesystem", icon: "📁", desc: "Read & write files in a folder", cmd: "npx", args: "-y @modelcontextprotocol/server-filesystem ." },
+  { name: "memory", icon: "🧠", desc: "Persistent knowledge-graph memory", cmd: "npx", args: "-y @modelcontextprotocol/server-memory" },
+  { name: "sequential-thinking", icon: "🔗", desc: "Structured step-by-step reasoning", cmd: "npx", args: "-y @modelcontextprotocol/server-sequential-thinking" },
+  { name: "everything", icon: "✨", desc: "Reference server — every MCP feature", cmd: "npx", args: "-y @modelcontextprotocol/server-everything" },
+  { name: "github", icon: "🐙", desc: "Repos, issues, PRs (needs token)", cmd: "npx", args: "-y @modelcontextprotocol/server-github", env: "GITHUB_PERSONAL_ACCESS_TOKEN=", needsCfg: true },
+  { name: "puppeteer", icon: "🎭", desc: "Drive a headless browser", cmd: "npx", args: "-y @modelcontextprotocol/server-puppeteer" },
+  { name: "postgres", icon: "🐘", desc: "Query a Postgres database", cmd: "npx", args: "-y @modelcontextprotocol/server-postgres postgresql://localhost/db", needsCfg: true },
+  { name: "brave-search", icon: "🔎", desc: "Web search (needs API key)", cmd: "npx", args: "-y @modelcontextprotocol/server-brave-search", env: "BRAVE_API_KEY=", needsCfg: true },
+];
+function renderGallery() {
+  const g = $("gallery"); g.innerHTML = "";
+  const connected = new Set(currentMcp.map((s) => s.name));
+  MCP_GALLERY.forEach((it) => {
+    const el = document.createElement("div");
+    const on = connected.has(it.name);
+    el.className = "gcard" + (on ? " gcard-on" : "");
+    el.innerHTML = `<div class="gc-top"><span class="gc-ic">${it.icon}</span><span class="gc-name">${esc(it.name)}</span></div><div class="gc-desc">${esc(it.desc)}</div><div class="gc-act">${on ? "✓ connected" : it.needsCfg ? "configure →" : "+ connect"}</div>`;
+    el.addEventListener("click", () => {
+      if (on) return;
+      $("m-name").value = it.name; $("m-cmd").value = it.cmd; $("m-args").value = it.args; $("m-env").value = it.env || "";
+      if (it.needsCfg) { $("m-env").focus(); }   // let the user paste a token / edit the connection
+      else { addFromForm(); }                    // one-click for no-config servers
+    });
+    g.appendChild(el);
+  });
+}
+function openModal() { renderGallery(); $("modal").classList.remove("hidden"); }
+function closeModal() { $("modal").classList.add("hidden"); $("m-name").value = ""; $("m-cmd").value = ""; $("m-args").value = ""; $("m-env").value = ""; }
+async function addFromForm() {
   const name = $("m-name").value.trim(); const command = $("m-cmd").value.trim(); const argsStr = $("m-args").value.trim();
   if (!name || !command) return;
+  const env = {};
+  ($("m-env").value || "").split("\n").forEach((l) => { const i = l.indexOf("="); if (i > 0) env[l.slice(0, i).trim()] = l.slice(i + 1).trim(); });
   const conf = { command, args: argsStr ? argsStr.split(/\s+/) : [] };
-  $("modal").classList.add("hidden"); $("m-name").value = ""; $("m-cmd").value = ""; $("m-args").value = "";
+  if (Object.keys(env).length) conf.env = env;
+  closeModal();
   await api.addMcp(name, conf);
-});
+}
+$("add-mcp").addEventListener("click", openModal);
+$("m-cancel").addEventListener("click", closeModal);
+$("modal").addEventListener("click", (e) => { if (e.target.id === "modal") closeModal(); });
+$("m-add").addEventListener("click", addFromForm);
 
 // ── init ───────────────────────────────────────────────────────────
 (async () => {
