@@ -198,8 +198,7 @@ class MCPManager {
   isMcpTool(name) { return typeof name === "string" && name.startsWith("mcp__"); }
 
   async callTool(name, args) {
-    const m = name.match(/^mcp__([^_]+(?:_[^_]+)*?)__(.+)$/);
-    // Robust split: server name is between the first mcp__ and the last __<tool>.
+    // Robust split: server name is between the leading mcp__ and the first __<tool>.
     const rest = name.slice("mcp__".length);
     const sep = rest.indexOf("__");
     const serverName = rest.slice(0, sep);

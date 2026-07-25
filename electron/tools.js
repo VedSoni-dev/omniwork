@@ -118,10 +118,19 @@ function truncate(s) {
   return s.slice(0, MAX_OUTPUT_CHARS) + `\n… [truncated ${s.length - MAX_OUTPUT_CHARS} chars]`;
 }
 
+// Prefer the user's login shell so commands see the same aliases, PATH and
+// toolchain they'd get in Terminal. macOS defaults to zsh; bash is the fallback.
+function userShell() {
+  if (process.platform === "win32") return "powershell.exe";
+  const sh = process.env.SHELL;
+  if (sh && fs.existsSync(sh)) return sh;
+  return fs.existsSync("/bin/zsh") ? "/bin/zsh" : "/bin/bash";
+}
+
 async function runCommand(workspace, command, onChunk) {
   return new Promise((resolve) => {
     const isWin = process.platform === "win32";
-    const shell = isWin ? "powershell.exe" : "/bin/bash";
+    const shell = userShell();
     const args = isWin ? ["-NoProfile", "-Command", command] : ["-lc", command];
     const child = spawn(shell, args, { cwd: workspace, env: process.env });
     let out = "";
@@ -163,6 +172,25 @@ async function webFetch(url) {
   } catch (err) {
     return `Failed to fetch ${u}: ${err.message}`;
   }
+}
+
+// Open a URL in the default browser. Uses Electron's shell when we're inside the
+// app; mcp-server.js runs on plain Node, where `require("electron")` resolves to
+// a path string rather than the module, so fall back to the OS opener.
+async function openExternal(url) {
+  try {
+    const electron = require("electron");
+    if (electron && electron.shell && typeof electron.shell.openExternal === "function") {
+      await electron.shell.openExternal(url);
+      return;
+    }
+  } catch {}
+  const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
+  await new Promise((resolve) => {
+    const child = spawn(cmd, [url], { stdio: "ignore", detached: true, shell: process.platform === "win32" });
+    child.on("error", resolve);
+    child.on("spawn", () => { child.unref(); resolve(); });
+  });
 }
 
 // ---- Dispatcher. Returns a string result for the given tool call. ----
@@ -212,10 +240,9 @@ async function executeTool(name, args, ctx) {
         return await webFetch(args.url);
       }
       case "open_url": {
-        const { shell } = require("electron");
         let u = String(args.url || "");
         if (!/^https?:\/\//i.test(u)) u = "http://" + u;
-        await shell.openExternal(u);
+        await openExternal(u);
         return `Opened ${u} in the browser.`;
       }
       default:

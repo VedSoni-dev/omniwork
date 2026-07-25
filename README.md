@@ -90,15 +90,29 @@ Requires Node.js 22+ (24 recommended).
 git clone https://github.com/VedSoni-dev/omniwork.git
 cd omniwork
 npm install --legacy-peer-deps   # OmniRoute has a benign marked peer conflict
-node scripts/gen-icon.js         # generate the app icon
+npm run doctor                   # verify/repair the setup, generate the icon
 npm start                        # launch the app
 ```
 
-Package installers (build on the matching OS):
+`npm run doctor` is worth running whenever something looks broken. It checks your
+Node version, the OmniRoute engine and the app icon — and it repairs the most common
+failure, a half-extracted Electron binary (`Electron failed to install correctly`),
+which happens when the ~100 MB postinstall download is interrupted or when npm defers
+install scripts. It re-extracts from the cached download rather than making you
+reinstall.
+
+Package installers (build on the matching OS **and the matching CPU architecture**):
 
 ```bash
-npm run dist:win     # or dist:mac / dist:linux  →  output in dist/
+npm run dist:mac     # or dist:win / dist:linux  →  output in dist/
 ```
+
+> **macOS packaging note.** The app bundles a real Node binary to run the gateway
+> (Electron's embedded Node can't boot it), and that binary is copied from the build
+> machine. So an Apple Silicon Mac produces a working arm64 build but a *broken* x64
+> one, and vice versa — build each arch on its own machine or in CI. Locally built
+> `.app`s are unsigned, so the first launch needs right-click → Open (or
+> `xattr -dr com.apple.quarantine "dist/mac/OmniWork.app"`).
 
 ## How it works
 
@@ -144,6 +158,7 @@ provider keys (stored encrypted, locally), or pick a specific model in the statu
 electron/
   main.js        app lifecycle, windows, IPC
   sidecar.js     bundled OmniRoute process manager  ← the core idea
+  shell-path.js  repairs PATH for GUI (Finder/Dock) launches
   sessions.js    Cowork: parallel agent sessions
   agent.js       tool-use loop + subagent fan-out (Agent Deck)
   tools.js       file/shell/web tools (workspace-confined)

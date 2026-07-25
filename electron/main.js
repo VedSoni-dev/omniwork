@@ -4,9 +4,14 @@ const path = require("node:path");
 const os = require("node:os");
 const fs = require("node:fs");
 
+const { ensureShellPath } = require("./shell-path");
 const { Gateway } = require("./sidecar");
 const { SessionManager } = require("./sessions");
 const { MCPManager } = require("./mcp");
+
+// Do this before anything spawns a child: a Finder/Dock launch hands us a bare
+// PATH, which would break `npx` MCP servers and the agent's run_command.
+ensureShellPath();
 
 let win = null;
 let gateway = null;
@@ -184,10 +189,38 @@ ipcMain.handle("file:read", (_e, relPath) => {
 
 // ── lifecycle ───────────────────────────────────────────────────────
 app.whenReady().then(boot);
+
+// On macOS the app stays alive after the last window closes, so the gateway and
+// MCP servers must stay up too — otherwise reopening from the dock lands on a
+// dead engine. Everywhere else, closing the window really is quitting.
 app.on("window-all-closed", () => {
+  if (process.platform !== "darwin") {
+    if (mcp) mcp.stopAll();
+    if (gateway) gateway.stop();
+    app.quit();
+  }
+});
+
+app.on("activate", () => {
+  const open = BrowserWindow.getAllWindows();
+  if (open.length === 0) createWindow();
+  else { win = open[0]; if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
+});
+
+let shuttingDown = false;
+function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  if (sessions) sessions.save({ immediate: true }); // debounced save would never fire
   if (mcp) mcp.stopAll();
   if (gateway) gateway.stop();
-  if (process.platform !== "darwin") app.quit();
-});
-app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
-app.on("before-quit", () => { if (sessions) sessions.save(); if (mcp) mcp.stopAll(); if (gateway) gateway.stop(); });
+}
+
+app.on("before-quit", shutdown);
+
+// `before-quit` does not fire when the process is signalled (terminal Ctrl-C,
+// a `kill`, logout). Without this the gateway is orphaned and keeps holding
+// port 20128, so the next launch adopts a sidecar nobody owns.
+for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"]) {
+  process.on(sig, () => { shutdown(); app.quit(); process.exit(0); });
+}

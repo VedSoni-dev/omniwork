@@ -16,8 +16,11 @@
 const path = require("node:path");
 const os = require("node:os");
 const fs = require("node:fs");
+const { ensureShellPath } = require("./shell-path");
 const { Gateway } = require("./sidecar");
 const { Agent } = require("./agent");
+
+ensureShellPath(); // MCP clients can launch us with a minimal environment too
 
 const log = (...a) => process.stderr.write("[omniwork-mcp] " + a.join(" ") + "\n");
 const PORT = Number(process.env.OMNIWORK_GATEWAY_PORT || 20128);

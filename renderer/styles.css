@@ -23,6 +23,10 @@ b { font-weight: 600; color: var(--fg); }
 /* ── rail ──────────────────────────────────────────────────────────── */
 .rail { background: var(--rail); border-right: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; }
 .rail-brand { padding: 13px 14px 10px; font-weight: 600; font-size: 14px; letter-spacing: -.01em; }
+/* macOS: titleBarStyle "hiddenInset" floats the traffic lights over the rail —
+   push the brand below them and make the strip a window drag handle. */
+:root[data-platform="darwin"] .rail-brand { padding-top: 34px; -webkit-app-region: drag; }
+:root[data-platform="darwin"] .rail-brand > * { -webkit-app-region: no-drag; }
 .rail-sec { display: flex; flex-direction: column; min-height: 0; }
 .rail-sec:nth-of-type(2) { flex: 1; overflow: hidden; }
 .rail-head { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px 5px; font-size: 10.5px; letter-spacing: .08em; color: var(--dimmer); }

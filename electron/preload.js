@@ -2,6 +2,8 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("omniwork", {
+  platform: process.platform, // renderer needs it for the macOS titlebar inset
+
   // sessions (Cowork)
   createSession: (opts) => ipcRenderer.invoke("session:create", opts),
   listSessions: () => ipcRenderer.invoke("session:list"),

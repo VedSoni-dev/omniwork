@@ -72,6 +72,7 @@ class Gateway {
     this.apiKey = ensureApiKey(dataDir);
     this.proc = null;
     this.ready = false;
+    this.adopted = false; // true when we reused a gateway we didn't spawn
     this.baseUrl = BASE_URL;
   }
 
@@ -79,8 +80,26 @@ class Gateway {
     this.onStatus({ state, detail, baseUrl: this.baseUrl });
   }
 
+  // Is something already serving the gateway on our port? Happens when a previous
+  // run left the sidecar behind, or when the MCP server booted one first. Adopting
+  // it beats failing on EADDRINUSE or racing a second copy onto the same DB.
+  async #adoptRunning() {
+    try {
+      const res = await fetch(`http://${HOST}:${PORT}/v1/models`, { signal: AbortSignal.timeout(2000) });
+      return res.ok || res.status === 401;
+    } catch { return false; }
+  }
+
   async start() {
     this.status("boot", "Launching OmniRoute…");
+
+    if (await this.#adoptRunning()) {
+      this.ready = true;
+      this.adopted = true; // not ours to kill on shutdown
+      this.status("ready", "OmniRoute · free models");
+      return this.baseUrl;
+    }
+
     // Full build: engine is bundled. Lite build: download it to the data dir once.
     let omniDir = resolveBundledOmniroute();
     if (!omniDir) {
@@ -123,10 +142,13 @@ class Gateway {
     // Ensure no stray Electron-as-node flag leaks into the child.
     delete env.ELECTRON_RUN_AS_NODE;
 
+    // detached: gives the child its own process group so stop() can take down
+    // any workers Next.js spawned, not just the parent.
     this.proc = spawn(this.nodeBinary, [serverEntry], {
       cwd: path.join(omniDir, "dist"),
       env,
       stdio: ["ignore", "pipe", "pipe"],
+      detached: process.platform !== "win32",
     });
 
     this.proc.stdout.on("data", (d) => this.#log(d));
@@ -171,11 +193,23 @@ class Gateway {
   }
 
   stop() {
-    if (this.proc && !this.proc.killed) {
-      try { this.proc.kill(); } catch {}
-    }
+    const proc = this.proc;
     this.proc = null;
     this.ready = false;
+    // We adopted someone else's gateway — leave it running for its owner.
+    if (this.adopted || !proc || proc.killed || proc.exitCode !== null) return;
+
+    // Signal the whole process group (see `detached` in start()) so Next.js
+    // workers go down with the parent instead of orphaning onto the port.
+    const signal = (sig) => {
+      try { process.platform === "win32" ? proc.kill(sig) : process.kill(-proc.pid, sig); }
+      catch { try { proc.kill(sig); } catch {} }
+    };
+    signal("SIGTERM");
+    // If it hasn't gone in 3s, stop asking nicely. Unref so a clean exit isn't
+    // held open waiting on this timer.
+    const t = setTimeout(() => { if (proc.exitCode === null) signal("SIGKILL"); }, 3000);
+    if (t.unref) t.unref();
   }
 }
 

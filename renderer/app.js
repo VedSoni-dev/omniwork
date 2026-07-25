@@ -10,6 +10,8 @@ const stub = {
   setModel: async () => {}, openDashboard: async () => {}, on: () => () => {},
 };
 const api = window.omniwork || stub;
+// macOS uses a hidden-inset titlebar, so the rail needs room for the traffic lights.
+document.documentElement.dataset.platform = api.platform || "web";
 const $ = (id) => document.getElementById(id);
 const scroll = $("scroll");
 const input = $("input");
@@ -45,6 +47,7 @@ function welcome() {
   const cwd = s ? s.workspace : "—";
   const el = document.createElement("div");
   el.className = "welcome";
+  el.id = "welcome"; // send()/handleSlash() remove it by id
   el.innerHTML =
     `<div class="wbox">` +
     `<div class="wline"><span class="accent">✻</span> <b>${esc(s ? s.title : "OmniWork")}</b> · Claude Code–style agent</div>` +
@@ -246,7 +249,14 @@ function renderMcp(servers) {
 api.on("session:event", (p) => { if (p.sessionId === activeId) renderEvent(p, true); });
 api.on("sessions:list", (p) => renderSessions(p.sessions, p.activeId));
 api.on("mcp:list", (p) => renderMcp(p.servers));
-api.on("gateway:status", (s) => { const d = $("gw-dot"); d.className = "s-dot " + (s.state === "ready" ? "ok" : s.state === "error" ? "err" : "boot"); $("gw-label").textContent = s.state === "ready" ? "ready" : s.state === "error" ? "engine error" : "starting…"; });
+api.on("gateway:status", (s) => {
+  const d = $("gw-dot");
+  d.className = "s-dot " + (s.state === "ready" ? "ok" : s.state === "error" ? "err" : "boot");
+  $("gw-label").textContent = s.state === "ready" ? "ready" : s.state === "error" ? "engine error" : "starting…";
+  // The engine usually finishes booting *after* this page loads, so the initial
+  // model fetch comes back empty. Fill the picker in once it's actually up.
+  if (s.state === "ready") populateModels();
+});
 
 // ── @-mentions ─────────────────────────────────────────────────────
 function renderChips() {

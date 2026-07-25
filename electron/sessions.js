@@ -34,23 +34,29 @@ class SessionManager {
   }
 
   // ── persistence ──────────────────────────────────────────────────
-  save() {
+  #snapshot() {
+    return {
+      activeId: this.activeId,
+      sessions: [...this.sessions.values()].map((s) => ({
+        id: s.id, title: s.title, workspace: s.workspace,
+        status: s.status === "running" ? "done" : s.status,
+        transcript: s.transcript.slice(-1500),
+        messages: s.agent ? s.agent.messages.slice(-200).map(stripImages) : [],
+      })),
+    };
+  }
+
+  #writeNow() {
+    try { fs.writeFileSync(this.persistPath, JSON.stringify(this.#snapshot())); } catch {}
+  }
+
+  // Debounced by default. `immediate` is for quit, where a pending timer would
+  // never get a chance to fire and the session would be lost.
+  save({ immediate = false } = {}) {
     if (!this.persistPath) return;
     clearTimeout(this._saveTimer);
-    this._saveTimer = setTimeout(() => {
-      try {
-        const data = {
-          activeId: this.activeId,
-          sessions: [...this.sessions.values()].map((s) => ({
-            id: s.id, title: s.title, workspace: s.workspace,
-            status: s.status === "running" ? "done" : s.status,
-            transcript: s.transcript.slice(-1500),
-            messages: s.agent ? s.agent.messages.slice(-200).map(stripImages) : [],
-          })),
-        };
-        fs.writeFileSync(this.persistPath, JSON.stringify(data));
-      } catch {}
-    }, 400);
+    if (immediate) { this.#writeNow(); return; }
+    this._saveTimer = setTimeout(() => this.#writeNow(), 400);
   }
 
   restore() {

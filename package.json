@@ -1,6 +1,6 @@
 {
   "name": "omniwork",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "Open-source Claude Code / Cowork-style desktop agent with OmniRoute baked in. Download, open, and code with free AI models — zero setup.",
   "author": "OmniWork contributors",
   "license": "MIT",
@@ -16,12 +16,13 @@
     "dist:linux": "electron-builder --linux",
     "dist:lite": "electron-builder --win -c electron-builder-lite.json",
     "icon": "node scripts/gen-icon.js",
+    "doctor": "node scripts/doctor.js",
+    "setup": "node scripts/doctor.js",
     "test:boot": "node test/boot.js",
     "test:smoke": "node test/smoke.js",
     "test:cowork": "node test/cowork.js",
     "test:features": "node test/features.js",
     "test:persist": "node test/persist.js",
-    "test:polish": "node test/polish.js",
     "mcp": "node electron/mcp-server.js"
   },
   "bin": {
