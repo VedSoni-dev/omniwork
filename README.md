@@ -10,7 +10,6 @@ Download it, open a folder, and start building. No API key. No login. No config.
 Free models work the second you launch — and you can run a whole *team* of agents at once.
 
 [![Release](https://img.shields.io/github/v/release/VedSoni-dev/omniwork?color=8bb072&label=release)](https://github.com/VedSoni-dev/omniwork/releases/latest)
-[![CI](https://github.com/VedSoni-dev/omniwork/actions/workflows/ci.yml/badge.svg)](https://github.com/VedSoni-dev/omniwork/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-d97757.svg)](LICENSE)
 ![Platforms](https://img.shields.io/badge/windows%20·%20macOS%20·%20linux-2c2a27)
 ![Free](https://img.shields.io/badge/free-no%20API%20key-8bb072)

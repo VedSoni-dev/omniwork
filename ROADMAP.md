@@ -21,6 +21,11 @@ to right-click → Open past a *"damaged and can't be opened"* warning, and Wind
 SmartScreen prompt. Both need paid certificates — an Apple Developer account ($99/yr) and an
 OV/EV code-signing certificate.
 
+**Unblock CI.** GitHub Actions is currently billing-locked on this account, so no workflow
+runs — the CI badge was pulled from the README rather than show a red state that reflects
+billing instead of code. `ci.yml` and `release.yml` are written and validated but have not
+executed; treat them as untested until a run goes green.
+
 **Release artifacts for every platform.** Intel macOS and Linux still require building from
 source. `.github/workflows/release.yml` already has the matrix; it needs CI minutes to run.
 
