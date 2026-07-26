@@ -29,6 +29,13 @@ const BASE_URL = `http://${HOST}:${PORT}/v1`;
 
 // Locate a BUNDLED omniroute package dir (full build). Returns null if the
 // engine isn't packaged with the app (lite build) — the caller then downloads it.
+//
+// NOTE: the gateway runs on a real Node binary, not Electron, so it cannot read
+// anything inside app.asar — plain Node has no idea what an asar archive is.
+// Every module the engine resolves (next and its whole tree, better-sqlite3,
+// sql.js) therefore has to exist as real files on disk, which is why the build
+// config unpacks all of node_modules rather than a hand-picked list. If you ever
+// narrow `asarUnpack`, the gateway dies at launch with MODULE_NOT_FOUND.
 function resolveBundledOmniroute() {
   let pkgJson = null;
   try { pkgJson = require.resolve("omniroute/package.json"); } catch {}
