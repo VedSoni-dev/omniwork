@@ -1,0 +1,37 @@
+name: Feature request
+description: Suggest a capability or improvement
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the situation you run into, not just the feature you want.
+      placeholder: |
+        When I do X, I have to Y every time, which is slow because...
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you have considered
+      description: Including any workaround you currently use.
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Does this fit the project?
+      description: |
+        OmniWork aims to stay zero-setup, dependency-light and hackable. Features that
+        require an account, an API key, or a heavy new dependency are a hard sell.
+      options:
+        - label: This keeps OmniWork usable with zero setup and no API key
+        - label: I am willing to help implement it

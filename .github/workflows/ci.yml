@@ -6,18 +6,69 @@ on:
   pull_request:
   workflow_dispatch:
 
+# A new push to the same branch supersedes an in-flight run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  boot-check:
+  # Cheap, no-install checks. Fails fast on a typo before anyone waits ~5 min
+  # for the full install on three runners.
+  lint:
+    name: syntax
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Install dependencies
-        run: npm install --legacy-peer-deps
       - name: Syntax check
         run: |
           for f in electron/*.js scripts/*.js test/*.js; do node --check "$f"; done
+      - name: Validate JSON
+        run: |
+          for f in package.json electron-builder-lite.json; do
+            node -e "JSON.parse(require('fs').readFileSync('$f','utf8'))" || exit 1
+          done
+
+  # The gateway is the part that breaks per-platform: it runs on a real Node
+  # binary outside Electron, spawns child processes, and binds a port. Every
+  # macOS bug fixed in 0.9.1 would have been caught by running this on macOS.
+  boot-check:
+    name: boot (${{ matrix.os }})
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps
+
+      - name: Verify setup
+        run: npm run doctor
+
       - name: Gateway boot check
         run: node test/boot.js
+
+      # The gateway must not survive the process that started it. This is the
+      # regression that orphaned OmniRoute onto port 20128 and blocked relaunch.
+      - name: No orphaned gateway
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          if lsof -nP -iTCP:20128 -sTCP:LISTEN 2>/dev/null | grep -q LISTEN; then
+            echo "::error::a gateway is still listening on 20128 after the test exited"
+            lsof -nP -iTCP:20128 -sTCP:LISTEN
+            exit 1
+          fi
+          echo "port 20128 is clear"

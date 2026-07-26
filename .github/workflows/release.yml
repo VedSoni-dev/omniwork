@@ -21,11 +21,19 @@ jobs:
         include:
           - os: windows-latest
             build: npm run dist:win
+          # macOS is split by architecture on purpose. stage-node.js fetches the
+          # right Node for the target arch either way, but better-sqlite3 is
+          # compiled for the *build host* — so building x64 on an arm64 runner
+          # ships a mismatched native module and the engine silently falls back
+          # to its slower WASM store. macos-13 is the last Intel runner image.
+          - os: macos-13
+            build: npx electron-builder --mac dmg --x64
           - os: macos-latest
-            build: npm run dist:mac
+            build: npx electron-builder --mac dmg --arm64
           - os: ubuntu-latest
             build: npm run dist:linux
     runs-on: ${{ matrix.os }}
+    name: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -36,8 +44,8 @@ jobs:
       - name: Install dependencies
         run: npm install --legacy-peer-deps
 
-      - name: Generate icon
-        run: node scripts/gen-icon.js
+      - name: Verify setup
+        run: npm run doctor
 
       - name: Build installer
         env:

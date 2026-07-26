@@ -4,16 +4,24 @@ Thanks for helping build a truly zero-setup, open-source AI coding agent.
 
 ## Dev setup
 
+Requires **Node.js 22+** (24 recommended).
+
 ```bash
 git clone https://github.com/VedSoni-dev/omniwork.git
 cd omniwork
 npm install --legacy-peer-deps   # OmniRoute has a benign marked peer conflict
-node scripts/gen-icon.js         # generate the app icon
-npm start                        # launch the app (system node runs the gateway in dev)
+npm run doctor                   # verify/repair setup, generate the icon
+npm start                        # launch the app
+npm run dev                      # ...or with devtools + verbose gateway logs
 ```
 
-Dev mode uses your system `node` to run the bundled OmniRoute gateway. Packaged
-builds ship their own Node binary (see below), so **Node 22+ is required** for dev.
+In dev, the gateway runs on your system `node` (override with `OMNIWORK_NODE`). Packaged
+builds ship their own Node binary — see [below](#things-that-are-load-bearing).
+
+If anything looks broken, run **`npm run doctor`** first. It checks your Node version, the
+engine and the icon, and repairs a half-extracted Electron binary — the
+*"Electron failed to install correctly"* state that a plain postinstall re-run cannot fix,
+because it exits early on the partial directory.
 
 ## How it fits together
 
@@ -21,37 +29,84 @@ builds ship their own Node binary (see below), so **Node 22+ is required** for d
 |------|------|
 | `electron/main.js` | App lifecycle, windows, IPC |
 | `electron/sidecar.js` | Boots the bundled OmniRoute gateway as a child process |
+| `electron/shell-path.js` | Repairs `PATH` for GUI (Finder/Dock) launches |
+| `electron/engine-fetch.js` | Downloads the engine on first run (lite builds) |
 | `electron/agent.js` | OpenAI-compatible tool-use loop against `localhost:20128/v1` |
-| `electron/tools.js` | File + shell tools, confined to the chosen workspace |
-| `renderer/` | The UI |
-| `scripts/stage-node.js` | electron-builder `beforePack` hook — bundles a Node binary |
+| `electron/sessions.js` | Cowork — many agents in parallel, plus persistence |
+| `electron/tools.js` | File + shell + web tools |
+| `electron/mcp.js` | MCP client (connect external stdio tool servers) |
+| `electron/mcp-server.js` | MCP server — the `delegate` tool for Claude Code / Codex |
+| `renderer/` | The UI (no build step — plain HTML/CSS/JS) |
+| `scripts/stage-node.js` | electron-builder `beforePack` hook — stages the gateway's Node |
+| `scripts/doctor.js` | Setup verification + repair |
 | `scripts/gen-icon.js` | Dependency-free app-icon generator |
 
-## Why a bundled Node binary?
+## Things that are load-bearing
 
-OmniRoute's gateway is a Next.js standalone server that does not boot correctly on
-Electron's embedded Node. So we ship a real Node binary alongside the app and spawn
-the gateway with it. CI builds each OS on its own runner, so each installer gets a
-matching Node binary and native modules stay ABI-compatible.
+These are non-obvious and easy to break. Each one cost a debugging session.
+
+**Why a bundled Node binary.** OmniRoute's gateway is a Next.js standalone server that does not
+boot correctly on Electron's embedded Node (worker/instrumentation incompatibilities), so we ship
+a real Node binary and spawn the gateway with it.
+
+**That binary must be self-contained.** `stage-node.js` downloads the official build from
+nodejs.org rather than copying the build machine's `process.execPath`. Copying looks simpler but
+ships a dead app: package-manager Node binaries are dynamically linked against libraries that only
+exist on the build machine — Homebrew's node needs `@rpath/libnode.<abi>.dylib` plus
+llhttp/libuv/ada/simdjson/brotli from `/opt/homebrew`, none of which are in the bundle. The build
+runs `otool -L` on the result and fails rather than shipping a runtime linked outside `/usr/lib`
+and `/System`.
+
+**`asarUnpack` must cover all of `node_modules`.** The gateway runs on that real Node binary, and
+plain Node has no idea what an asar archive is. Every module the engine resolves — `next` and its
+entire tree included — has to exist as a real file on disk. Narrowing this list brings back
+`MODULE_NOT_FOUND` at launch.
+
+**macOS keeps the app alive after the last window closes.** So `window-all-closed` must not tear
+down the gateway on darwin, and `before-quit` is not sufficient for cleanup — it does not fire on
+SIGTERM/SIGINT/SIGHUP. Both paths route through one idempotent `shutdown()`; without it the
+gateway orphans onto port 20128 and blocks the next launch.
+
+**GUI launches have a bare `PATH`.** Apps started from Finder or the Dock do not inherit your
+shell environment, so `npx`-based MCP servers fail with `ENOENT` unless `shell-path.js` has run.
+Anything that spawns a user-installed binary depends on it.
 
 ## Tests
 
 ```bash
-npm run test:boot    # gateway boots + serves model list (used in CI)
-npm run test:smoke   # full end-to-end: gateway -> agent -> file written (needs network)
+npm run test:boot      # gateway boots + serves the model list (used in CI)
+npm run test:smoke     # end-to-end: gateway -> agent -> file written on disk
+npm run test:cowork    # parallel sessions
+npm run test:features  # streaming, undo, approval
+npm run test:persist   # save/restore across restarts
 ```
+
+`test:boot` is the CI gate. The rest need network access and live free-provider
+availability, so they are run locally before a release.
 
 ## Building installers
 
 ```bash
-npm run dist:win     # or dist:mac / dist:linux — build on the matching OS
+npm run dist:mac     # or dist:win / dist:linux  →  output in dist/
 ```
 
-Releases are cut by pushing a `vX.Y.Z` tag; `.github/workflows/release.yml` builds
-all three platforms and attaches installers to the GitHub Release.
+Build on the matching **OS**. Architecture is handled for you — the gateway's Node runtime is
+fetched for the *target* arch, so an Apple Silicon Mac can produce a working x64 build. The
+remaining caveat is native modules: `better-sqlite3` is compiled for the build host, so a
+cross-arch build falls back to OmniRoute's WASM (`sql.js`) store. It works, but it is slower, so
+release artifacts should be built per-architecture in CI.
 
-## Guidelines
+Releases are cut by pushing a `vX.Y.Z` tag; `.github/workflows/release.yml` builds each platform
+and attaches the installers to the GitHub Release.
 
-- Keep it hackable and dependency-light.
-- Match the existing code style (plain CommonJS, no build step for the renderer).
-- Open an issue before large changes so we can align on direction.
+## Sending a PR
+
+1. Open an issue before large changes so we can align on direction.
+2. Keep it hackable and dependency-light — new runtime dependencies need a reason.
+3. Match the existing style: plain CommonJS, no build step for the renderer, comments that
+   explain *why* rather than restating the code.
+4. Run `npm run test:boot` plus whatever suite covers your change.
+5. Note anything you could not verify. "Tested on macOS only" is useful; silence is not.
+
+Add an entry to [CHANGELOG.md](CHANGELOG.md) under `## [Unreleased]` for anything
+user-visible.

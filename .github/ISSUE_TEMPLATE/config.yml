@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/VedSoni-dev/omniwork/security/advisories/new
+    about: Please report security issues privately, not as a public issue.
+  - name: Questions and ideas
+    url: https://github.com/VedSoni-dev/omniwork/discussions
+    about: For usage questions and open-ended discussion.

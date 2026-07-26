@@ -1,0 +1,74 @@
+name: Bug report
+description: Something is broken or behaves unexpectedly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing: please run **`npm run doctor`** and include its output below. It
+        catches the most common setup failures and will often tell you the fix directly.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you expected, and what you got instead.
+      placeholder: |
+        I clicked X and expected Y, but the app did Z.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Launch OmniWork
+        2. Pick a folder
+        3. Type "..."
+        4. See the error
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: How are you running OmniWork?
+      options:
+        - Installer / .dmg / .exe (packaged build)
+        - From source (npm start)
+      default: 0
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: OmniWork version
+      placeholder: "0.9.1"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS and architecture
+      placeholder: "macOS 15.2 (Apple Silicon) · Windows 11 x64 · Ubuntu 24.04"
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: "`npm run doctor` output"
+      description: Skip if you are using a packaged build and have no source checkout.
+      render: text
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Run with `npm run dev` (or set `OMNIWORK_DEV=1`) for verbose gateway output and
+        paste anything relevant. Redact API keys before posting.
+      render: text
