@@ -195,7 +195,12 @@ class Agent {
     return [...TOOL_SCHEMA, ...sub, ...mem, ...kn, ...sk, ...web, ...extra];
   }
 
-  abort() { this.aborted = true; }
+  // Aborting must also kill in-flight network work — a flag alone leaves the
+  // user waiting out a slow or hung stream before Esc "takes".
+  abort() {
+    this.aborted = true;
+    try { this.abortCtl?.abort(); } catch {}
+  }
   setWorkspace(dir) { this.workspace = dir; }
 
   // One-off model call outside the session's message history (summaries,
@@ -203,6 +208,7 @@ class Agent {
   async oneShot(prompt) {
     const res = await fetch(`${this.baseUrl}/chat/completions`, {
       method: "POST",
+      signal: AbortSignal.timeout(60_000),
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}` },
       body: JSON.stringify({ model: this.model, messages: [{ role: "user", content: prompt }], temperature: 0.2 }),
     });
@@ -242,6 +248,7 @@ class Agent {
   async #requestModel(stream) {
     const res = await fetch(`${this.baseUrl}/chat/completions`, {
       method: "POST",
+      signal: this.abortCtl?.signal,
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}` },
       body: JSON.stringify({
         model: this.model,
@@ -284,6 +291,7 @@ class Agent {
     let usage = null;
     const toolCalls = [];
     while (true) {
+      if (this.aborted) { try { reader.cancel(); } catch {} break; }
       const { done, value } = await reader.read();
       if (done) break;
       buf += decoder.decode(value, { stream: true });
@@ -365,6 +373,7 @@ class Agent {
 
   async send(userText, images) {
     this.aborted = false;
+    this.abortCtl = new AbortController();
     this.turnUndo = new Map();
     this.undoAvailable = false;
     this.turnStats = { startedAt: Date.now(), inTokens: 0, outTokens: 0, estimated: false };
@@ -397,6 +406,7 @@ class Agent {
       let msg;
       try { msg = await this.callModel(); }
       catch (err) {
+        if (this.aborted) { this.emit("aborted", this.#statsPayload()); return; }
         const friendly = /fetch failed|ECONNREFUSED/i.test(err.message)
           ? "Lost connection to the engine — it restarts itself within ~20s. Try again in a moment."
           : err.message;

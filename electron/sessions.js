@@ -124,6 +124,9 @@ class SessionManager {
       approver: (callId, name, args, preview) =>
         new Promise((resolve) => {
           this.pendingApprovals.set(callId, resolve);
+          // Remember what we're waiting on: switching sessions destroys the
+          // renderer's approval card, and the turn hangs forever without it.
+          sess.pendingApproval = { callId, name, args, preview };
           this.emit(id, "approval_request", { callId, name, args, preview });
         }),
       emit: (type, payload) => this.#onAgentEvent(id, type, payload),
@@ -134,6 +137,9 @@ class SessionManager {
   resolveApproval(callId, ok) {
     const r = this.pendingApprovals.get(callId);
     if (r) { this.pendingApprovals.delete(callId); r(!!ok); }
+    for (const s of this.sessions.values()) {
+      if (s.pendingApproval && s.pendingApproval.callId === callId) s.pendingApproval = null;
+    }
   }
 
   setApprovalMode(mode) {
@@ -250,7 +256,14 @@ class SessionManager {
     }
   }
 
-  stop(id) { const s = this.sessions.get(id); if (s && s.agent) s.agent.abort(); }
+  stop(id) {
+    const s = this.sessions.get(id);
+    if (!s) return;
+    // A turn parked on an approval prompt isn't in the agent loop — deny it so
+    // the abort flag is actually reached.
+    if (s.pendingApproval) this.resolveApproval(s.pendingApproval.callId, false);
+    if (s.agent) s.agent.abort();
+  }
 
   // Manual /compact. No-op while the agent is mid-turn — the step loop compacts itself.
   async compactNow(id) {

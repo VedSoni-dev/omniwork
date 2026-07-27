@@ -259,9 +259,14 @@ async function switchTo(id) {
   streamEl = null; streamText = ""; pendingApproval = null;
   const t = await api.getTranscript(id);
   if (seq !== switchSeq) return;
+  const events = Array.isArray(t) ? t : (t && t.events) || [];
   scroll.innerHTML = "";
-  if (!t || !t.length) welcome();
-  else for (const ev of t) renderEvent(ev, false);
+  if (!events.length) welcome();
+  else for (const ev of events) renderEvent(ev, false);
+  // A turn may be parked on an approval prompt — re-render its card, or the
+  // agent waits forever with no way to answer.
+  const pa = !Array.isArray(t) && t && t.pendingApproval;
+  if (pa) addApproval(pa.callId, pa.name, pa.args, pa.preview);
   $("ctx-meter").classList.add("hidden"); // repopulates from the session's context events
   updateFolder(); syncComposer(); scrollDown();
   input.focus();
@@ -521,9 +526,15 @@ input.addEventListener("input", () => {
 input.addEventListener("keydown", (e) => {
   if (e.key === "Tab" && e.shiftKey) { e.preventDefault(); cycleApproval(); return; }
   if (pendingApproval && !input.value.trim() && (e.key === "y" || e.key === "n")) { e.preventDefault(); pendingApproval(e.key === "y"); return; }
-  if (mpop) { if (e.key === "ArrowDown") { e.preventDefault(); moveSel(1); return; } if (e.key === "ArrowUp") { e.preventDefault(); moveSel(-1); return; } if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); pickSel(); return; } if (e.key === "Escape") { hidePop(); return; } }
+  if (mpop) { if (e.key === "ArrowDown") { e.preventDefault(); moveSel(1); return; } if (e.key === "ArrowUp") { e.preventDefault(); moveSel(-1); return; } if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); pickSel(); return; } if (e.key === "Escape") { e.preventDefault(); hidePop(); return; } }
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
-  if (e.key === "Escape") api.stopSession(activeId);
+});
+// Esc stops the running turn from anywhere — not only while the input has focus.
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape" || e.defaultPrevented) return;
+  if (!$("memory-modal").classList.contains("hidden")) { $("memory-modal").classList.add("hidden"); return; }
+  if (mpop) { hidePop(); return; }
+  if (activeId) api.stopSession(activeId);
 });
 $("approval-toggle").addEventListener("click", cycleApproval);
 async function send() {
