@@ -86,7 +86,31 @@ token-heavy grunt work to OmniWork's free models.** OmniWork ships an MCP server
 Your expensive model spends tokens on the hard reasoning; OmniWork burns **free** tokens on the
 mechanical work, in the same project folder.
 
-**Claude Code** — add to `.mcp.json` (or `claude mcp add`):
+### Set it up in one command
+
+```bash
+npm run connect
+```
+
+This registers the MCP server for your user and adds a short section to your global
+`~/.claude/CLAUDE.md` explaining when delegating is worth it. It shows you exactly what it will
+change and asks first — both files are global and affect every Claude Code session, so nothing
+happens silently. Re-running it updates in place rather than duplicating, and it leaves a
+`.omniwork-backup` beside anything it edits.
+
+Undo it completely at any time:
+
+```bash
+npm run connect -- --uninstall
+```
+
+Then restart Claude Code and ask: *"delegate writing the tests to omniwork."*
+
+<details>
+<summary>Manual setup, or another MCP client</summary>
+
+OmniWork speaks standard MCP over stdio, so it works with Codex, Cursor, or anything else that
+supports it. Add to `.mcp.json` (or run `claude mcp add`):
 
 ```json
 {
@@ -96,8 +120,21 @@ mechanical work, in the same project folder.
 }
 ```
 
-Then: *"delegate writing the tests to omniwork."* Works with Codex / Cursor / any MCP client — it
-speaks standard MCP over stdio, and reuses the desktop app's gateway if it's already running.
+</details>
+
+Keep the desktop app running and delegated calls reuse its warm gateway; otherwise the first call
+boots one, which takes longer.
+
+### When delegating is actually worth it
+
+Delegation is not free — there's ~25–30 s of overhead per call, and the delegated agent starts
+**cold**, with no view of your conversation. It pays for bulk mechanical work, independent chunks
+you can fan out with `delegate_parallel`, and read-heavy research you want kept out of context. It
+does not pay for small edits, work that needs conversation context, or anything where precision
+matters — free models drift on instruction details.
+
+Treat the returned summary as a **claim, not evidence**, and verify before calling the work done.
+`npm run connect` installs this guidance so your agent applies it automatically.
 
 ## Build from source
 
@@ -107,9 +144,13 @@ Requires **Node.js 22+** (24 recommended).
 git clone https://github.com/VedSoni-dev/omniwork.git
 cd omniwork
 npm install --legacy-peer-deps   # OmniRoute has a benign marked peer conflict
-npm run doctor                   # verify/repair the setup, generate the icon
+npm run setup                    # verify/repair setup, then offer Claude Code integration
 npm start                        # launch the app
 ```
+
+`npm run setup` runs [`doctor`](#build-from-source) and then offers to
+[connect OmniWork to Claude Code](#set-it-up-in-one-command). Use `npm run doctor` alone to skip
+the integration prompt, or `npm run setup -- --no-connect`.
 
 **`npm run doctor`** is worth running whenever something looks broken. It checks your Node
 version, the OmniRoute engine and the app icon — and it repairs the most common failure, a
@@ -191,6 +232,8 @@ electron/
 renderer/         the terminal UI (index.html, styles.css, app.js)
 scripts/
   stage-node.js   fetches the gateway's Node runtime at package time
+  setup.js        doctor + optional Claude Code integration
+  connect.js      registers the MCP server and installs delegate guidance
   doctor.js       setup verification + repair
   gen-icon.js     dependency-free app-icon generator
 test/             boot · smoke · cowork · features · persist

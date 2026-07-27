@@ -7,7 +7,19 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+
+- **`npm run connect`** — wires OmniWork into Claude Code as a delegate target: registers the
+  `omniwork` MCP server for the current user and adds a section to the global
+  `~/.claude/CLAUDE.md` describing when delegating is worth it.
+
+  Deliberately *not* a postinstall hook. It edits config that affects every Claude Code
+  session, so it prints exactly what it will change and asks first, is idempotent (edits
+  live between `BEGIN/END OMNIWORK` markers and update in place), backs up anything it
+  touches, refuses to run non-interactively without `--yes`, and `--uninstall` removes
+  precisely what it added.
+- **`npm run setup`** — runs `doctor`, then offers the Claude Code integration. Skip the
+  prompt with `--no-connect`, or accept both with `--yes`.
 
 ## [0.9.1] — 2026-07-26
 

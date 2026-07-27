@@ -38,6 +38,8 @@ because it exits early on the partial directory.
 | `electron/mcp-server.js` | MCP server — the `delegate` tool for Claude Code / Codex |
 | `renderer/` | The UI (no build step — plain HTML/CSS/JS) |
 | `scripts/stage-node.js` | electron-builder `beforePack` hook — stages the gateway's Node |
+| `scripts/setup.js` | `doctor` + optional Claude Code integration |
+| `scripts/connect.js` | Registers the MCP server, installs delegate guidance |
 | `scripts/doctor.js` | Setup verification + repair |
 | `scripts/gen-icon.js` | Dependency-free app-icon generator |
 
@@ -70,6 +72,13 @@ gateway orphans onto port 20128 and blocks the next launch.
 **GUI launches have a bare `PATH`.** Apps started from Finder or the Dock do not inherit your
 shell environment, so `npx`-based MCP servers fail with `ENOENT` unless `shell-path.js` has run.
 Anything that spawns a user-installed binary depends on it.
+
+**`connect.js` is not a postinstall hook, on purpose.** It edits `~/.claude.json` and the global
+`CLAUDE.md`, which shape every Claude Code session on the machine — doing that silently because
+someone ran `npm install` would be a good way to get the project distrusted. Keep it opt-in, keep
+it printing what it will change before it changes anything, keep every edit idempotent and inside
+the `BEGIN/END OMNIWORK` markers, and keep `--uninstall` removing exactly what was added and
+nothing else.
 
 ## Tests
 
