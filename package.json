@@ -29,6 +29,7 @@
     "test:skills": "node test/skills.js",
     "test:browser": "node test/browser.js",
     "test:modes": "node test/modes.js",
+    "test:mcp": "node test/mcp.js",
     "mcp": "node electron/mcp-server.js"
   },
   "bin": {

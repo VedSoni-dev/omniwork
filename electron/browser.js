@@ -91,8 +91,30 @@ class BrowserManager {
     return this.win;
   }
 
+  // Without Electron (the MCP server runs in plain Node), fall back to a static
+  // fetch: no JavaScript rendering, clearly labeled as such.
+  async #staticOpen(href) {
+    const res = await fetch(href, { headers: { "User-Agent": UA }, signal: AbortSignal.timeout(LOAD_TIMEOUT), redirect: "follow" });
+    const html = await res.text();
+    const title = ((html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || "").trim();
+    const text = html
+      .replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<style[\s\S]*?<\/style>/gi, " ")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&#39;/g, "'").replace(/&quot;/g, '"')
+      .replace(/[ \t]+/g, " ").replace(/\s*\n\s*/g, "\n").trim().slice(0, MAX_TEXT);
+    const links = [...html.matchAll(/<a[^>]+href="(https?:\/\/[^"#]+)"[^>]*>([\s\S]*?)<\/a>/gi)]
+      .map((m) => `${m[2].replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim().slice(0, 80)} -> ${m[1]}`)
+      .filter((s) => !s.startsWith(" ->")).slice(0, MAX_LINKS);
+    return `# ${title}\n${href}\n(static fetch — JavaScript not rendered)\n\n${text}\n\n## Links on this page\n${links.join("\n")}`;
+  }
+
+  #hasElectron() {
+    try { return Boolean(require("electron").BrowserWindow); } catch { return false; }
+  }
+
   async open(url) {
     const href = assertHttp(url);
+    if (!this.#hasElectron()) return this.#staticOpen(href);
     const win = this.#ensure();
     await Promise.race([
       win.loadURL(href).catch((e) => { if (!String(e).includes("ERR_ABORTED")) throw e; }),
