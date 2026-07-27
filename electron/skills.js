@@ -9,8 +9,11 @@
 // The system prompt carries only name + description per skill; the body loads
 // through the use_skill tool when the task actually matches (progressive
 // disclosure — a dozen installed skills cost a few hundred prompt tokens).
-// Installing from git/folder COPIES SKILL.md directories and nothing else —
-// no scripts from the repo are ever executed.
+// Installing from git/folder copies the directories that contain a SKILL.md.
+// Nothing from the source is ever executed — not at install time, not later;
+// skills are instructions the model reads, not code that runs. Note the copy is
+// of the whole skill directory, so a source can leave inert files alongside
+// SKILL.md.
 
 const fs = require("node:fs");
 const os = require("node:os");
@@ -131,9 +134,21 @@ async function installSkills(globalDir, source) {
   let cleanup = null;
   if (!fs.existsSync(src)) {
     if (/^[\w.-]+\/[\w.-]+$/.test(src)) src = `https://github.com/${src}.git`;
+
+    // `install_skills` is agent-callable, so `source` can be steered by prompt
+    // injection in anything the model read. Constrain it to real remote URLs
+    // before it reaches git: a leading "-" would be parsed as a flag (e.g.
+    // --upload-pack=<cmd>), and git's ext:: transport runs an arbitrary command.
+    // Neither fires on a current git with default config, but this path is one
+    // refactor away from being live, and the check costs nothing.
+    if (!/^https:\/\/|^git@|^ssh:\/\/|^git:\/\//.test(src)) {
+      throw new Error(`refusing to clone "${source}" — use an https:// or ssh git URL, owner/repo, or an existing local folder path`);
+    }
+
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ow-skill-"));
     await new Promise((resolve, reject) => {
-      execFile("git", ["clone", "--depth", "1", src, tmp], { timeout: 60_000 }, (err) => (err ? reject(new Error("git clone failed: " + err.message)) : resolve()));
+      // `--` stops git parsing anything after it as an option.
+      execFile("git", ["clone", "--depth", "1", "--", src, tmp], { timeout: 60_000 }, (err) => (err ? reject(new Error("git clone failed: " + err.message)) : resolve()));
     });
     cleanup = tmp;
     src = tmp;

@@ -38,12 +38,15 @@ delegate** *inside* Claude Code or Codex.
 | | |
 |---|---|
 | 🆓 **Free & keyless** | Free models via `auto` routing, out of the box. Never rate-limited (auto-fallback across providers). |
-| 🖥️ **Claude Code UI** | A clean terminal: `⏺`/`⎿` tool calls, `✻` thinking, `>` prompt, `@`-file mentions. |
+| 🖥️ **Claude Code UI** | A clean terminal: `⏺`/`⎿` tool calls, `✻` thinking, `>` prompt, `@`-file mentions, per-turn time + token counts. |
+| 📁 **Projects & memory** | Sessions live under projects. Durable `MEMORY.md` per project plus a global scope — it remembers what you teach it. |
+| 🎓 **Skills** | Claude Code–compatible `SKILL.md` packs, loaded on demand. Ships with Anthropic's public set; the agent can write and install more. |
+| 🛡️ **Approval modes** | Shift+Tab through `auto` · `ask` · `edits` · `plan`. Plan mode is read-only, blocked at the tool layer. |
 | 🤝 **Cowork** | Spawn many agent sessions and run them **in parallel**, each with its own folder + task. |
 | 🃏 **Agent Deck** | One agent **fans work out to parallel subagents** — watch them live as a deck of cards. |
+| 🌐 **Browsing built in** | `web_search` + `browse_page` render in a real Chromium window — JavaScript pages work, no API key. |
 | 🔌 **MCP connections** | Plug in tools (filesystem, GitHub, Postgres, Slack…) via any stdio MCP server. Add from the UI. |
 | 🪙 **Delegate tool** | OmniWork is *also* an MCP server — let Claude Code / Codex offload grunt work to its free models. |
-| 🌐 **Web-aware** | `web_fetch` reads pages/APIs; `open_url` opens links in your browser. |
 | 🔒 **100% local** | Everything runs on your machine. The gateway never phones home. |
 | 🧩 **MIT, hackable** | Plain CommonJS, no build step for the UI. Fork it, ship it, sell it. |
 

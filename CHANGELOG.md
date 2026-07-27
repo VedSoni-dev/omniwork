@@ -7,19 +7,68 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.10.0] — 2026-07-27
+
+A large feature release: sessions gain structure (projects, memory, compaction), the agent
+gains capability (skills, browsing, approval modes), and delegation from Claude Code now runs
+with OmniWork's full environment rather than as a bare agent.
+
 ### Added
 
-- **`npm run connect`** — wires OmniWork into Claude Code as a delegate target: registers the
-  `omniwork` MCP server for the current user and adds a section to the global
-  `~/.claude/CLAUDE.md` describing when delegating is worth it.
+- **Projects.** Sessions live under projects born from folders — one file per session, with
+  automatic migration from the old `sessions.json`.
+- **Memory.** Durable `MEMORY.md` per project plus a global scope, injected each turn and
+  writable by the agent via `save_memory`.
+- **Skills.** Claude Code–compatible `SKILL.md` packs, global or per-project, loaded on demand
+  via `use_skill` so a dozen installed skills cost only a few hundred prompt tokens. Agents can
+  write their own with `save_skill` and install more with `install_skills`. First boot installs
+  Anthropic's public skill set in the background, marker-gated so later boots never clobber
+  local edits.
+- **Web browsing, no API key.** `web_search` (DuckDuckGo) and `browse_page` render through a
+  hidden Electron window, so pages with JavaScript work. Plain-Node contexts such as the MCP
+  server fall back to a labeled static fetch.
+- **Approval modes**, cycled with Shift+Tab: `auto`, `ask`, `edits` (writes auto-accept,
+  commands still prompt), and `plan` (read-only — writes are blocked at the tool layer).
+- **Per-turn time and token usage**, e.g. `✔ 4m 55s · ↓ 16.6k tokens`. Counts come from real API
+  usage; `chars/4` estimates appear only when the gateway reports nothing and are marked `~`.
+- **Conversation compaction** so long sessions keep working, without orphaning tool results.
+- **Six MCP tools** for delegating clients — `delegate`, `delegate_parallel`, `web_search`,
+  `browse_page`, `list_skills`, `install_skills` — each description stating when *not* to use it.
+  Delegated agents now run with OmniWork's installed skills, saved memory and browsing.
+- **`npm run connect`** — wires OmniWork into Claude Code: registers the MCP server for the
+  current user, adds a tight block to the global `~/.claude/CLAUDE.md`, and installs an
+  `omniwork` skill holding the full situation guide, loaded on demand.
 
-  Deliberately *not* a postinstall hook. It edits config that affects every Claude Code
-  session, so it prints exactly what it will change and asks first, is idempotent (edits
-  live between `BEGIN/END OMNIWORK` markers and update in place), backs up anything it
-  touches, refuses to run non-interactively without `--yes`, and `--uninstall` removes
-  precisely what it added.
-- **`npm run setup`** — runs `doctor`, then offers the Claude Code integration. Skip the
-  prompt with `--no-connect`, or accept both with `--yes`.
+  Deliberately *not* a postinstall hook. It edits config affecting every Claude Code session, so
+  it prints exactly what it will change and asks first, is idempotent (edits live between
+  `BEGIN/END OMNIWORK` markers), backs up what it touches, refuses to run non-interactively
+  without `--yes`, and `--uninstall` removes precisely what it added.
+- **`npm run setup`** — runs `doctor`, then offers the Claude Code integration. Skip with
+  `--no-connect`, accept both with `--yes`.
+- Inline rename for sessions and projects (double-click; Enter commits, Esc cancels).
+- Test suites for projects/memory, skills, approval modes, compaction, browsing, and the MCP
+  stdio protocol.
+
+### Fixed
+
+- **New sessions did not appear until a prompt forced a refresh**, and switching back to an
+  earlier session fought a yank-back loop: `create()` left the old `activeId` set, so every
+  broadcast told the renderer to navigate back to the stale session. `setActive` now broadcasts
+  once, change-guarded, and `switchTo` is sequence-guarded so overlapping calls cannot interleave
+  DOM renders.
+- The gateway could listen without ever becoming healthy if its storage was corrupted by a hard
+  kill; a failed first boot now quarantines the database and retries once.
+
+### Security
+
+- `install_skills` is agent-callable, so its `source` can be steered by prompt injection in
+  anything the model read. It now requires an `https://`/`ssh://`/`git@` URL, `owner/repo`, or an
+  existing local path, and passes `--` to `git clone`. This closes two argument-shaped vectors —
+  a leading `-` parsed as a flag such as `--upload-pack=<cmd>`, and git's `ext::` transport, which
+  runs an arbitrary command. Neither fired on a current git with default configuration (verified),
+  so this is defense in depth rather than a fix for a live hole.
 
 ## [0.9.1] — 2026-07-26
 
@@ -146,7 +195,8 @@ not start on any machine other than the one that built it.
 Initial release: Claude Code–style terminal UI, coding agent with file/shell/web tools, and
 the OmniRoute gateway bundled as an in-app sidecar.
 
-[Unreleased]: https://github.com/VedSoni-dev/omniwork/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/VedSoni-dev/omniwork/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/VedSoni-dev/omniwork/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/VedSoni-dev/omniwork/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/VedSoni-dev/omniwork/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/VedSoni-dev/omniwork/compare/v0.7.0...v0.8.0
