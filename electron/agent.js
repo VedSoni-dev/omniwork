@@ -396,7 +396,13 @@ class Agent {
 
       let msg;
       try { msg = await this.callModel(); }
-      catch (err) { this.emit("error", { message: err.message }); return; }
+      catch (err) {
+        const friendly = /fetch failed|ECONNREFUSED/i.test(err.message)
+          ? "Lost connection to the engine — it restarts itself within ~20s. Try again in a moment."
+          : err.message;
+        this.emit("error", { message: friendly });
+        return;
+      }
 
       if (msg.content && msg.content.trim()) {
         this.lastText = msg.content;
