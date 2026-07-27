@@ -117,7 +117,7 @@ class SessionManager {
       model: this.model,
       workspace: sess.workspace,
       mcp: this.mcp,
-      memory: this.projects ? { globalDir: this.globalMemoryDir, projectDir: this.projects.memoryDir(sess.projectId) } : null,
+      memory: this.projects ? { globalDir: this.globalMemoryDir, projectDir: this.projects.memoryDir(sess.projectId), knowledgeDir: this.projects.knowledgeDir(sess.projectId) } : null,
       skillsDir: this.skillsDir,
       browser: this.browser,
       approvalMode: this.approvalMode,
@@ -231,14 +231,16 @@ class SessionManager {
     } catch {}
   }
 
-  async send(id, text, images) {
+  // `label` is what the transcript shows (e.g. prompt + attachment names);
+  // `text` is the full model input, which may embed attached file contents.
+  async send(id, text, images, label) {
     const sess = this.sessions.get(id);
     if (!sess) return;
     sess.status = "running";
     this.#pushList();
-    const label = text + (images && images.length ? `  📎 ${images.length} image${images.length > 1 ? "s" : ""}` : "");
-    sess.transcript.push({ type: "user", content: label });
-    this.emit(id, "user", { content: label });
+    const shown = (label || text) + (images && images.length ? `  📎 ${images.length} image${images.length > 1 ? "s" : ""}` : "");
+    sess.transcript.push({ type: "user", content: shown });
+    this.emit(id, "user", { content: shown });
     try {
       await sess.agent.send(text, images);
     } catch (e) {
@@ -299,7 +301,7 @@ class SessionManager {
       if (proj.id !== s.projectId) {
         try { fs.unlinkSync(this.#sessionFile(s)); } catch {}
         s.projectId = proj.id;
-        if (s.agent) s.agent.memory = { globalDir: this.globalMemoryDir, projectDir: this.projects.memoryDir(proj.id) };
+        if (s.agent) s.agent.memory = { globalDir: this.globalMemoryDir, projectDir: this.projects.memoryDir(proj.id), knowledgeDir: this.projects.knowledgeDir(proj.id) };
       }
       this.projects.touch(proj.id);
     }

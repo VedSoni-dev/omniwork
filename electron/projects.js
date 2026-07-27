@@ -70,6 +70,14 @@ class ProjectManager {
     return d;
   }
 
+  // Project knowledge: files the user drops in for the agent to consult
+  // (like Claude's project knowledge). Read on demand via read_knowledge.
+  knowledgeDir(id) {
+    const d = path.join(this.rootDir, id, "knowledge");
+    fs.mkdirSync(d, { recursive: true });
+    return d;
+  }
+
   // One-time migration from the legacy single-file store (sessions.json).
   // Returns the saved sessions it found, already assigned to projects.
   migrateLegacy(legacyPath) {

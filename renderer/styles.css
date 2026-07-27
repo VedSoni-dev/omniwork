@@ -166,6 +166,13 @@ b { font-weight: 600; color: var(--fg); }
 #input { flex: 1; background: none; border: none; outline: none; resize: none; color: var(--fg); font-family: var(--mono); font-size: 13px; line-height: 1.55; max-height: 200px; padding: 1px 0; }
 #input::placeholder { color: var(--dimmer); }
 .stopbtn { font-family: var(--mono); font-size: 11.5px; color: var(--red); background: none; border: 1px solid var(--red); border-radius: 5px; padding: 2px 7px; cursor: pointer; flex-shrink: 0; }
+.attachbtn { background: none; border: none; cursor: pointer; font-size: 14px; padding: 0 2px; flex-shrink: 0; opacity: .55; }
+.attachbtn:hover { opacity: 1; }
+.mem-tabs { display: flex; gap: 6px; margin-bottom: 8px; }
+.mem-tab { background: none; border: 1px solid var(--border); color: var(--dim); border-radius: 6px; padding: 4px 12px; cursor: pointer; font-size: 12px; }
+.mem-tab.on { color: var(--fg); border-color: var(--accent); }
+.mem-text { font-family: var(--mono); resize: vertical; min-height: 220px; line-height: 1.5; }
+body.dropping::after { content: "Drop files to attach"; position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(28,27,25,.85); color: var(--accent); font-size: 18px; border: 2px dashed var(--accent); z-index: 200; pointer-events: none; }
 .statusline { max-width: 900px; margin: 6px auto 0; display: flex; align-items: center; justify-content: space-between; font-size: 11.5px; color: var(--dim); }
 .status-left, .status-right { display: flex; align-items: center; gap: 7px; }
 .sep { color: var(--dimmer); } .s-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); }

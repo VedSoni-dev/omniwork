@@ -38,8 +38,10 @@
           <div class="inputbox" id="inputbox">
             <span class="prompt-caret">&gt;</span>
             <textarea id="input" rows="1" placeholder="Try &quot;explain this project&quot; — / for commands · @ for a file"></textarea>
+            <button id="attach" class="attachbtn" title="Attach files or images (or drag &amp; drop)">📎</button>
             <button id="stop" class="stopbtn hidden" title="Stop (Esc)">esc ✕</button>
           </div>
+          <input id="file-input" type="file" multiple class="hidden" />
           <div class="statusline">
             <div class="status-left">
               <span class="s-dot" id="gw-dot"></span><span id="gw-label">starting…</span>
@@ -85,6 +87,24 @@
         <div class="modal-actions">
           <button id="m-cancel" class="btn-ghost">Cancel</button>
           <button id="m-add" class="btn-accent">Add &amp; connect</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Memory editor modal -->
+    <div id="memory-modal" class="modal hidden">
+      <div class="modal-box">
+        <div class="modal-title">🧠 Memory</div>
+        <div class="modal-sub dim">Facts the agent recalls at the start of every session. Plain markdown — edit freely.</div>
+        <div class="mem-tabs">
+          <button id="mem-tab-project" class="mem-tab on">This project</button>
+          <button id="mem-tab-global" class="mem-tab">All projects</button>
+        </div>
+        <textarea id="mem-text" class="m-input mem-text" rows="14" spellcheck="false" placeholder="Nothing saved yet — the agent adds entries here with save_memory, or write your own."></textarea>
+        <div class="modal-actions">
+          <button id="mem-reveal" class="btn-ghost">Show in Finder</button>
+          <button id="mem-cancel" class="btn-ghost">Close</button>
+          <button id="mem-save" class="btn-accent">Save</button>
         </div>
       </div>
     </div>

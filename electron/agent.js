@@ -7,7 +7,7 @@
 // with its own context/tool-loop, and report a summary back to the parent.
 
 const { TOOL_SCHEMA, executeTool } = require("./tools");
-const { MEMORY_TOOL, saveMemory, loadForPrompt } = require("./memory");
+const { MEMORY_TOOL, saveMemory, loadForPrompt, KNOWLEDGE_TOOL, knowledgeSection, readKnowledge } = require("./memory");
 const { DEFAULT_CONTEXT, estimateTokens, shouldCompact, compact } = require("./compactor");
 const skills = require("./skills");
 
@@ -97,7 +97,7 @@ class Agent {
     this.workspace = workspace;
     this.emit = emit; // (event, payload) => void
     this.mcp = mcp || null;
-    this.memory = memory; // { globalDir, projectDir } | null
+    this.memory = memory; // { globalDir, projectDir, knowledgeDir? } | null
     this.skillsDir = skillsDir || null; // global skills root
     this.browser = browser || null;    // BrowserManager
     this.contextTokens = DEFAULT_CONTEXT;
@@ -152,6 +152,7 @@ class Agent {
     if (this.memory) {
       const saved = loadForPrompt(this.memory.globalDir, this.memory.projectDir);
       if (saved) mem += `\n\n${saved}`;
+      if (this.memory.knowledgeDir) mem += knowledgeSection(this.memory.knowledgeDir);
     }
     // Skills: names + descriptions only; bodies load via use_skill.
     if (this.skillsDir) mem += skills.promptSection(this.skillsDir, this.workspace);
@@ -181,9 +182,10 @@ class Agent {
     const extra = this.mcp ? this.mcp.toolSchema() : [];
     const sub = this.canSpawn ? [SUBAGENT_TOOL] : [];
     const mem = this.memory ? [MEMORY_TOOL] : [];
+    const kn = this.memory && this.memory.knowledgeDir ? [KNOWLEDGE_TOOL] : [];
     const sk = this.skillsDir ? [skills.USE_SKILL_TOOL, skills.SAVE_SKILL_TOOL, skills.INSTALL_SKILLS_TOOL] : [];
     const web = this.browser ? [require("./browser").WEB_SEARCH_TOOL, require("./browser").BROWSE_TOOL] : [];
-    return [...TOOL_SCHEMA, ...sub, ...mem, ...sk, ...web, ...extra];
+    return [...TOOL_SCHEMA, ...sub, ...mem, ...kn, ...sk, ...web, ...extra];
   }
 
   abort() { this.aborted = true; }
@@ -448,6 +450,8 @@ class Agent {
             const made = skills.createSkill(this.skillsDir, parsedArgs.name, parsedArgs.description, parsedArgs.instructions);
             result = `Saved skill "${made.name}" — available in every project via /` + made.name;
           } catch (e) { result = "Failed to save skill: " + e.message; }
+        } else if (name === "read_knowledge" && this.memory && this.memory.knowledgeDir) {
+          result = readKnowledge(this.memory.knowledgeDir, parsedArgs.name || "");
         } else if (name === "save_memory" && this.memory) {
           const dir = parsedArgs.scope === "global" ? this.memory.globalDir : this.memory.projectDir;
           try { result = saveMemory(dir, parsedArgs.title || "note", parsedArgs.content || ""); }

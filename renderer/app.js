@@ -3,6 +3,7 @@ const stub = {
   createSession: async () => ({ id: "demo", title: "Main", workspace: "", status: "idle" }),
   newProject: async () => null, openMemory: async () => {}, compactSession: async () => {},
   listSkills: async () => [], installSkills: async () => ({ error: "unavailable" }), newSkill: async () => ({}), openSkills: async () => {},
+  readMemory: async () => ({ content: "" }), writeMemory: async () => {}, openKnowledge: async () => {}, importKnowledge: async () => ({ added: [] }),
   listSessions: async () => ({ sessions: [], activeId: null }), setActiveSession: async () => {},
   getTranscript: async () => [], sendMessage: async () => {}, stopSession: async () => {},
   removeSession: async () => {}, pickWorkspace: async () => {},
@@ -31,6 +32,7 @@ let approvalMode = "auto";
 let currentMcp = [];
 const mentions = new Set();
 const pastedImages = []; // data URLs
+const attachedFiles = []; // { name, content } — text files attached as context
 
 const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const scrollDown = () => (scroll.scrollTop = scroll.scrollHeight);
@@ -282,6 +284,9 @@ function folderMenu() {
   const items = [
     { label: "Change folder…", hint: "pick any folder", onPick: () => api.pickWorkspace(activeId) },
     { label: api.platform === "darwin" ? "Reveal in Finder" : "Show in file manager", hint: prettyPath(s.workspace), onPick: () => api.revealFolder(s.workspace) },
+    { label: "🧠 Project memory…", hint: "view & edit what the agent remembers", onPick: () => openMemoryEditor() },
+    { label: "📚 Add files to knowledge…", hint: "reference docs for every session here", onPick: async () => { const r = await api.importKnowledge(); if (r.added && r.added.length) addSystem(`📚 Added to project knowledge: ${r.added.join(", ")}`); } },
+    { label: "📂 Open knowledge folder", hint: "drop files in directly", onPick: () => api.openKnowledge() },
   ];
   const seen = new Set([s.workspace]);
   for (const o of sessionsCache) {
@@ -399,7 +404,38 @@ function renderChips() {
   const box = $("chips"); box.innerHTML = "";
   mentions.forEach((p) => { const c = document.createElement("span"); c.className = "chip"; c.innerHTML = `@${esc(p)} <span class="x">✕</span>`; c.querySelector(".x").addEventListener("click", () => { mentions.delete(p); renderChips(); }); box.appendChild(c); });
   pastedImages.forEach((url, i) => { const c = document.createElement("span"); c.className = "chip imgchip"; c.innerHTML = `<img src="${url}" class="imgthumb"/> image <span class="x">✕</span>`; c.querySelector(".x").addEventListener("click", () => { pastedImages.splice(i, 1); renderChips(); }); box.appendChild(c); });
+  attachedFiles.forEach((f, i) => { const c = document.createElement("span"); c.className = "chip"; c.innerHTML = `📄 ${esc(f.name)} <span class="x">✕</span>`; c.querySelector(".x").addEventListener("click", () => { attachedFiles.splice(i, 1); renderChips(); }); box.appendChild(c); });
 }
+
+// ── attachments: 📎 button + drag & drop ───────────────────────────
+// Images become vision input; text files ride along as context blocks.
+const MAX_ATTACH = 8, MAX_FILE_BYTES = 400_000, MAX_FILE_CHARS = 100_000;
+function addAttachment(file) {
+  if (pastedImages.length + attachedFiles.length >= MAX_ATTACH) { addSystem(`Attachment limit is ${MAX_ATTACH} per message.`); return; }
+  if (file.type && file.type.startsWith("image/")) {
+    const r = new FileReader();
+    r.onload = () => { pastedImages.push(r.result); renderChips(); };
+    r.readAsDataURL(file);
+    return;
+  }
+  if (file.size > MAX_FILE_BYTES) { addSystem(`"${file.name}" is too large to attach (max ${Math.round(MAX_FILE_BYTES / 1000)} KB). Add it to project knowledge instead (folder menu).`); return; }
+  const r = new FileReader();
+  r.onload = () => {
+    const text = String(r.result || "");
+    if (text.includes("\u0000")) { addSystem(`"${file.name}" looks binary — attach images or text files.`); return; }
+    attachedFiles.push({ name: file.name, content: text.slice(0, MAX_FILE_CHARS) });
+    renderChips();
+  };
+  r.readAsText(file);
+}
+function handleFiles(list) { for (const f of list || []) addAttachment(f); input.focus(); }
+$("attach").addEventListener("click", () => $("file-input").click());
+$("file-input").addEventListener("change", (e) => { handleFiles(e.target.files); e.target.value = ""; });
+let dragDepth = 0;
+window.addEventListener("dragover", (e) => e.preventDefault());
+window.addEventListener("dragenter", (e) => { e.preventDefault(); if (++dragDepth === 1 && e.dataTransfer?.types?.includes("Files")) document.body.classList.add("dropping"); });
+window.addEventListener("dragleave", () => { if (--dragDepth <= 0) { dragDepth = 0; document.body.classList.remove("dropping"); } });
+window.addEventListener("drop", (e) => { e.preventDefault(); dragDepth = 0; document.body.classList.remove("dropping"); handleFiles(e.dataTransfer.files); });
 // paste an image into the composer
 input.addEventListener("paste", (e) => {
   const items = (e.clipboardData && e.clipboardData.items) || [];
@@ -491,10 +527,16 @@ async function send() {
   if ((!text && !mentions.size && !pastedImages.length) || !activeId) return;
   if (text.startsWith("/")) { input.value = ""; grow(); hidePop(); handleSlash(text); return; }
   let full = text; if (mentions.size) full = `${text}\n\nReferenced files: ${[...mentions].map((p) => "@" + p).join(", ")}`;
+  // Attached text files ride along for the model; the transcript shows only a label.
+  let label = null;
+  if (attachedFiles.length) {
+    label = text + `  📎 ${attachedFiles.map((f) => f.name).join(", ")}`;
+    full += "\n\n" + attachedFiles.map((f) => `## Attached file: ${f.name}\n\`\`\`\n${f.content}\n\`\`\``).join("\n\n");
+  }
   const images = pastedImages.slice();
   const w = $("welcome"); if (w) w.remove();
-  input.value = ""; mentions.clear(); pastedImages.length = 0; renderChips(); grow(); hidePop();
-  await api.sendMessage(activeId, full, images);
+  input.value = ""; mentions.clear(); pastedImages.length = 0; attachedFiles.length = 0; renderChips(); grow(); hidePop();
+  await api.sendMessage(activeId, full, images, label);
 }
 
 // ── slash commands ─────────────────────────────────────────────────
@@ -516,7 +558,8 @@ const COMMANDS = [
   { name: "clear", desc: "Start a fresh session", run: () => newSession() },
   { name: "new", desc: "Start a fresh session", run: () => newSession() },
   { name: "project", desc: "New project — pick a folder", run: () => newProject() },
-  { name: "memory", desc: "Open this project's memory file", run: (arg) => api.openMemory(arg === "global" ? "global" : undefined) },
+  { name: "memory", desc: "View & edit what the agent remembers", run: () => openMemoryEditor() },
+  { name: "knowledge", desc: "Open this project's knowledge folder", run: () => api.openKnowledge() },
   { name: "folder", alias: "cwd", desc: "Change the working folder", run: () => api.pickWorkspace(activeId) },
   { name: "model", args: "<name>", desc: "Switch AI model", run: (arg) => { if (arg) { $("model").value = arg; api.setModel(arg); addSystem("model → " + arg); } else addSystem("usage: /model <name>"); } },
   { name: "undo", desc: "Undo last turn's file changes", run: () => api.undo(activeId) },
@@ -576,6 +619,24 @@ function cycleApproval() {
 }
 stopBtn.addEventListener("click", () => api.stopSession(activeId));
 document.addEventListener("click", (e) => { const t = e.target.closest(".tip"); if (t) { input.value = t.dataset.p; grow(); input.focus(); } });
+
+// ── memory editor ──────────────────────────────────────────────────
+let memScope = "project";
+async function loadMemoryEditor(scope) {
+  memScope = scope;
+  $("mem-tab-project").classList.toggle("on", scope === "project");
+  $("mem-tab-global").classList.toggle("on", scope === "global");
+  const r = await api.readMemory(scope);
+  $("mem-text").value = r.content || "";
+}
+function openMemoryEditor() { $("memory-modal").classList.remove("hidden"); loadMemoryEditor("project"); }
+async function saveMemoryEditor() { await api.writeMemory(memScope, $("mem-text").value); }
+$("mem-tab-project").addEventListener("click", async () => { await saveMemoryEditor(); loadMemoryEditor("project"); });
+$("mem-tab-global").addEventListener("click", async () => { await saveMemoryEditor(); loadMemoryEditor("global"); });
+$("mem-save").addEventListener("click", async () => { await saveMemoryEditor(); $("memory-modal").classList.add("hidden"); addSystem("🧠 Memory saved."); });
+$("mem-cancel").addEventListener("click", () => $("memory-modal").classList.add("hidden"));
+$("mem-reveal").addEventListener("click", () => api.openMemory(memScope === "global" ? "global" : undefined));
+$("memory-modal").addEventListener("click", (e) => { if (e.target.id === "memory-modal") $("memory-modal").classList.add("hidden"); });
 
 // ── new session / cwd / model / dashboard ──────────────────────────
 $("new-project").addEventListener("click", () => newProject());

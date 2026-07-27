@@ -132,9 +132,9 @@ ipcMain.handle("session:create", (_e, opts) => {
 ipcMain.handle("session:list", () => (sessions ? { sessions: sessions.list(), activeId: sessions.activeId } : { sessions: [], activeId: null }));
 ipcMain.handle("session:setActive", (_e, id) => { if (sessions) sessions.setActive(id); return true; });
 ipcMain.handle("session:transcript", (_e, id) => (sessions ? sessions.transcript(id) : []));
-ipcMain.handle("session:send", async (_e, { id, text, images }) => {
+ipcMain.handle("session:send", async (_e, { id, text, images, label }) => {
   if (!sessions) { send("session:event", { sessionId: id, type: "error", message: "Engine still starting." }); return false; }
-  await sessions.send(id, text, images);
+  await sessions.send(id, text, images, label);
   return true;
 });
 ipcMain.handle("session:stop", (_e, id) => { if (sessions) sessions.stop(id); return true; });
@@ -196,6 +196,47 @@ ipcMain.handle("skills:new", (_e, name) => {
   } catch (e) { return { error: e.message }; }
 });
 ipcMain.handle("skills:open", () => { fs.mkdirSync(skillsDir(), { recursive: true }); shell.openPath(skillsDir()); return true; });
+
+// ── IPC: memory editing + project knowledge ─────────────────────────
+function memoryDirFor(scope) {
+  const s = sessions && sessions.sessions.get(sessions.activeId);
+  return scope === "global" || !s || !projects
+    ? path.join(app.getPath("userData"), "memory")
+    : projects.memoryDir(s.projectId);
+}
+ipcMain.handle("memory:read", (_e, scope) => {
+  const { memoryFile } = require("./memory");
+  const f = memoryFile(memoryDirFor(scope));
+  try { return { content: fs.readFileSync(f, "utf8"), path: f }; }
+  catch { return { content: "", path: f }; }
+});
+ipcMain.handle("memory:write", (_e, { scope, content }) => {
+  const { memoryFile } = require("./memory");
+  const dir = memoryDirFor(scope);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(memoryFile(dir), String(content ?? ""), "utf8");
+  return true;
+});
+function knowledgeDirForActive() {
+  const s = sessions && sessions.sessions.get(sessions.activeId);
+  return s && projects ? projects.knowledgeDir(s.projectId) : null;
+}
+ipcMain.handle("knowledge:open", () => {
+  const dir = knowledgeDirForActive();
+  if (dir) shell.openPath(dir);
+  return Boolean(dir);
+});
+ipcMain.handle("knowledge:import", async () => {
+  const dir = knowledgeDirForActive();
+  if (!dir) return { error: "no active project" };
+  const r = await dialog.showOpenDialog(win, { properties: ["openFile", "multiSelections"], title: "Add files to project knowledge" });
+  if (r.canceled || !r.filePaths.length) return { added: [] };
+  const added = [];
+  for (const p of r.filePaths) {
+    try { fs.copyFileSync(p, path.join(dir, path.basename(p))); added.push(path.basename(p)); } catch {}
+  }
+  return { added };
+});
 
 // Open a project's memory file (or the global one) in the OS file manager/editor.
 ipcMain.handle("memory:open", (_e, scope) => {
