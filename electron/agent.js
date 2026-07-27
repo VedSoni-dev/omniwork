@@ -142,6 +142,13 @@ class Agent {
     const path = require("node:path");
     const files = ["AGENTS.md", "CLAUDE.md", "CLAUDE.local.md", ".omniwork.md", ".cursorrules"];
     let mem = "";
+    // Project instructions the user set in the project page — first, they lead.
+    if (this.memory && this.memory.instructionsFile) {
+      try {
+        const ins = fs.readFileSync(this.memory.instructionsFile, "utf8").trim();
+        if (ins) mem += `\n\n## Project instructions (set by the user — follow these)\n${ins.slice(0, 8000)}`;
+      } catch {}
+    }
     for (const f of files) {
       try {
         const p = path.join(this.workspace, f);

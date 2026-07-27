@@ -54,6 +54,30 @@ class ProjectManager {
   }
 
   byId(id) { return this.projects.get(id) || null; }
+
+  describe(id, { name, description } = {}) {
+    const p = this.projects.get(id);
+    if (!p) return null;
+    if (name && String(name).trim()) p.name = String(name).trim().slice(0, 60);
+    if (description !== undefined) p.description = String(description).slice(0, 500);
+    this.save();
+    return p;
+  }
+
+  // Per-project instructions (like Claude's project instructions): injected
+  // into every session's system prompt, editable from the project page.
+  instructionsFile(id) {
+    fs.mkdirSync(path.join(this.rootDir, id), { recursive: true });
+    return path.join(this.rootDir, id, "INSTRUCTIONS.md");
+  }
+
+  readInstructions(id) {
+    try { return fs.readFileSync(this.instructionsFile(id), "utf8"); } catch { return ""; }
+  }
+
+  writeInstructions(id, content) {
+    fs.writeFileSync(this.instructionsFile(id), String(content ?? ""), "utf8");
+  }
   list() { return [...this.projects.values()].sort((a, b) => (b.lastOpened || 0) - (a.lastOpened || 0)); }
 
   touch(id) { const p = this.projects.get(id); if (p) { p.lastOpened = Date.now(); this.save(); } }

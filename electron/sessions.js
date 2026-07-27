@@ -117,7 +117,7 @@ class SessionManager {
       model: this.model,
       workspace: sess.workspace,
       mcp: this.mcp,
-      memory: this.projects ? { globalDir: this.globalMemoryDir, projectDir: this.projects.memoryDir(sess.projectId), knowledgeDir: this.projects.knowledgeDir(sess.projectId) } : null,
+      memory: this.projects ? { globalDir: this.globalMemoryDir, projectDir: this.projects.memoryDir(sess.projectId), knowledgeDir: this.projects.knowledgeDir(sess.projectId), instructionsFile: this.projects.instructionsFile(sess.projectId) } : null,
       skillsDir: this.skillsDir,
       browser: this.browser,
       approvalMode: this.approvalMode,
@@ -301,7 +301,7 @@ class SessionManager {
       if (proj.id !== s.projectId) {
         try { fs.unlinkSync(this.#sessionFile(s)); } catch {}
         s.projectId = proj.id;
-        if (s.agent) s.agent.memory = { globalDir: this.globalMemoryDir, projectDir: this.projects.memoryDir(proj.id), knowledgeDir: this.projects.knowledgeDir(proj.id) };
+        if (s.agent) s.agent.memory = { globalDir: this.globalMemoryDir, projectDir: this.projects.memoryDir(proj.id), knowledgeDir: this.projects.knowledgeDir(proj.id), instructionsFile: this.projects.instructionsFile(proj.id) };
       }
       this.projects.touch(proj.id);
     }

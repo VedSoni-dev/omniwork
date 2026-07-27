@@ -4,6 +4,7 @@ const stub = {
   newProject: async () => null, openMemory: async () => {}, compactSession: async () => {},
   listSkills: async () => [], installSkills: async () => ({ error: "unavailable" }), newSkill: async () => ({}), openSkills: async () => {},
   readMemory: async () => ({ content: "" }), writeMemory: async () => {}, openKnowledge: async () => {}, importKnowledge: async () => ({ added: [] }),
+  projectInfo: async () => null, updateProject: async () => null, writeInstructions: async () => {}, addSchedule: async () => ({}), removeSchedule: async () => {},
   listSessions: async () => ({ sessions: [], activeId: null }), setActiveSession: async () => {},
   getTranscript: async () => [], sendMessage: async () => {}, stopSession: async () => {},
   removeSession: async () => {}, pickWorkspace: async () => {},
@@ -250,6 +251,7 @@ function handleSubagent(ev) {
 let switchSeq = 0;
 async function switchTo(id) {
   const seq = ++switchSeq;
+  viewingProject = null;
   activeId = id;
   await api.setActiveSession(id);
   if (seq !== switchSeq) return;
@@ -342,7 +344,9 @@ function renderSessions(list, act) {
       const s = await api.createSession({ workspace: g.workspace }).catch(() => null);
       if (s) { fileIndex = null; await switchTo(s.id); } else engineNotReady();
     });
-    head.addEventListener("click", () => { closed ? collapsedProjects.delete(pid) : collapsedProjects.add(pid); renderSessions(sessionsCache, activeId); });
+    // Caret collapses; the name opens the project page.
+    head.querySelector(".pcaret").addEventListener("click", (e) => { e.stopPropagation(); closed ? collapsedProjects.delete(pid) : collapsedProjects.add(pid); renderSessions(sessionsCache, activeId); });
+    head.addEventListener("click", () => openProjectView(pid));
     head.querySelector(".pname").addEventListener("dblclick", (e) => {
       e.stopPropagation();
       inlineRename(e.currentTarget, g.name, (v) => api.renameProject(pid, v));
@@ -526,6 +530,13 @@ async function send() {
   const text = input.value.trim();
   if ((!text && !mentions.size && !pastedImages.length) || !activeId) return;
   if (text.startsWith("/")) { input.value = ""; grow(); hidePop(); handleSlash(text); return; }
+  // On a project page, a message starts a new session in that project.
+  if (viewingProject) {
+    const s = await api.createSession({ workspace: viewingProjectPath }).catch(() => null);
+    if (!s) { engineNotReady(); return; }
+    fileIndex = null;
+    await switchTo(s.id);
+  }
   let full = text; if (mentions.size) full = `${text}\n\nReferenced files: ${[...mentions].map((p) => "@" + p).join(", ")}`;
   // Attached text files ride along for the model; the transcript shows only a label.
   let label = null;
@@ -622,21 +633,78 @@ document.addEventListener("click", (e) => { const t = e.target.closest(".tip"); 
 
 // ── memory editor ──────────────────────────────────────────────────
 let memScope = "project";
+let memProjectId = null; // explicit project, else the active session's
 async function loadMemoryEditor(scope) {
   memScope = scope;
   $("mem-tab-project").classList.toggle("on", scope === "project");
   $("mem-tab-global").classList.toggle("on", scope === "global");
-  const r = await api.readMemory(scope);
+  const r = await api.readMemory(scope, scope === "project" ? memProjectId : undefined);
   $("mem-text").value = r.content || "";
 }
-function openMemoryEditor() { $("memory-modal").classList.remove("hidden"); loadMemoryEditor("project"); }
-async function saveMemoryEditor() { await api.writeMemory(memScope, $("mem-text").value); }
+function openMemoryEditor(projectId) { memProjectId = projectId || null; $("memory-modal").classList.remove("hidden"); loadMemoryEditor("project"); }
+async function saveMemoryEditor() { await api.writeMemory(memScope, $("mem-text").value, memScope === "project" ? memProjectId : undefined); }
 $("mem-tab-project").addEventListener("click", async () => { await saveMemoryEditor(); loadMemoryEditor("project"); });
 $("mem-tab-global").addEventListener("click", async () => { await saveMemoryEditor(); loadMemoryEditor("global"); });
 $("mem-save").addEventListener("click", async () => { await saveMemoryEditor(); $("memory-modal").classList.add("hidden"); addSystem("🧠 Memory saved."); });
 $("mem-cancel").addEventListener("click", () => $("memory-modal").classList.add("hidden"));
 $("mem-reveal").addEventListener("click", () => api.openMemory(memScope === "global" ? "global" : undefined));
 $("memory-modal").addEventListener("click", (e) => { if (e.target.id === "memory-modal") $("memory-modal").classList.add("hidden"); });
+
+// ── project page (like Claude's project view) ──────────────────────
+let viewingProject = null, viewingProjectPath = null;
+const fmtDate = (ts) => new Date(ts || Date.now()).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+function pvSection(title, actionsHtml, bodyHtml) {
+  return `<section class="pv-card"><div class="pv-card-head"><h3>${title}</h3><span class="pv-actions">${actionsHtml || ""}</span></div>${bodyHtml}</section>`;
+}
+async function openProjectView(pid) {
+  const info = await api.projectInfo(pid);
+  if (!info) return;
+  viewingProject = pid;
+  viewingProjectPath = info.project.path;
+  switchSeq++; // cancel any in-flight transcript render
+  stopThinking(); endStream();
+  $("ctx-meter").classList.add("hidden");
+  const p = info.project;
+  const mySessions = sessionsCache.filter((s) => s.projectId === pid);
+  scroll.innerHTML = "";
+  const el = document.createElement("div");
+  el.className = "pview";
+  el.innerHTML =
+    `<div class="pv-head"><h1 class="pv-title" title="Double-click to rename">${esc(p.name)}</h1><span class="dim wpath">${esc(prettyPath(p.path))}</span></div>` +
+    `<textarea class="pv-desc" rows="1" placeholder="Add a short description…">${esc(p.description || "")}</textarea>` +
+    pvSection("Instructions", "",
+      `<textarea id="pv-instructions" rows="4" placeholder="Tailor how the agent works in this project — style, stack, boundaries. Applied to every session here.">${esc(info.instructions || "")}</textarea>`) +
+    pvSection("Memory", `<button class="pv-btn" id="pv-mem-edit">Edit</button>`,
+      `<p class="pv-body dim">${info.memory ? esc(info.memory.replace(/^# Memory\s*/, "").slice(0, 280)) + (info.memory.length > 280 ? "…" : "") : "Nothing saved yet — the agent adds entries with save_memory, or write your own."}</p>`) +
+    pvSection("Context", `<button class="pv-btn" id="pv-know-add">+ Add files</button><button class="pv-btn" id="pv-know-open">Open folder</button>`,
+      info.knowledge.length
+        ? `<ul class="pv-list">${info.knowledge.map((f) => `<li>📄 ${esc(f.name)} <span class="dim">${f.size > 1024 ? Math.round(f.size / 1024) + " KB" : f.size + " B"}</span></li>`).join("")}</ul>`
+        : `<p class="pv-body dim">Add documents for the agent to reference in every session of this project.</p>`) +
+    pvSection("Scheduled", "",
+      `<ul class="pv-list" id="pv-sched-list">${info.schedule.map((t) => `<li data-tid="${esc(t.id)}">⏰ ${esc(t.prompt.slice(0, 60))} <span class="dim">every ${esc(t.every)}</span> <span class="pv-x" title="Remove">✕</span></li>`).join("")}</ul>` +
+      `<div class="pv-sched-add"><input id="pv-sched-prompt" placeholder="Prompt to run on a schedule…" /><select id="pv-sched-every"><option value="hour">hourly</option><option value="day" selected>daily</option><option value="week">weekly</option></select><button class="pv-btn" id="pv-sched-btn">Add</button></div>`) +
+    pvSection("Recents", "",
+      mySessions.length
+        ? `<ul class="pv-list pv-recents">${mySessions.map((s) => `<li data-sid="${esc(s.id)}"><span class="sdot ${s.status}"></span> ${esc(s.title)} <span class="dim">${fmtDate(s.createdAt)}</span></li>`).join("")}</ul>`
+        : `<p class="pv-body dim">Sessions you start here will show up below. Type a message to begin one.</p>`);
+  scroll.appendChild(el);
+
+  // wiring
+  el.querySelector(".pv-title").addEventListener("dblclick", (e) => inlineRename(e.currentTarget, p.name, async (v) => { await api.updateProject(pid, { name: v }); openProjectView(pid); }));
+  el.querySelector(".pv-desc").addEventListener("blur", (e) => api.updateProject(pid, { description: e.target.value }));
+  el.querySelector("#pv-instructions").addEventListener("blur", (e) => api.writeInstructions(pid, e.target.value));
+  el.querySelector("#pv-mem-edit").addEventListener("click", () => openMemoryEditor(pid));
+  el.querySelector("#pv-know-add").addEventListener("click", async () => { const r = await api.importKnowledge(pid); if (r.added && r.added.length) openProjectView(pid); });
+  el.querySelector("#pv-know-open").addEventListener("click", () => api.openKnowledge(pid));
+  el.querySelector("#pv-sched-btn").addEventListener("click", async () => {
+    const r = await api.addSchedule(pid, $("pv-sched-prompt").value, $("pv-sched-every").value);
+    if (r && r.error) addSystem("✗ " + r.error); else openProjectView(pid);
+  });
+  el.querySelectorAll("#pv-sched-list .pv-x").forEach((x) => x.addEventListener("click", async (e) => { await api.removeSchedule(pid, e.target.closest("li").dataset.tid); openProjectView(pid); }));
+  el.querySelectorAll(".pv-recents li").forEach((li) => li.addEventListener("click", () => switchTo(li.dataset.sid)));
+  scroll.scrollTop = 0;
+  input.focus();
+}
 
 // ── new session / cwd / model / dashboard ──────────────────────────
 $("new-project").addEventListener("click", () => newProject());

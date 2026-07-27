@@ -30,6 +30,7 @@
     "test:browser": "node test/browser.js",
     "test:modes": "node test/modes.js",
     "test:mcp": "node test/mcp.js",
+    "test:scheduler": "node test/scheduler.js",
     "mcp": "node electron/mcp-server.js"
   },
   "bin": {

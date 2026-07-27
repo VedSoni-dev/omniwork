@@ -10,6 +10,7 @@ const { SessionManager } = require("./sessions");
 const { MCPManager } = require("./mcp");
 const { ProjectManager } = require("./projects");
 const { BrowserManager } = require("./browser");
+const { Scheduler } = require("./scheduler");
 
 // Do this before anything spawns a child: a Finder/Dock launch hands us a bare
 // PATH, which would break `npx` MCP servers and the agent's run_command.
@@ -21,6 +22,7 @@ let sessions = null;
 let mcp = null;
 let projects = null;
 let browser = null;
+let scheduler = null;
 
 const state = { model: "auto", approval: "auto", lastWorkspace: null, gateway: { state: "boot" } };
 
@@ -101,6 +103,8 @@ async function boot() {
     // Bring up MCP servers in the background; refresh connection list when ready.
     mcp.startAll().then(() => send("mcp:list", { servers: mcp.list() })).catch(() => {});
     installDefaultSkills();
+    scheduler = new Scheduler({ projects, sessions });
+    scheduler.start();
   }).catch((e) => send("gateway:status", { state: "error", detail: e.message }));
 }
 
@@ -197,37 +201,69 @@ ipcMain.handle("skills:new", (_e, name) => {
 });
 ipcMain.handle("skills:open", () => { fs.mkdirSync(skillsDir(), { recursive: true }); shell.openPath(skillsDir()); return true; });
 
-// ── IPC: memory editing + project knowledge ─────────────────────────
-function memoryDirFor(scope) {
+// ── IPC: memory editing + project knowledge + project page ──────────
+function memoryDirFor(scope, projectId) {
+  if (scope === "global" || !projects) return path.join(app.getPath("userData"), "memory");
+  if (projectId && projects.byId(projectId)) return projects.memoryDir(projectId);
   const s = sessions && sessions.sessions.get(sessions.activeId);
-  return scope === "global" || !s || !projects
-    ? path.join(app.getPath("userData"), "memory")
-    : projects.memoryDir(s.projectId);
+  return s ? projects.memoryDir(s.projectId) : path.join(app.getPath("userData"), "memory");
 }
-ipcMain.handle("memory:read", (_e, scope) => {
+ipcMain.handle("memory:read", (_e, arg) => {
+  const { scope, projectId } = typeof arg === "object" && arg ? arg : { scope: arg };
   const { memoryFile } = require("./memory");
-  const f = memoryFile(memoryDirFor(scope));
+  const f = memoryFile(memoryDirFor(scope, projectId));
   try { return { content: fs.readFileSync(f, "utf8"), path: f }; }
   catch { return { content: "", path: f }; }
 });
-ipcMain.handle("memory:write", (_e, { scope, content }) => {
+ipcMain.handle("memory:write", (_e, { scope, content, projectId }) => {
   const { memoryFile } = require("./memory");
-  const dir = memoryDirFor(scope);
+  const dir = memoryDirFor(scope, projectId);
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(memoryFile(dir), String(content ?? ""), "utf8");
   return true;
 });
-function knowledgeDirForActive() {
+
+// The project page: everything about one project in a single fetch.
+ipcMain.handle("project:info", (_e, id) => {
+  const p = projects && projects.byId(id);
+  if (!p) return null;
+  const { listKnowledge } = require("./memory");
+  return {
+    project: p,
+    instructions: projects.readInstructions(id),
+    memory: (() => { try { return fs.readFileSync(require("./memory").memoryFile(projects.memoryDir(id)), "utf8"); } catch { return ""; } })(),
+    knowledge: listKnowledge(projects.knowledgeDir(id)),
+    schedule: scheduler ? scheduler.list(id) : [],
+  };
+});
+ipcMain.handle("project:update", (_e, { id, name, description }) => {
+  if (!projects) return null;
+  const p = projects.describe(id, { name, description });
+  if (p && sessions) sessions.renameProject(id, p.name); // broadcast the rail
+  return p;
+});
+ipcMain.handle("project:instructions", (_e, { id, content }) => {
+  if (projects) projects.writeInstructions(id, content);
+  return true;
+});
+ipcMain.handle("schedule:add", (_e, { id, prompt, every }) => {
+  try { return scheduler ? scheduler.add(id, { prompt, every }) : { error: "starting" }; }
+  catch (e) { return { error: e.message }; }
+});
+ipcMain.handle("schedule:remove", (_e, { id, taskId }) => { if (scheduler) scheduler.remove(id, taskId); return true; });
+function knowledgeDirFor(projectId) {
+  if (!projects) return null;
+  if (projectId && projects.byId(projectId)) return projects.knowledgeDir(projectId);
   const s = sessions && sessions.sessions.get(sessions.activeId);
-  return s && projects ? projects.knowledgeDir(s.projectId) : null;
+  return s ? projects.knowledgeDir(s.projectId) : null;
 }
-ipcMain.handle("knowledge:open", () => {
-  const dir = knowledgeDirForActive();
+ipcMain.handle("knowledge:open", (_e, projectId) => {
+  const dir = knowledgeDirFor(projectId);
   if (dir) shell.openPath(dir);
   return Boolean(dir);
 });
-ipcMain.handle("knowledge:import", async () => {
-  const dir = knowledgeDirForActive();
+ipcMain.handle("knowledge:import", async (_e, projectId) => {
+  const dir = knowledgeDirFor(projectId);
   if (!dir) return { error: "no active project" };
   const r = await dialog.showOpenDialog(win, { properties: ["openFile", "multiSelections"], title: "Add files to project knowledge" });
   if (r.canceled || !r.filePaths.length) return { added: [] };
