@@ -49,7 +49,16 @@ delegate** *inside* Claude Code or Codex.
 
 ## Download
 
-From the [**latest release**](https://github.com/VedSoni-dev/omniwork/releases/latest):
+**macOS (Apple Silicon) — Homebrew:**
+
+```sh
+brew install --cask --no-quarantine VedSoni-dev/tap/omniwork
+```
+
+(`--no-quarantine` skips the Gatekeeper prompt for the unsigned app; omit it if you'd
+rather right-click → Open once.)
+
+Or grab an installer from the [**latest release**](https://github.com/VedSoni-dev/omniwork/releases/latest):
 
 | Platform | File | Size | Notes |
 |---|---|---|---|
