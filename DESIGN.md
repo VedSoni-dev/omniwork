@@ -294,6 +294,20 @@ User-installable instruction packs, **format-compatible with Claude Code's `SKIL
 
 Module: `electron/skills.js` (~150 lines) + `test/skills.js`.
 
+### Built-in browsing (guaranteed for every install)
+
+OmniWork ships Chromium — it's an Electron app — so browsing needs **zero extra
+downloads** (no Playwright, no vendored third-party stacks): a single hidden
+window (`electron/browser.js`) renders any page, JavaScript included.
+
+- `web_search(query)` — DuckDuckGo HTML endpoint, no API key; titles + URLs + snippets.
+- `browse_page(url)` — readable text + links from the rendered page; the window keeps
+  state across calls so the agent can follow links. http(s) only, ephemeral session
+  partition, capped extraction (pages are untrusted input).
+- `install_skills(source)` — agent-callable and **approval-gated** like run_command,
+  closing the loop the feature exists for: *"download skill X"* → search → verify the
+  repo → install → immediately usable.
+
 ## 13. Open questions
 
 1. Auto-compact summarization model: pinned cheap model vs. session's current model? (Proposal: session model — zero config, one less concept.)

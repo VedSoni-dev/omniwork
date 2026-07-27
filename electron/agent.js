@@ -13,6 +13,8 @@ const skills = require("./skills");
 
 const BASE_PROMPT = `You are OmniWork, an autonomous coding agent running on the user's machine, in the style of Claude Code.
 You have direct access to the user's workspace through tools: list_dir, read_file, write_file, edit_file, run_command, web_fetch, open_url.
+You can also browse the real internet: web_search finds pages, browse_page opens them in a real browser (renders JavaScript) and returns their text and links.
+When the user asks for a skill or capability you don't have, find it yourself: web_search for it (add terms like "SKILL.md" or "claude skill"), browse_page the repo to confirm it contains skills, then install_skills with the repo URL — the new skills are usable immediately.
 
 Guidelines:
 - Be concise and direct. Do the work; don't just describe it.
@@ -68,7 +70,7 @@ function subLabel(name, args) {
 }
 
 class Agent {
-  constructor({ baseUrl, apiKey, model, workspace, emit, mcp, memory = null, skillsDir = null, canSpawn = true, depth = 0, approvalMode = "auto", approver = null }) {
+  constructor({ baseUrl, apiKey, model, workspace, emit, mcp, memory = null, skillsDir = null, browser = null, canSpawn = true, depth = 0, approvalMode = "auto", approver = null }) {
     this.baseUrl = baseUrl.replace(/\/$/, "");
     this.apiKey = apiKey;
     this.model = model || "auto";
@@ -77,6 +79,7 @@ class Agent {
     this.mcp = mcp || null;
     this.memory = memory; // { globalDir, projectDir } | null
     this.skillsDir = skillsDir || null; // global skills root
+    this.browser = browser || null;    // BrowserManager
     this.contextTokens = DEFAULT_CONTEXT;
     this.canSpawn = canSpawn;
     this.depth = depth;
@@ -135,8 +138,9 @@ class Agent {
     const extra = this.mcp ? this.mcp.toolSchema() : [];
     const sub = this.canSpawn ? [SUBAGENT_TOOL] : [];
     const mem = this.memory ? [MEMORY_TOOL] : [];
-    const sk = this.skillsDir ? [skills.USE_SKILL_TOOL, skills.SAVE_SKILL_TOOL] : [];
-    return [...TOOL_SCHEMA, ...sub, ...mem, ...sk, ...extra];
+    const sk = this.skillsDir ? [skills.USE_SKILL_TOOL, skills.SAVE_SKILL_TOOL, skills.INSTALL_SKILLS_TOOL] : [];
+    const web = this.browser ? [require("./browser").WEB_SEARCH_TOOL, require("./browser").BROWSE_TOOL] : [];
+    return [...TOOL_SCHEMA, ...sub, ...mem, ...sk, ...web, ...extra];
   }
 
   abort() { this.aborted = true; }
@@ -278,7 +282,7 @@ class Agent {
         this.emit("subagent", { groupId, subId, title, kind: "start" });
         const child = new Agent({
           baseUrl: this.baseUrl, apiKey: this.apiKey, model: this.model,
-          workspace: this.workspace, mcp: this.mcp, canSpawn: false, depth: this.depth + 1,
+          workspace: this.workspace, mcp: this.mcp, browser: this.browser, canSpawn: false, depth: this.depth + 1,
           emit: (type, payload) => {
             if (type === "tool_call") this.emit("subagent", { groupId, subId, kind: "tool", tool: subLabel(payload.name, payload.args) });
             else if (type === "assistant") this.emit("subagent", { groupId, subId, kind: "text", snippet: String(payload.content || "").slice(0, 160) });
@@ -343,7 +347,7 @@ class Agent {
         this.emit("tool_call", { id: call.id, name, args: parsedArgs });
 
         // Approval gate (top-level agents only): pause for destructive tools.
-        const needsApproval = ["run_command", "write_file", "edit_file"].includes(name) || (this.mcp && this.mcp.isMcpTool(name));
+        const needsApproval = ["run_command", "write_file", "edit_file", "install_skills"].includes(name) || (this.mcp && this.mcp.isMcpTool(name));
         if (this.approvalMode === "ask" && this.approver && needsApproval) {
           const preview = this.#approvalPreview(name, parsedArgs);
           const ok = await this.approver(call.id, name, parsedArgs, preview);
@@ -358,6 +362,19 @@ class Agent {
         let result;
         if (name === "spawn_subagents" && this.canSpawn) {
           result = await this.runSubagents(parsedArgs.tasks);
+        } else if (name === "web_search" && this.browser) {
+          try { result = await this.browser.search(parsedArgs.query); }
+          catch (e) { result = "Search failed: " + e.message; }
+        } else if (name === "browse_page" && this.browser) {
+          try { result = await this.browser.open(parsedArgs.url); }
+          catch (e) { result = "Browse failed: " + e.message; }
+        } else if (name === "install_skills" && this.skillsDir) {
+          try {
+            const installed = await skills.installSkills(this.skillsDir, parsedArgs.source);
+            result = installed.length
+              ? `Installed skills: ${installed.join(", ")}. They are available right now — load one with use_skill.`
+              : "No SKILL.md directories found at that source.";
+          } catch (e) { result = "Install failed: " + e.message; }
         } else if (name === "use_skill" && this.skillsDir) {
           result = skills.readSkill(this.skillsDir, this.workspace, parsedArgs.name || "");
         } else if (name === "save_skill" && this.skillsDir) {

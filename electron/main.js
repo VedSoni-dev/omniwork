@@ -9,6 +9,7 @@ const { Gateway } = require("./sidecar");
 const { SessionManager } = require("./sessions");
 const { MCPManager } = require("./mcp");
 const { ProjectManager } = require("./projects");
+const { BrowserManager } = require("./browser");
 
 // Do this before anything spawns a child: a Finder/Dock launch hands us a bare
 // PATH, which would break `npx` MCP servers and the agent's run_command.
@@ -19,6 +20,7 @@ let gateway = null;
 let sessions = null;
 let mcp = null;
 let projects = null;
+let browser = null;
 
 const state = { model: "auto", approval: "auto", lastWorkspace: null, gateway: { state: "boot" } };
 
@@ -68,8 +70,9 @@ async function boot() {
   gateway.start().then(() => {
     mcp = new MCPManager(app.getPath("userData"));
     projects = new ProjectManager(path.join(app.getPath("userData"), "projects"));
+    browser = new BrowserManager();
     sessions = new SessionManager({
-      gateway, mcp, projects,
+      gateway, mcp, projects, browser,
       globalMemoryDir: path.join(app.getPath("userData"), "memory"),
       skillsDir: path.join(app.getPath("userData"), "skills"),
       legacyPath: path.join(app.getPath("userData"), "sessions.json"),
@@ -273,6 +276,7 @@ function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
   if (sessions) sessions.save({ immediate: true }); // debounced save would never fire
+  if (browser) browser.dispose();
   if (mcp) mcp.stopAll();
   if (gateway) gateway.stop();
 }

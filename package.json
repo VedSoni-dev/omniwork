@@ -27,6 +27,7 @@
     "test:projects": "node test/projects.js",
     "test:compact": "node test/compact.js",
     "test:skills": "node test/skills.js",
+    "test:browser": "node test/browser.js",
     "mcp": "node electron/mcp-server.js"
   },
   "bin": {

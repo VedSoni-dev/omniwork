@@ -303,6 +303,8 @@ function renderMcp(servers) {
 api.on("session:event", (p) => { if (p.sessionId === activeId) renderEvent(p, true); });
 api.on("sessions:list", (p) => {
   renderSessions(p.sessions, p.activeId);
+  // Agent tools can install skills mid-turn; keep the palette current.
+  api.listSkills().then((s) => { skillsCache = s || []; }).catch(() => {});
   // The engine usually finishes booting after the page loads; if the pane is
   // still showing the empty boot welcome, swap in the real active session.
   if ($("welcome") && activeId) switchTo(activeId);

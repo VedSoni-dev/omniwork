@@ -22,13 +22,14 @@ function stripImages(m) {
 }
 
 class SessionManager {
-  constructor({ gateway, mcp, emit, projects, globalMemoryDir, skillsDir, legacyPath }) {
+  constructor({ gateway, mcp, emit, projects, globalMemoryDir, skillsDir, browser, legacyPath }) {
     this.gateway = gateway;
     this.mcp = mcp;
     this.emit = emit; // (sessionId, type, payload) => void  (to renderer)
     this.projects = projects || null;         // ProjectManager
     this.globalMemoryDir = globalMemoryDir || null;
     this.skillsDir = skillsDir || null;
+    this.browser = browser || null;
     this.legacyPath = legacyPath || null;     // old single-file store, migrated on restore
     this.sessions = new Map();
     this.activeId = null;
@@ -118,6 +119,7 @@ class SessionManager {
       mcp: this.mcp,
       memory: this.projects ? { globalDir: this.globalMemoryDir, projectDir: this.projects.memoryDir(sess.projectId) } : null,
       skillsDir: this.skillsDir,
+      browser: this.browser,
       approvalMode: this.approvalMode,
       approver: (callId, name, args, preview) =>
         new Promise((resolve) => {

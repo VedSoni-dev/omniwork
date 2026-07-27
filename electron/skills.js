@@ -49,6 +49,19 @@ const SAVE_SKILL_TOOL = {
   },
 };
 
+const INSTALL_SKILLS_TOOL = {
+  type: "function",
+  function: {
+    name: "install_skills",
+    description: "Install skills into the user's global environment from a git repo URL, GitHub owner/repo shorthand, or local folder. Only SKILL.md directories are copied — nothing from the source is executed. Use after locating a skill repo the user asked for.",
+    parameters: {
+      type: "object",
+      properties: { source: { type: "string", description: "Git URL, owner/repo, or local folder path." } },
+      required: ["source"],
+    },
+  },
+};
+
 const slug = (s) => String(s).toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
 
 // Minimal frontmatter parse: --- name: x / description: y --- body
@@ -149,4 +162,4 @@ async function installSkills(globalDir, source) {
   return installed;
 }
 
-module.exports = { USE_SKILL_TOOL, SAVE_SKILL_TOOL, parseSkill, listSkills, readSkill, promptSection, createSkill, installSkills };
+module.exports = { USE_SKILL_TOOL, SAVE_SKILL_TOOL, INSTALL_SKILLS_TOOL, parseSkill, listSkills, readSkill, promptSection, createSkill, installSkills };
