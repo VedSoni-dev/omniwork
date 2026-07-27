@@ -149,6 +149,28 @@ class Gateway {
     // Ensure no stray Electron-as-node flag leaks into the child.
     delete env.ELECTRON_RUN_AS_NODE;
 
+    // Corrupt gateway storage (e.g. after a hard kill) makes the server listen
+    // but never turn healthy. If the first boot times out, quarantine the DB
+    // and try once more with a fresh one.
+    for (let attempt = 0; ; attempt++) {
+      this.#spawnServer(serverEntry, omniDir, env);
+      try {
+        await this.#waitHealthy();
+        return this.baseUrl;
+      } catch (e) {
+        this.stop();
+        const db = path.join(gwDataDir, "storage.sqlite");
+        if (attempt === 0 && fs.existsSync(db)) {
+          this.status("boot", "Recovering gateway storage…");
+          try { fs.renameSync(db, db + ".corrupt-" + Date.now() + ".bak"); } catch {}
+          continue;
+        }
+        throw e;
+      }
+    }
+  }
+
+  #spawnServer(serverEntry, omniDir, env) {
     // detached: gives the child its own process group so stop() can take down
     // any workers Next.js spawned, not just the parent.
     this.proc = spawn(this.nodeBinary, [serverEntry], {
@@ -165,9 +187,6 @@ class Gateway {
       if (code && code !== 0) this.status("error", `Gateway exited (code ${code})`);
     });
     this.proc.on("error", (e) => this.status("error", e.message));
-
-    await this.#waitHealthy();
-    return this.baseUrl;
   }
 
   #log(d) {
@@ -178,6 +197,7 @@ class Gateway {
   async #waitHealthy(timeoutMs = 90000) {
     const started = Date.now();
     const url = `http://${HOST}:${PORT}/v1/models`;
+    let sick = 0; // listening but 5xx — broken storage, not "still booting"
     while (Date.now() - started < timeoutMs) {
       try {
         const res = await fetch(url);
@@ -186,8 +206,9 @@ class Gateway {
           this.status("ready", "OmniRoute · free models");
           return;
         }
+        if (res.status >= 500 && ++sick >= 5) break;
       } catch {
-        // not up yet
+        sick = 0; // not up yet
       }
       await new Promise((r) => setTimeout(r, 700));
     }

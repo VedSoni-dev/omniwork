@@ -7,9 +7,14 @@
 // with its own context/tool-loop, and report a summary back to the parent.
 
 const { TOOL_SCHEMA, executeTool } = require("./tools");
+const { MEMORY_TOOL, saveMemory, loadForPrompt } = require("./memory");
+const { DEFAULT_CONTEXT, estimateTokens, shouldCompact, compact } = require("./compactor");
+const skills = require("./skills");
 
 const BASE_PROMPT = `You are OmniWork, an autonomous coding agent running on the user's machine, in the style of Claude Code.
 You have direct access to the user's workspace through tools: list_dir, read_file, write_file, edit_file, run_command, web_fetch, open_url.
+You can also browse the real internet: web_search finds pages, browse_page opens them in a real browser (renders JavaScript) and returns their text and links.
+When the user asks for a skill or capability you don't have, find it yourself: web_search for it (add terms like "SKILL.md" or "claude skill"), browse_page the repo to confirm it contains skills, then install_skills with the repo URL — the new skills are usable immediately.
 
 Guidelines:
 - Be concise and direct. Do the work; don't just describe it.
@@ -18,7 +23,9 @@ Guidelines:
 - Use run_command for builds, tests, git, installing deps, and searching.
 - Use web_fetch to read docs/APIs; open_url to show the user a page or running server.
 - After changes, verify by running the relevant build/test/command when possible.
-- When done, give a short summary of what you did.`;
+- When done, give a short summary of what you did.
+- When you learn something durable — a user preference, a project convention, a hard-won fix —
+  save it with save_memory so future sessions recall it. Don't save session trivia.`;
 
 const ORCHESTRATOR_EXTRA = `
 
@@ -56,6 +63,26 @@ const SUBAGENT_TOOL = {
 
 const MAX_STEPS = 40;
 
+const PLAN_MODE_PROMPT = `
+
+# PLAN MODE
+You are in plan mode: explore, analyze, and design — do NOT change anything.
+File writes and edits are disabled; commands require the user's approval, so run only read-only ones.
+End your reply with a clear, numbered plan and ask the user to switch modes (Shift+Tab) to execute it.`;
+
+// Pure: what happens to a tool call under each approval mode.
+// Returns "allow" | "ask" | "block".
+function approvalDecision(mode, name, isMcpTool = false) {
+  const isEdit = name === "write_file" || name === "edit_file";
+  const isCmd = name === "run_command" || name === "install_skills" || isMcpTool;
+  switch (mode) {
+    case "ask": return isEdit || isCmd ? "ask" : "allow";
+    case "edits": return isCmd ? "ask" : "allow";           // auto-accept file edits
+    case "plan": return isEdit || name === "install_skills" ? "block" : (isCmd ? "ask" : "allow");
+    default: return "allow";                                  // "auto"
+  }
+}
+
 function subLabel(name, args) {
   const label = { run_command: "Bash", read_file: "Read", write_file: "Write", edit_file: "Edit", list_dir: "List", web_fetch: "Fetch", open_url: "Open" }[name] || name;
   const a = name === "run_command" ? args.command : args.path || args.url || "";
@@ -63,13 +90,17 @@ function subLabel(name, args) {
 }
 
 class Agent {
-  constructor({ baseUrl, apiKey, model, workspace, emit, mcp, canSpawn = true, depth = 0, approvalMode = "auto", approver = null }) {
+  constructor({ baseUrl, apiKey, model, workspace, emit, mcp, memory = null, skillsDir = null, browser = null, canSpawn = true, depth = 0, approvalMode = "auto", approver = null }) {
     this.baseUrl = baseUrl.replace(/\/$/, "");
     this.apiKey = apiKey;
     this.model = model || "auto";
     this.workspace = workspace;
     this.emit = emit; // (event, payload) => void
     this.mcp = mcp || null;
+    this.memory = memory; // { globalDir, projectDir } | null
+    this.skillsDir = skillsDir || null; // global skills root
+    this.browser = browser || null;    // BrowserManager
+    this.contextTokens = DEFAULT_CONTEXT;
     this.canSpawn = canSpawn;
     this.depth = depth;
     this.approvalMode = approvalMode;   // "auto" | "ask"
@@ -80,6 +111,29 @@ class Agent {
     this.baseSystem = BASE_PROMPT + (canSpawn ? ORCHESTRATOR_EXTRA : "");
     this.messages = [{ role: "system", content: this.baseSystem }];
     this.aborted = false;
+    this.turnStats = null; // { startedAt, inTokens, outTokens, estimated } during a turn
+  }
+
+  // ── per-turn usage accounting ────────────────────────────────────
+  // Real API usage when the gateway reports it; chars/4 as a marked estimate
+  // when it doesn't. Every model call in the turn counts, compaction included.
+  #addUsage(usage, fallbackChars) {
+    const s = this.turnStats;
+    if (!s) return;
+    if (usage && (usage.completion_tokens != null || usage.prompt_tokens != null)) {
+      s.inTokens += usage.prompt_tokens || 0;
+      s.outTokens += usage.completion_tokens || 0;
+    } else {
+      s.outTokens += Math.ceil((fallbackChars || 0) / 4);
+      s.estimated = true;
+    }
+    this.emit("stats", this.#statsPayload());
+  }
+
+  #statsPayload() {
+    const s = this.turnStats;
+    if (!s) return {};
+    return { elapsedMs: Date.now() - s.startedAt, inTokens: s.inTokens, outTokens: s.outTokens, estimated: s.estimated };
   }
 
   // Read project instruction files from the workspace (like Claude Code's CLAUDE.md).
@@ -94,6 +148,13 @@ class Agent {
         if (fs.existsSync(p) && fs.statSync(p).isFile()) mem += `\n\n## ${f}\n${fs.readFileSync(p, "utf8").slice(0, 8000)}`;
       } catch {}
     }
+    // Durable memory (global + this project) saved by past sessions.
+    if (this.memory) {
+      const saved = loadForPrompt(this.memory.globalDir, this.memory.projectDir);
+      if (saved) mem += `\n\n${saved}`;
+    }
+    // Skills: names + descriptions only; bodies load via use_skill.
+    if (this.skillsDir) mem += skills.promptSection(this.skillsDir, this.workspace);
     return mem.trim();
   }
 
@@ -119,11 +180,43 @@ class Agent {
   toolSchema() {
     const extra = this.mcp ? this.mcp.toolSchema() : [];
     const sub = this.canSpawn ? [SUBAGENT_TOOL] : [];
-    return [...TOOL_SCHEMA, ...sub, ...extra];
+    const mem = this.memory ? [MEMORY_TOOL] : [];
+    const sk = this.skillsDir ? [skills.USE_SKILL_TOOL, skills.SAVE_SKILL_TOOL, skills.INSTALL_SKILLS_TOOL] : [];
+    const web = this.browser ? [require("./browser").WEB_SEARCH_TOOL, require("./browser").BROWSE_TOOL] : [];
+    return [...TOOL_SCHEMA, ...sub, ...mem, ...sk, ...web, ...extra];
   }
 
   abort() { this.aborted = true; }
   setWorkspace(dir) { this.workspace = dir; }
+
+  // One-off model call outside the session's message history (summaries,
+  // titles, memory capture).
+  async oneShot(prompt) {
+    const res = await fetch(`${this.baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}` },
+      body: JSON.stringify({ model: this.model, messages: [{ role: "user", content: prompt }], temperature: 0.2 }),
+    });
+    if (!res.ok) throw new Error(`Gateway ${res.status}`);
+    const data = await res.json();
+    const content = data.choices?.[0]?.message?.content || "";
+    this.#addUsage(data.usage, content.length); // counts only while a turn is active
+    return content;
+  }
+
+  #emitContext() {
+    this.emit("context", { pct: Math.min(100, Math.round((estimateTokens(this.messages) / this.contextTokens) * 100)) });
+  }
+
+  // Compact when over threshold (or forced by /compact). Returns the notice, or null.
+  async compactNow({ force = false } = {}) {
+    if (!force && !shouldCompact(this.messages, this.contextTokens)) return null;
+    const { messages, note } = await compact(this.messages, (p) => this.oneShot(p));
+    this.messages = messages;
+    this.#emitContext();
+    if (note) return note;
+    return force ? "Nothing to compact yet — the conversation is still short." : null;
+  }
 
   async callModel() {
     // Try streaming for a live feel. Free `auto` routing hits many providers and
@@ -148,6 +241,10 @@ class Agent {
         tool_choice: "auto",
         temperature: 0.3,
         stream,
+        // Ask for exact usage in the final stream chunk (OpenAI-compatible).
+        // Providers that reject it fail the stream; callModel then falls back
+        // to non-streaming, which always reports usage.
+        ...(stream ? { stream_options: { include_usage: true } } : {}),
       }),
     });
     if (!res.ok) {
@@ -156,11 +253,14 @@ class Agent {
     }
     const ctype = res.headers.get("content-type") || "";
     if (stream && ctype.includes("event-stream") && res.body) {
-      return await this.#readStream(res.body);
+      const { message, usage } = await this.#readStream(res.body);
+      this.#addUsage(usage, (message.content || "").length + JSON.stringify(message.tool_calls || []).length);
+      return message;
     }
     const data = await res.json();
     const choice = data.choices && data.choices[0];
     if (!choice) throw new Error("No choices returned from gateway");
+    this.#addUsage(data.usage, ((choice.message && choice.message.content) || "").length);
     if (choice.message && choice.message.content) this.emit("assistant_delta", { chunk: choice.message.content });
     return choice.message;
   }
@@ -172,6 +272,7 @@ class Agent {
     const decoder = new TextDecoder();
     let buf = "";
     let content = "";
+    let usage = null;
     const toolCalls = [];
     while (true) {
       const { done, value } = await reader.read();
@@ -186,6 +287,7 @@ class Agent {
         if (data === "[DONE]") { try { reader.cancel(); } catch {} break; }
         let json;
         try { json = JSON.parse(data); } catch { continue; }
+        if (json.usage) usage = json.usage; // final chunk carries exact usage
         const choice = json.choices && json.choices[0];
         if (!choice) continue;
         const delta = choice.delta || {};
@@ -202,7 +304,7 @@ class Agent {
       }
     }
     const calls = toolCalls.filter(Boolean);
-    return { role: "assistant", content: content || "", tool_calls: calls.length ? calls : undefined };
+    return { message: { role: "assistant", content: content || "", tool_calls: calls.length ? calls : undefined }, usage };
   }
 
   // Build a diff preview for the approval prompt (file writes/edits).
@@ -234,7 +336,7 @@ class Agent {
         this.emit("subagent", { groupId, subId, title, kind: "start" });
         const child = new Agent({
           baseUrl: this.baseUrl, apiKey: this.apiKey, model: this.model,
-          workspace: this.workspace, mcp: this.mcp, canSpawn: false, depth: this.depth + 1,
+          workspace: this.workspace, mcp: this.mcp, browser: this.browser, canSpawn: false, depth: this.depth + 1,
           emit: (type, payload) => {
             if (type === "tool_call") this.emit("subagent", { groupId, subId, kind: "tool", tool: subLabel(payload.name, payload.args) });
             else if (type === "assistant") this.emit("subagent", { groupId, subId, kind: "text", snippet: String(payload.content || "").slice(0, 160) });
@@ -256,9 +358,15 @@ class Agent {
     this.aborted = false;
     this.turnUndo = new Map();
     this.undoAvailable = false;
+    this.turnStats = { startedAt: Date.now(), inTokens: 0, outTokens: 0, estimated: false };
     // Refresh the system prompt with current project instructions (AGENTS.md, etc.).
     const mem = this.loadProjectMemory();
-    this.messages[0] = { role: "system", content: this.baseSystem + (mem ? `\n\n# Project instructions (from the workspace)\n${mem}` : "") };
+    this.messages[0] = {
+      role: "system",
+      content: this.baseSystem
+        + (mem ? `\n\n# Project instructions (from the workspace)\n${mem}` : "")
+        + (this.approvalMode === "plan" ? PLAN_MODE_PROMPT : ""),
+    };
     // Multimodal: attach pasted images (vision) as an OpenAI content array.
     if (images && images.length) {
       this.messages.push({ role: "user", content: [{ type: "text", text: userText }, ...images.map((url) => ({ type: "image_url", image_url: { url } }))] });
@@ -267,7 +375,14 @@ class Agent {
     }
 
     for (let step = 0; step < MAX_STEPS; step++) {
-      if (this.aborted) { this.emit("aborted", {}); return; }
+      if (this.aborted) { this.emit("aborted", this.#statsPayload()); return; }
+      // Auto-compact before the call would overflow; a failed summary degrades
+      // to truncation inside compact(), never a crashed turn.
+      try {
+        const note = await this.compactNow();
+        if (note) this.emit("system", { content: "⛁ " + note });
+      } catch {}
+      this.#emitContext();
       this.emit("thinking", { step });
 
       let msg;
@@ -282,18 +397,24 @@ class Agent {
       const toolCalls = msg.tool_calls || [];
       this.messages.push({ role: "assistant", content: msg.content || "", tool_calls: toolCalls.length ? toolCalls : undefined });
 
-      if (!toolCalls.length) { this.emit("done", {}); return; }
+      if (!toolCalls.length) { this.emit("done", this.#statsPayload()); return; }
 
       for (const call of toolCalls) {
-        if (this.aborted) { this.emit("aborted", {}); return; }
+        if (this.aborted) { this.emit("aborted", this.#statsPayload()); return; }
         const name = call.function.name;
         let parsedArgs = {};
         try { parsedArgs = JSON.parse(call.function.arguments || "{}"); } catch { parsedArgs = {}; }
         this.emit("tool_call", { id: call.id, name, args: parsedArgs });
 
-        // Approval gate (top-level agents only): pause for destructive tools.
-        const needsApproval = ["run_command", "write_file", "edit_file"].includes(name) || (this.mcp && this.mcp.isMcpTool(name));
-        if (this.approvalMode === "ask" && this.approver && needsApproval) {
+        // Approval gate (top-level agents only): mode decides per tool.
+        const decision = approvalDecision(this.approvalMode, name, !!(this.mcp && this.mcp.isMcpTool(name)));
+        if (decision === "block") {
+          const blocked = "⏸ Plan mode — changes are disabled. Present your plan instead; the user can switch modes to execute it.";
+          this.emit("tool_result", { id: call.id, name, result: blocked });
+          this.messages.push({ role: "tool", tool_call_id: call.id, content: blocked });
+          continue;
+        }
+        if (decision === "ask" && this.approver) {
           const preview = this.#approvalPreview(name, parsedArgs);
           const ok = await this.approver(call.id, name, parsedArgs, preview);
           if (!ok) {
@@ -307,6 +428,30 @@ class Agent {
         let result;
         if (name === "spawn_subagents" && this.canSpawn) {
           result = await this.runSubagents(parsedArgs.tasks);
+        } else if (name === "web_search" && this.browser) {
+          try { result = await this.browser.search(parsedArgs.query); }
+          catch (e) { result = "Search failed: " + e.message; }
+        } else if (name === "browse_page" && this.browser) {
+          try { result = await this.browser.open(parsedArgs.url); }
+          catch (e) { result = "Browse failed: " + e.message; }
+        } else if (name === "install_skills" && this.skillsDir) {
+          try {
+            const installed = await skills.installSkills(this.skillsDir, parsedArgs.source);
+            result = installed.length
+              ? `Installed skills: ${installed.join(", ")}. They are available right now — load one with use_skill.`
+              : "No SKILL.md directories found at that source.";
+          } catch (e) { result = "Install failed: " + e.message; }
+        } else if (name === "use_skill" && this.skillsDir) {
+          result = skills.readSkill(this.skillsDir, this.workspace, parsedArgs.name || "");
+        } else if (name === "save_skill" && this.skillsDir) {
+          try {
+            const made = skills.createSkill(this.skillsDir, parsedArgs.name, parsedArgs.description, parsedArgs.instructions);
+            result = `Saved skill "${made.name}" — available in every project via /` + made.name;
+          } catch (e) { result = "Failed to save skill: " + e.message; }
+        } else if (name === "save_memory" && this.memory) {
+          const dir = parsedArgs.scope === "global" ? this.memory.globalDir : this.memory.projectDir;
+          try { result = saveMemory(dir, parsedArgs.title || "note", parsedArgs.content || ""); }
+          catch (e) { result = "Failed to save memory: " + e.message; }
         } else if (this.mcp && this.mcp.isMcpTool(name)) {
           result = await this.mcp.callTool(name, parsedArgs);
         } else {
@@ -327,4 +472,4 @@ class Agent {
   }
 }
 
-module.exports = { Agent };
+module.exports = { Agent, approvalDecision };

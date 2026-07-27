@@ -24,6 +24,12 @@
     "test:cowork": "node test/cowork.js",
     "test:features": "node test/features.js",
     "test:persist": "node test/persist.js",
+    "test:projects": "node test/projects.js",
+    "test:compact": "node test/compact.js",
+    "test:skills": "node test/skills.js",
+    "test:browser": "node test/browser.js",
+    "test:modes": "node test/modes.js",
+    "test:mcp": "node test/mcp.js",
     "mcp": "node electron/mcp-server.js"
   },
   "bin": {

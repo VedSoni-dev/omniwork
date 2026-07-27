@@ -36,42 +36,105 @@ const info = (m) => console.log(`  ·  ${m}`);
 const warn = (m) => console.log(`  ⚠️  ${m}`);
 
 // ── the guidance block ──────────────────────────────────────────────
-// Kept tight on purpose: this loads into every session's context, so a bloated
-// token-saving doc would defeat its own point.
+// Kept tight on purpose: this loads into every session's context. Depth lives
+// in the omniwork skill (~/.claude/skills/omniwork/), loaded on demand.
 function guidance() {
   return `${BEGIN}
 
-## Delegating to OmniWork (token saver)
+## OmniWork (free-model delegation + browsing)
 
-The \`omniwork\` MCP server runs coding tasks on **free** models via a local gateway. Use it to
-offload mechanical work so context and tokens go to the reasoning that needs them.
+The \`omniwork\` MCP server runs work on **free** models via a local gateway. Offload mechanical
+work so your context and tokens go to the reasoning that needs them. For the full situation
+guide, load the \`omniwork\` skill.
 
-- \`delegate(task, cwd?)\` — one subtask, autonomously; returns a summary + change list
-- \`delegate_parallel(tasks[], cwd?)\` — independent subtasks fanned out at once
+- \`delegate(task, cwd)\` — one subtask, autonomous; returns summary + change list
+- \`delegate_parallel(tasks[], cwd)\` — independent subtasks fanned out at once; prefer over N delegate calls
+- \`web_search(query)\` / \`browse_page(url)\` — search and read pages through OmniWork (no API key)
+- \`list_skills()\` / \`install_skills(source)\` — see or extend what delegated agents can do
 
-Always pass \`cwd\` explicitly. It reads and writes real files and runs shell commands there with
-full user privileges — it is not a sandbox.
-
-**Delegate when:** bulk mechanical work (boilerplate, scaffolding, repetitive edits); independent
-chunks that can run in parallel (use \`delegate_parallel\`, not N sequential calls); read-heavy
-research to keep long documents out of context; anything cheap to verify.
-
-**Don't delegate when:**
-- **It needs conversation context.** Delegated agents start cold — they cannot see the current
-  conversation or anything already read. Prompts must be fully self-contained, and if writing
-  that prompt costs more than doing the work, just do the work.
-- **The task is small.** There is ~25-30 s of overhead per call.
-- **Precision matters.** Free models drift on instruction details — fine for scaffolding, bad for
-  exact specs.
-- **It is destructive, security-sensitive, or hard to undo.**
-
-**Treat the returned summary as a claim, not evidence.** Verify before reporting work as done —
-run the test, execute the file, read the diff. Summaries tend to be rosier than reality.
-
-It writes directly to the working tree, so on a repo that matters, start from a clean tree to keep
-the changes reviewable as a diff.
+Rules of thumb: always pass \`cwd\`; delegated agents start **cold** (self-contained prompts only);
+~30 s overhead per call, so don't delegate tiny things; not a sandbox — it edits real files with
+full user privileges, so avoid destructive or precision-critical tasks; **verify results yourself**
+(run the test, read the diff) — summaries are claims, not evidence.
 
 ${END}`;
+}
+
+// ── the skill (depth on demand) ─────────────────────────────────────
+const SKILL_DIR = path.join(CLAUDE_DIR, "skills", "omniwork");
+
+function skillBody() {
+  return `---
+name: omniwork
+description: Delegate coding/research work to free local models via the omniwork MCP server, browse the web through it, and manage its skills. Load when deciding whether/how to delegate, when a delegation misbehaves, or when the user mentions OmniWork.
+---
+
+# Using OmniWork — every situation
+
+OmniWork executes tasks autonomously on free models through a local gateway. The expensive
+model (you) orchestrates; OmniWork does the grunt work. Tools: \`delegate\`, \`delegate_parallel\`,
+\`web_search\`, \`browse_page\`, \`list_skills\`, \`install_skills\`.
+
+## When to delegate
+- Bulk mechanical work: boilerplate, scaffolding, repetitive edits, test skeletons, doc stubs
+- Independent chunks → \`delegate_parallel\` (one call, many tasks), never N sequential calls
+- Read-heavy research: summarizing long files/sites so they never enter your context
+- Anything cheap to verify after the fact
+
+## When NOT to delegate
+- Needs conversation context — delegates start cold; if a self-contained prompt costs more than
+  the work, do the work yourself
+- Small tasks (~30 s overhead per call)
+- Precision-critical specs — free models drift on instruction details
+- Destructive, security-sensitive, or hard-to-undo changes — OmniWork is NOT a sandbox; it edits
+  real files and runs real commands with the user's privileges
+
+## How to write a delegation
+1. Always pass \`cwd\` (absolute). 2. Self-contained prompt: include file paths, exact
+requirements, and acceptance criteria — the agent cannot see your conversation. 3. Ask for a
+verifiable artifact ("create X, run Y, report the output"). 4. On a repo that matters, start
+from a clean tree so changes review as a diff.
+
+## After a delegation
+Treat the summary as a claim, not evidence: run the test, execute the file, read the diff before
+reporting the work as done. If the result is wrong, either fix it yourself (small gaps) or
+re-delegate with the failure pasted into a sharper prompt (systematic misses).
+
+## Skills & memory (what delegated agents know)
+Delegated agents load OmniWork's installed skills (Claude Code-compatible SKILL.md format) and
+its saved memory (global + per-project) — they improve as the user teaches OmniWork.
+- \`list_skills()\` first when unsure what it can do well
+- \`install_skills("owner/repo" | git URL | folder)\` to add capabilities; only SKILL.md
+  directories are copied, nothing executes at install time. Confirm with the user before
+  installing from sources they didn't name.
+- To make future delegations remember a fact, include "save this to memory: …" in the task.
+
+## Browsing
+- \`web_search(query)\` — DuckDuckGo results (titles, URLs, snippets); no API key
+- \`browse_page(url)\` — static fetch in this server (JavaScript NOT rendered). For JS-heavy
+  pages, delegate the browsing: with the OmniWork desktop app running, delegated agents render
+  pages in a real Chromium browser.
+
+## Troubleshooting
+- First call is slow → the gateway is booting (~10-30 s); later calls reuse it. Keeping the
+  OmniWork desktop app open makes every call warm.
+- "Engine still starting" or timeouts → wait a few seconds and retry once; if it persists, tell
+  the user to run \`npm run doctor\` in the omniwork checkout.
+- Empty/garbled results → free-model routing varies; retry once, then narrow the task or do it
+  yourself. Do not silently ship unverified delegated output.
+`;
+}
+
+function writeSkill() {
+  fs.mkdirSync(SKILL_DIR, { recursive: true });
+  fs.writeFileSync(path.join(SKILL_DIR, "SKILL.md"), skillBody(), "utf8");
+  ok(`installed the omniwork skill at ${tildify(SKILL_DIR)}`);
+}
+
+function removeSkill() {
+  if (!fs.existsSync(SKILL_DIR)) { info("omniwork skill not installed — nothing to remove"); return; }
+  fs.rmSync(SKILL_DIR, { recursive: true, force: true });
+  ok("removed the omniwork skill");
 }
 
 // ── prompting ───────────────────────────────────────────────────────
@@ -219,6 +282,7 @@ const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     console.log();
     unregisterMcp();
     removeClaudeMd();
+    removeSkill();
     console.log("\nDisconnected. Restart Claude Code for it to take effect.\n");
     return;
   }
@@ -232,6 +296,7 @@ const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   if (state === "absent") console.log(`  · create ${tildify(CLAUDE_MD)} with guidance on when to delegate`);
   else if (state === "managed") console.log(`  · update the existing OmniWork section in ${tildify(CLAUDE_MD)}`);
   else console.log(`  · append a delegate section to ${tildify(CLAUDE_MD)} (existing content untouched)`);
+  console.log(`  · install the omniwork skill at ${tildify(SKILL_DIR)} (full usage guide, loaded on demand)`);
   console.log("  · leave a .omniwork-backup beside anything it edits");
   console.log("\nBoth are global: they affect every Claude Code session for your user.");
   console.log("Undo at any time with:  npm run connect -- --uninstall\n");
@@ -240,6 +305,7 @@ const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   console.log();
   registerMcp();
   writeClaudeMd();
+  writeSkill();
 
   console.log("\nDone. Restart Claude Code, then try:");
   console.log('  "delegate writing the tests for X to omniwork"\n');
