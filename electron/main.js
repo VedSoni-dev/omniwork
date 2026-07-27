@@ -8,6 +8,7 @@ const { ensureShellPath } = require("./shell-path");
 const { Gateway } = require("./sidecar");
 const { SessionManager } = require("./sessions");
 const { MCPManager } = require("./mcp");
+const { ProjectManager } = require("./projects");
 
 // Do this before anything spawns a child: a Finder/Dock launch hands us a bare
 // PATH, which would break `npx` MCP servers and the agent's run_command.
@@ -17,6 +18,7 @@ let win = null;
 let gateway = null;
 let sessions = null;
 let mcp = null;
+let projects = null;
 
 const state = { model: "auto", approval: "auto", lastWorkspace: null, gateway: { state: "boot" } };
 
@@ -65,9 +67,12 @@ async function boot() {
 
   gateway.start().then(() => {
     mcp = new MCPManager(app.getPath("userData"));
+    projects = new ProjectManager(path.join(app.getPath("userData"), "projects"));
     sessions = new SessionManager({
-      gateway, mcp,
-      persistPath: path.join(app.getPath("userData"), "sessions.json"),
+      gateway, mcp, projects,
+      globalMemoryDir: path.join(app.getPath("userData"), "memory"),
+      skillsDir: path.join(app.getPath("userData"), "skills"),
+      legacyPath: path.join(app.getPath("userData"), "sessions.json"),
       emit: (sessionId, type, payload) => {
         if (sessionId === null) send(type, payload); // broadcasts (e.g. sessions:list)
         else send("session:event", { sessionId, type, ...payload });
@@ -106,7 +111,7 @@ ipcMain.handle("models:list", async () => {
 // ── IPC: sessions (Cowork) ──────────────────────────────────────────
 ipcMain.handle("session:create", (_e, opts) => {
   if (!sessions) return null;
-  return sessions.create(opts || { workspace: state.lastWorkspace });
+  return sessions.create({ workspace: state.lastWorkspace || undefined, ...(opts || {}) });
 });
 ipcMain.handle("session:list", () => (sessions ? { sessions: sessions.list(), activeId: sessions.activeId } : { sessions: [], activeId: null }));
 ipcMain.handle("session:setActive", (_e, id) => { if (sessions) sessions.setActive(id); return true; });
@@ -119,12 +124,68 @@ ipcMain.handle("session:send", async (_e, { id, text, images }) => {
 ipcMain.handle("session:stop", (_e, id) => { if (sessions) sessions.stop(id); return true; });
 ipcMain.handle("session:remove", (_e, id) => { if (sessions) sessions.remove(id); return true; });
 ipcMain.handle("session:undo", (_e, id) => { if (sessions) sessions.undo(id); return true; });
+ipcMain.handle("session:compact", async (_e, id) => { if (sessions) await sessions.compactNow(id); return true; });
 ipcMain.handle("agent:approve", (_e, { callId, ok }) => { if (sessions) sessions.resolveApproval(callId, ok); return true; });
 ipcMain.handle("app:setApproval", (_e, mode) => {
   if (!sessions) return "auto";
   const m = sessions.setApprovalMode(mode);
   state.approval = m; savePrefs();
   return m;
+});
+ipcMain.handle("app:revealFolder", (_e, p) => { if (p && fs.existsSync(p)) shell.showItemInFolder(p); return true; });
+
+// New project = pick a folder, start its first session there.
+ipcMain.handle("project:new", async () => {
+  if (!sessions) return { error: "starting" };
+  const r = await dialog.showOpenDialog(win, { properties: ["openDirectory", "createDirectory"], title: "Choose a project folder" });
+  if (r.canceled || !r.filePaths[0]) return null;
+  state.lastWorkspace = r.filePaths[0];
+  savePrefs();
+  return sessions.create({ workspace: r.filePaths[0] });
+});
+
+// ── IPC: skills ─────────────────────────────────────────────────────
+const skillsApi = require("./skills");
+const skillsDir = () => path.join(app.getPath("userData"), "skills");
+const broadcastSkills = () => send("skills:list", { skills: skillsApi.listSkills(skillsDir(), activeWorkspace()) });
+ipcMain.handle("skills:list", () => skillsApi.listSkills(skillsDir(), activeWorkspace()));
+ipcMain.handle("skills:install", async (_e, source) => {
+  try {
+    const installed = await skillsApi.installSkills(skillsDir(), source);
+    broadcastSkills();
+    return { installed };
+  } catch (e) { return { error: e.message }; }
+});
+ipcMain.handle("skills:new", (_e, name) => {
+  try {
+    const made = skillsApi.createSkill(skillsDir(), name || "my-skill", "Describe when to use this skill.", null);
+    shell.showItemInFolder(made.file);
+    broadcastSkills();
+    return { name: made.name };
+  } catch (e) { return { error: e.message }; }
+});
+ipcMain.handle("skills:open", () => { fs.mkdirSync(skillsDir(), { recursive: true }); shell.openPath(skillsDir()); return true; });
+
+// Open a project's memory file (or the global one) in the OS file manager/editor.
+ipcMain.handle("memory:open", (_e, scope) => {
+  if (!projects) return false;
+  const { memoryFile } = require("./memory");
+  const s = sessions && sessions.sessions.get(sessions.activeId);
+  const dir = scope === "global" || !s
+    ? path.join(app.getPath("userData"), "memory")
+    : projects.memoryDir(s.projectId);
+  fs.mkdirSync(dir, { recursive: true });
+  const f = memoryFile(dir);
+  if (!fs.existsSync(f)) fs.writeFileSync(f, "# Memory\n\nNothing saved yet — the agent adds entries here with save_memory.\n");
+  shell.showItemInFolder(f);
+  return true;
+});
+ipcMain.handle("session:setWorkspacePath", (_e, { id, path: p }) => {
+  if (!sessions || !p || !fs.existsSync(p)) return null;
+  state.lastWorkspace = p;
+  sessions.setWorkspace(id, p);
+  savePrefs();
+  return p;
 });
 ipcMain.handle("session:pickWorkspace", async (_e, id) => {
   const r = await dialog.showOpenDialog(win, { properties: ["openDirectory", "createDirectory"], title: "Choose a folder for this session" });

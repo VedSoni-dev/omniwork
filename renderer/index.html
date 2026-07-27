@@ -15,7 +15,7 @@
         <div class="rail-brand"><span class="accent">◇</span> OmniWork</div>
 
         <div class="rail-sec">
-          <div class="rail-head"><span>SESSIONS</span><button id="new-session" class="rail-add" title="New task">+</button></div>
+          <div class="rail-head"><span>PROJECTS</span><button id="new-project" class="rail-add" title="New project — pick a folder">+</button></div>
           <div id="session-list" class="rail-list"></div>
         </div>
 
@@ -37,7 +37,7 @@
           <div id="chips" class="chips"></div>
           <div class="inputbox" id="inputbox">
             <span class="prompt-caret">&gt;</span>
-            <textarea id="input" rows="1" placeholder="Try &quot;explain this project&quot; — @ for a file"></textarea>
+            <textarea id="input" rows="1" placeholder="Try &quot;explain this project&quot; — / for commands · @ for a file"></textarea>
             <button id="stop" class="stopbtn hidden" title="Stop (Esc)">esc ✕</button>
           </div>
           <div class="statusline">
@@ -53,10 +53,10 @@
               </select>
               <span class="sep">·</span>
               <button id="approval-toggle" class="inline-btn2" title="Toggle approval mode">🛡 auto</button>
+              <button id="ctx-meter" class="ctx-meter hidden" title="Context used — click to compact">⛁ <span id="ctx-pct"></span></button>
             </div>
             <div class="status-right">
-              <span id="cwd-mini" class="cwd-mini"></span>
-              <button id="change-cwd" class="inline-btn">cwd</button>
+              <button id="folder-chip" class="folder-chip" title="Working folder">📁 <span class="fname" id="folder-name"></span> <span class="chev">▾</span></button>
               <span class="dim">? shortcuts</span>
             </div>
           </div>

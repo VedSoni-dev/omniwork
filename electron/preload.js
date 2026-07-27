@@ -13,7 +13,17 @@ contextBridge.exposeInMainWorld("omniwork", {
   stopSession: (id) => ipcRenderer.invoke("session:stop", id),
   removeSession: (id) => ipcRenderer.invoke("session:remove", id),
   pickWorkspace: (id) => ipcRenderer.invoke("session:pickWorkspace", id),
+  setWorkspacePath: (id, p) => ipcRenderer.invoke("session:setWorkspacePath", { id, path: p }),
+  revealFolder: (p) => ipcRenderer.invoke("app:revealFolder", p),
+  newProject: () => ipcRenderer.invoke("project:new"),
+  openMemory: (scope) => ipcRenderer.invoke("memory:open", scope),
+  listSkills: () => ipcRenderer.invoke("skills:list"),
+  installSkills: (src) => ipcRenderer.invoke("skills:install", src),
+  newSkill: (name) => ipcRenderer.invoke("skills:new", name),
+  openSkills: () => ipcRenderer.invoke("skills:open"),
+  home: process.env.HOME || process.env.USERPROFILE || "",
   undo: (id) => ipcRenderer.invoke("session:undo", id),
+  compactSession: (id) => ipcRenderer.invoke("session:compact", id),
   approve: (callId, ok) => ipcRenderer.invoke("agent:approve", { callId, ok }),
   setApproval: (mode) => ipcRenderer.invoke("app:setApproval", mode),
 
@@ -33,7 +43,7 @@ contextBridge.exposeInMainWorld("omniwork", {
   openDashboard: () => ipcRenderer.invoke("gateway:openDashboard"),
 
   on: (channel, cb) => {
-    const allowed = new Set(["session:event", "sessions:list", "gateway:status", "mcp:list"]);
+    const allowed = new Set(["session:event", "sessions:list", "gateway:status", "mcp:list", "skills:list"]);
     if (!allowed.has(channel)) return () => {};
     const listener = (_e, payload) => cb(payload);
     ipcRenderer.on(channel, listener);

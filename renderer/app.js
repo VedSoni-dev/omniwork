@@ -1,9 +1,12 @@
 "use strict";
 const stub = {
   createSession: async () => ({ id: "demo", title: "Main", workspace: "", status: "idle" }),
+  newProject: async () => null, openMemory: async () => {}, compactSession: async () => {},
+  listSkills: async () => [], installSkills: async () => ({ error: "unavailable" }), newSkill: async () => ({}), openSkills: async () => {},
   listSessions: async () => ({ sessions: [], activeId: null }), setActiveSession: async () => {},
   getTranscript: async () => [], sendMessage: async () => {}, stopSession: async () => {},
   removeSession: async () => {}, pickWorkspace: async () => {},
+  setWorkspacePath: async () => null, revealFolder: async () => {}, home: "",
   listMcp: async () => [], addMcp: async () => [], removeMcp: async () => [],
   listDir: async () => ({ root: null, entries: [] }), readFile: async () => ({ content: "" }),
   getState: async () => ({ model: "auto", sessions: [], activeId: null, mcp: [] }),
@@ -19,6 +22,7 @@ const stopBtn = $("stop");
 
 let activeId = null;
 let sessionsCache = [];
+let skillsCache = [];
 let fileIndex = null;
 let thinkingEl = null, thinkTimer = null;
 let streamEl = null, streamText = "";
@@ -30,6 +34,8 @@ const pastedImages = []; // data URLs
 const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const scrollDown = () => (scroll.scrollTop = scroll.scrollHeight);
 const activeSession = () => sessionsCache.find((s) => s.id === activeId);
+const baseName = (p) => (p || "").split(/[\\/]/).pop() || "~";
+const prettyPath = (p) => (api.home && p && p.startsWith(api.home) ? "~" + p.slice(api.home.length) : p || "");
 
 function md(text) {
   const parts = String(text).split(/```/);
@@ -44,17 +50,16 @@ function md(text) {
 // ── terminal rendering ─────────────────────────────────────────────
 function welcome() {
   const s = activeSession();
-  const cwd = s ? s.workspace : "—";
+  const cwd = s ? s.workspace : "";
   const el = document.createElement("div");
   el.className = "welcome";
   el.id = "welcome"; // send()/handleSlash() remove it by id
   el.innerHTML =
     `<div class="wbox">` +
-    `<div class="wline"><span class="accent">✻</span> <b>${esc(s ? s.title : "OmniWork")}</b> · Claude Code–style agent</div>` +
-    `<div class="wline dim"></div>` +
-    `<div class="wline dim">free models via OmniRoute · MCP connections · run many in parallel</div>` +
-    `<div class="wline dim">cwd: <span class="cwd">${esc(cwd)}</span> <button class="inline-btn" id="w-cwd">change</button></div>` +
-    `<div class="wline dim">type <span class="kbd">@</span> for a file · <span class="kbd">Enter</span> to send</div></div>` +
+    `<div class="wline"><span class="accent">✻</span> <b>${esc(s ? s.title : "OmniWork")}</b></div>` +
+    `<div class="wline dim wsub">Free AI models built in · add tools anytime · run tasks in parallel</div>` +
+    `<div class="wline">Working in <span class="cwd">📁 ${esc(baseName(cwd))}</span> <span class="dim wpath">${esc(prettyPath(cwd))}</span> <button class="inline-btn" id="w-cwd">Change folder</button></div>` +
+    `<div class="wline dim">type <span class="kbd">/</span> for commands · <span class="kbd">@</span> for a file · <span class="kbd">Enter</span> to send</div></div>` +
     `<div class="tips">` +
     `<button class="tip" data-p="Give me a tour of this codebase — list the top-level files and explain the architecture.">explain this codebase</button>` +
     `<button class="tip" data-p="Fetch https://news.ycombinator.com and summarize the top 5 stories.">browse the web</button>` +
@@ -152,6 +157,7 @@ function renderEvent(ev, live) {
     case "tool_stream": if (live) streamTool(ev.id, ev.chunk); break;
     case "tool_result": finishTool(ev.id, ev.result); break;
     case "thinking": if (live && !streamEl) startThinking(); break;
+    case "context": if (live) updateCtxMeter(ev.pct); break;
     case "subagent": handleSubagent(ev); break;
     case "error": addError(ev.message); break;
     case "done": case "aborted": if (live) { endStream(); stopThinking(); } break;
@@ -209,26 +215,74 @@ async function switchTo(id) {
   const t = await api.getTranscript(id);
   if (!t || !t.length) welcome();
   else for (const ev of t) renderEvent(ev, false);
-  updateCwd(); syncComposer(); scrollDown();
+  $("ctx-meter").classList.add("hidden"); // repopulates from the session's context events
+  updateFolder(); syncComposer(); scrollDown();
   input.focus();
 }
 
-function updateCwd() { const s = activeSession(); $("cwd-mini").textContent = s ? s.workspace : ""; }
+// Context meter: hidden until 50%, accent-colored from 80%. Click = /compact.
+function updateCtxMeter(pct) {
+  const el = $("ctx-meter");
+  el.classList.toggle("hidden", !(pct >= 50));
+  el.classList.toggle("warn", pct >= 80);
+  $("ctx-pct").textContent = pct + "%";
+}
+
+function updateFolder() {
+  const s = activeSession();
+  $("folder-name").textContent = baseName(s ? s.workspace : "");
+  $("folder-chip").title = s ? s.workspace : "";
+}
+function folderMenu() {
+  if (mpop && mpop.dataset.tag === "folder") { hidePop(); return; } // toggle
+  const s = activeSession(); if (!s) return;
+  const items = [
+    { label: "Change folder…", hint: "pick any folder", onPick: () => api.pickWorkspace(activeId) },
+    { label: api.platform === "darwin" ? "Reveal in Finder" : "Show in file manager", hint: prettyPath(s.workspace), onPick: () => api.revealFolder(s.workspace) },
+  ];
+  const seen = new Set([s.workspace]);
+  for (const o of sessionsCache) {
+    if (!o.workspace || seen.has(o.workspace)) continue;
+    seen.add(o.workspace);
+    items.push({ label: "📁 " + baseName(o.workspace), hint: prettyPath(o.workspace), onPick: async () => { await api.setWorkspacePath(activeId, o.workspace); fileIndex = null; } });
+  }
+  openMenu(items, $("folder-chip"), "folder");
+}
 function syncComposer() { const s = activeSession(); const running = s && s.status === "running"; stopBtn.classList.toggle("hidden", !running); }
 
-// ── rail rendering ─────────────────────────────────────────────────
+// ── rail rendering: sessions grouped under their project ───────────
+const collapsedProjects = new Set();
 function renderSessions(list, act) {
   sessionsCache = list; if (act !== undefined) activeId = act ?? activeId;
   const box = $("session-list"); box.innerHTML = "";
-  list.forEach((s) => {
-    const el = document.createElement("div");
-    el.className = "sitem" + (s.id === activeId ? " active" : "");
-    const base = (s.workspace || "").split(/[\\/]/).pop() || "~";
-    el.innerHTML = `<span class="sdot ${s.status}"></span><span class="sinfo"><span class="stitle">${esc(s.title)}</span><span class="scwd">${esc(base)}</span></span><span class="sx" title="Close">✕</span>`;
-    el.addEventListener("click", (e) => { if (e.target.classList.contains("sx")) { api.removeSession(s.id); return; } if (s.id !== activeId) switchTo(s.id); });
-    box.appendChild(el);
-  });
-  syncComposer(); updateCwd();
+  const groups = new Map(); // pid -> { name, workspace, items }
+  for (const s of list) {
+    const pid = s.projectId || s.workspace || "?";
+    if (!groups.has(pid)) groups.set(pid, { name: s.projectName || baseName(s.workspace), workspace: s.workspace, items: [] });
+    groups.get(pid).items.push(s);
+  }
+  for (const [pid, g] of groups) {
+    const closed = collapsedProjects.has(pid);
+    const head = document.createElement("div");
+    head.className = "pgroup";
+    head.innerHTML = `<span class="pcaret">${closed ? "▸" : "▾"}</span><span class="pname">📁 ${esc(g.name)}</span><span class="pcount">${closed ? g.items.length : ""}</span><button class="rail-add padd" title="New session in ${esc(g.name)}">+</button>`;
+    head.querySelector(".padd").addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const s = await api.createSession({ workspace: g.workspace }).catch(() => null);
+      if (s) { fileIndex = null; await switchTo(s.id); } else engineNotReady();
+    });
+    head.addEventListener("click", () => { closed ? collapsedProjects.delete(pid) : collapsedProjects.add(pid); renderSessions(sessionsCache, activeId); });
+    box.appendChild(head);
+    if (closed) continue;
+    for (const s of g.items) {
+      const el = document.createElement("div");
+      el.className = "sitem" + (s.id === activeId ? " active" : "");
+      el.innerHTML = `<span class="sdot ${s.status}"></span><span class="sinfo"><span class="stitle">${esc(s.title)}</span></span><span class="sx" title="Close">✕</span>`;
+      el.addEventListener("click", (e) => { if (e.target.classList.contains("sx")) { api.removeSession(s.id); return; } if (s.id !== activeId) switchTo(s.id); });
+      box.appendChild(el);
+    }
+  }
+  syncComposer(); updateFolder();
 }
 
 function renderMcp(servers) {
@@ -247,8 +301,14 @@ function renderMcp(servers) {
 
 // ── events from main ───────────────────────────────────────────────
 api.on("session:event", (p) => { if (p.sessionId === activeId) renderEvent(p, true); });
-api.on("sessions:list", (p) => renderSessions(p.sessions, p.activeId));
+api.on("sessions:list", (p) => {
+  renderSessions(p.sessions, p.activeId);
+  // The engine usually finishes booting after the page loads; if the pane is
+  // still showing the empty boot welcome, swap in the real active session.
+  if ($("welcome") && activeId) switchTo(activeId);
+});
 api.on("mcp:list", (p) => renderMcp(p.servers));
+api.on("skills:list", (p) => { skillsCache = p.skills || []; });
 api.on("gateway:status", (s) => {
   const d = $("gw-dot");
   d.className = "s-dot " + (s.state === "ready" ? "ok" : s.state === "error" ? "err" : "boot");
@@ -279,18 +339,72 @@ input.addEventListener("paste", (e) => {
   }
 });
 async function buildIndex() { if (fileIndex) return fileIndex; const out = []; async function walk(rel, d) { if (d > 4 || out.length > 2000) return; const res = await api.listDir(rel); if (!res.entries) return; for (const e of res.entries) { if (e.type === "file") out.push(e.path); else await walk(e.path, d + 1); } } await walk(".", 0); return (fileIndex = out); }
-let mpop = null, mSel = 0, mMatches = [];
-async function showPop(q) { const idx = await buildIndex(); mMatches = idx.filter((p) => p.toLowerCase().includes(q.toLowerCase())).slice(0, 20); hidePop(); if (!mMatches.length) return; mSel = 0; mpop = document.createElement("div"); mpop.className = "mpop"; mMatches.forEach((p, i) => { const it = document.createElement("div"); it.className = "mpitem" + (i === 0 ? " sel" : ""); it.innerHTML = `<span>${esc(p.split("/").pop())}</span><span class="mp">${esc(p)}</span>`; it.addEventListener("mousedown", (e) => { e.preventDefault(); pick(p); }); mpop.appendChild(it); }); document.body.appendChild(mpop); const r = $("inputbox").getBoundingClientRect(); mpop.style.left = r.left + "px"; mpop.style.bottom = window.innerHeight - r.top + 6 + "px"; mpop.style.width = Math.min(r.width, 480) + "px"; }
-function hidePop() { if (mpop) mpop.remove(); mpop = null; mMatches = []; }
+// One popup component for @-files, /-commands, and the folder menu.
+// items: [{ label, hint, onPick }]
+let mpop = null, mSel = 0, mItems = [];
+function openMenu(items, anchorEl, tag) {
+  hidePop();
+  if (!items.length) return;
+  mItems = items; mSel = 0;
+  mpop = document.createElement("div"); mpop.className = "mpop"; mpop.dataset.tag = tag || "";
+  items.forEach((it, i) => {
+    const el = document.createElement("div");
+    el.className = "mpitem" + (i === 0 ? " sel" : "");
+    el.innerHTML = `<span>${esc(it.label)}</span><span class="mp">${esc(it.hint || "")}</span>`;
+    el.addEventListener("mousedown", (e) => { e.preventDefault(); mSel = i; pickSel(); });
+    mpop.appendChild(el);
+  });
+  document.body.appendChild(mpop);
+  const r = (anchorEl || $("inputbox")).getBoundingClientRect();
+  const w = Math.max(260, Math.min(r.width, 480));
+  mpop.style.left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8)) + "px";
+  mpop.style.bottom = window.innerHeight - r.top + 6 + "px";
+  mpop.style.width = w + "px";
+}
+function hidePop() { if (mpop) mpop.remove(); mpop = null; mItems = []; }
 function moveSel(d) { if (!mpop) return; const items = [...mpop.querySelectorAll(".mpitem")]; items[mSel]?.classList.remove("sel"); mSel = (mSel + d + items.length) % items.length; items[mSel]?.classList.add("sel"); items[mSel]?.scrollIntoView({ block: "nearest" }); }
-function pick(p) { mentions.add(p); renderChips(); input.value = input.value.replace(/@[^\s]*$/, "").trimEnd(); hidePop(); input.focus(); }
+function pickSel() { const it = mItems[mSel]; hidePop(); if (it) it.onPick(); }
+document.addEventListener("mousedown", (e) => { if (mpop && !mpop.contains(e.target) && e.target !== input) hidePop(); });
+
+async function showFilePop(q) {
+  const idx = await buildIndex();
+  const matches = idx.filter((p) => p.toLowerCase().includes(q.toLowerCase())).slice(0, 20);
+  openMenu(matches.map((p) => ({
+    label: p.split("/").pop(), hint: p,
+    onPick: () => { mentions.add(p); renderChips(); input.value = input.value.replace(/@[^\s]*$/, "").trimEnd(); input.focus(); },
+  })));
+}
+function showCommandPop(q) {
+  const ql = q.toLowerCase();
+  const matches = allCommands()
+    .filter((c) => c.name.includes(ql))
+    .sort((a, b) => (a.name.startsWith(ql) ? 0 : 1) - (b.name.startsWith(ql) ? 0 : 1))
+    .slice(0, 20);
+  openMenu(matches.map((c) => ({
+    label: "/" + c.name + (c.args ? " " + c.args : ""), hint: c.desc,
+    onPick: () => applyCommand(c),
+  })));
+}
+// Commands that take arguments complete into the input; the rest run immediately.
+function applyCommand(c) {
+  input.value = ""; grow();
+  if (c.args) { input.value = "/" + c.name + " "; grow(); input.focus(); return; }
+  const w = $("welcome"); if (w) w.remove();
+  c.run("");
+}
 
 // ── composer ───────────────────────────────────────────────────────
 function grow() { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 200) + "px"; }
-input.addEventListener("input", () => { grow(); const m = input.value.match(/@([^\s]*)$/); if (m) showPop(m[1]); else hidePop(); });
+input.addEventListener("input", () => {
+  grow();
+  const sm = input.value.match(/^\/([a-z0-9:_-]*)$/i);
+  if (sm) { showCommandPop(sm[1]); return; }
+  const m = input.value.match(/@([^\s]*)$/);
+  if (m) showFilePop(m[1]); else hidePop();
+});
 input.addEventListener("keydown", (e) => {
   if (pendingApproval && !input.value.trim() && (e.key === "y" || e.key === "n")) { e.preventDefault(); pendingApproval(e.key === "y"); return; }
-  if (mpop) { if (e.key === "ArrowDown") { e.preventDefault(); moveSel(1); return; } if (e.key === "ArrowUp") { e.preventDefault(); moveSel(-1); return; } if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); pick(mMatches[mSel]); return; } if (e.key === "Escape") { hidePop(); return; } }
+  if (mpop) { if (e.key === "ArrowDown") { e.preventDefault(); moveSel(1); return; } if (e.key === "ArrowUp") { e.preventDefault(); moveSel(-1); return; } if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); pickSel(); return; } if (e.key === "Escape") { hidePop(); return; } }
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
   if (e.key === "Escape") api.stopSession(activeId);
 });
@@ -306,19 +420,60 @@ async function send() {
   await api.sendMessage(activeId, full, images);
 }
 
-async function handleSlash(text) {
+// ── slash commands ─────────────────────────────────────────────────
+function engineNotReady() { addSystem("The engine is still starting (see the status dot, bottom-left) — try again in a few seconds."); }
+async function newSession(title) {
+  const ws = activeSession()?.workspace;
+  const s = await api.createSession({ ...(title && { title }), ...(ws && { workspace: ws }) }).catch(() => null);
+  if (!s) { engineNotReady(); return null; }
+  fileIndex = null; await switchTo(s.id);
+  return s;
+}
+async function newProject() {
+  const s = await api.newProject().catch(() => null);
+  if (s && s.error) { engineNotReady(); return; }
+  if (s) { fileIndex = null; await switchTo(s.id); }
+}
+const COMMANDS = [
+  { name: "help", desc: "Show all commands", run: () => addSystem("commands:  " + allCommands().map((c) => "/" + c.name + (c.args ? " " + c.args : "")).join("  ")) },
+  { name: "clear", desc: "Start a fresh session", run: () => newSession() },
+  { name: "new", desc: "Start a fresh session", run: () => newSession() },
+  { name: "project", desc: "New project — pick a folder", run: () => newProject() },
+  { name: "memory", desc: "Open this project's memory file", run: (arg) => api.openMemory(arg === "global" ? "global" : undefined) },
+  { name: "folder", alias: "cwd", desc: "Change the working folder", run: () => api.pickWorkspace(activeId) },
+  { name: "model", args: "<name>", desc: "Switch AI model", run: (arg) => { if (arg) { $("model").value = arg; api.setModel(arg); addSystem("model → " + arg); } else addSystem("usage: /model <name>"); } },
+  { name: "undo", desc: "Undo last turn's file changes", run: () => api.undo(activeId) },
+  { name: "compact", desc: "Summarize older context to free space", run: () => api.compactSession(activeId) },
+  { name: "skills", desc: "Open the skills folder", run: () => api.openSkills() },
+  { name: "skill:new", args: "<name>", desc: "Scaffold a new skill", run: async (arg) => { const r = await api.newSkill(arg); addSystem(r.error ? "✗ " + r.error : `Skill "${r.name}" created — edit its SKILL.md, then use /${r.name}`); } },
+  { name: "skill:install", args: "<url|owner/repo|folder>", desc: "Install skills from git or a folder", run: async (arg) => {
+    addSystem("Installing skills from " + arg + "…");
+    const r = await api.installSkills(arg);
+    addSystem(r.error ? "✗ " + r.error : (r.installed.length ? `✓ Installed: ${r.installed.map((n) => "/" + n).join("  ")}` : "No SKILL.md directories found there."));
+  } },
+  { name: "approve", args: "ask|auto", desc: "Set approval mode", run: (arg) => setApproval(arg === "ask" ? "ask" : "auto") },
+];
+function allCommands() {
+  const base = [...COMMANDS, ...RECIPES.map((r) => ({ name: "recipe:" + r.slug, desc: r.desc, run: () => runRecipe(r) }))];
+  const taken = new Set(base.map((c) => c.name));
+  // Installed skills become slash commands; built-ins win name collisions.
+  const skillCmds = skillsCache.filter((s) => !taken.has(s.name)).map((s) => ({
+    name: s.name, args: "<task>", desc: (s.description || "skill") + " · skill",
+    run: (arg) => {
+      const w = $("welcome"); if (w) w.remove();
+      api.sendMessage(activeId, `Use your "${s.name}" skill${arg ? ` for this task: ${arg}` : "."}`);
+    },
+  }));
+  return [...base, ...skillCmds];
+}
+function handleSlash(text) {
   const [cmd, ...rest] = text.slice(1).split(/\s+/);
   const arg = rest.join(" ").trim();
   const w = $("welcome"); if (w) w.remove();
-  switch (cmd) {
-    case "help": addSystem("commands:  /clear  /undo  /model <name>  /cwd  /approve [ask|auto]  /help"); break;
-    case "clear": { const s = await api.createSession({}); if (s) { fileIndex = null; await switchTo(s.id); } break; }
-    case "undo": api.undo(activeId); break;
-    case "model": if (arg) { $("model").value = arg; api.setModel(arg); addSystem("model → " + arg); } else addSystem("usage: /model <name>"); break;
-    case "cwd": api.pickWorkspace(activeId); break;
-    case "approve": setApproval(arg === "ask" ? "ask" : "auto"); break;
-    default: addSystem("unknown command: /" + cmd + "  (try /help)");
-  }
+  const key = (cmd || "").toLowerCase();
+  const c = allCommands().find((x) => x.name === key || x.alias === key);
+  if (c) c.run(arg);
+  else addSystem("unknown command: /" + cmd + "  (try /help)");
 }
 
 function setApproval(mode) {
@@ -333,8 +488,9 @@ stopBtn.addEventListener("click", () => api.stopSession(activeId));
 document.addEventListener("click", (e) => { const t = e.target.closest(".tip"); if (t) { input.value = t.dataset.p; grow(); input.focus(); } });
 
 // ── new session / cwd / model / dashboard ──────────────────────────
-$("new-session").addEventListener("click", async () => { const s = await api.createSession({}); if (s) { fileIndex = null; await switchTo(s.id); } });
-$("change-cwd").addEventListener("click", () => api.pickWorkspace(activeId));
+$("new-project").addEventListener("click", () => newProject());
+$("folder-chip").addEventListener("click", folderMenu);
+$("ctx-meter").addEventListener("click", () => api.compactSession(activeId));
 $("dashboard").addEventListener("click", () => api.openDashboard());
 $("model").addEventListener("change", (e) => api.setModel(e.target.value));
 
@@ -395,26 +551,27 @@ $("m-add").addEventListener("click", addFromForm);
 
 // ── Recipes ────────────────────────────────────────────────────────
 const RECIPES = [
-  { name: "Tour the codebase", icon: "🧭", desc: "Map the architecture and key files", prompt: "Give me a guided tour of this codebase: list the top-level structure, explain the architecture, and point out the entry points and the most important files." },
-  { name: "Write tests", icon: "🧪", desc: "Add tests across modules in parallel", prompt: "Add comprehensive tests for this project. Identify the main modules, then use spawn_subagents to write tests for each module in parallel. Finally run the test suite and report results." },
-  { name: "Find & fix bugs", icon: "🐛", desc: "Hunt bugs, fan out fixes", prompt: "Do a bug hunt across this codebase. Use spawn_subagents to inspect different areas in parallel, collect the issues, then fix the real ones and summarize the changes." },
-  { name: "Refactor pass", icon: "♻️", desc: "Safe cleanups and simplifications", prompt: "Review this codebase for refactoring opportunities (duplication, dead code, unclear names, oversized functions). Apply the safe, high-value improvements and summarize what changed." },
-  { name: "Generate docs", icon: "📚", desc: "README + inline documentation", prompt: "Generate documentation for this project: a clear README with overview, setup, and usage, plus concise inline comments where the code is non-obvious." },
-  { name: "Add a feature", icon: "✨", desc: "Scaffold a new feature end-to-end", prompt: "I want to add a new feature. First explore the codebase to understand the conventions, then propose a short plan, then implement it with tests. Ask me for the feature description first." },
-  { name: "Explain this error", icon: "🚨", desc: "Diagnose from logs/stack traces", prompt: "Help me debug an error. Ask me to paste the error or point you at the failing command, then investigate the root cause in the code and propose a fix." },
-  { name: "Speed it up", icon: "⚡", desc: "Find and fix performance issues", prompt: "Profile this project for performance problems: look for slow paths, N+1 patterns, unnecessary work, and heavy dependencies. Suggest and apply safe optimizations." },
+  { slug: "tour", name: "Tour the codebase", icon: "🧭", desc: "Map the architecture and key files", prompt: "Give me a guided tour of this codebase: list the top-level structure, explain the architecture, and point out the entry points and the most important files." },
+  { slug: "tests", name: "Write tests", icon: "🧪", desc: "Add tests across modules in parallel", prompt: "Add comprehensive tests for this project. Identify the main modules, then use spawn_subagents to write tests for each module in parallel. Finally run the test suite and report results." },
+  { slug: "bughunt", name: "Find & fix bugs", icon: "🐛", desc: "Hunt bugs, fan out fixes", prompt: "Do a bug hunt across this codebase. Use spawn_subagents to inspect different areas in parallel, collect the issues, then fix the real ones and summarize the changes." },
+  { slug: "refactor", name: "Refactor pass", icon: "♻️", desc: "Safe cleanups and simplifications", prompt: "Review this codebase for refactoring opportunities (duplication, dead code, unclear names, oversized functions). Apply the safe, high-value improvements and summarize what changed." },
+  { slug: "docs", name: "Generate docs", icon: "📚", desc: "README + inline documentation", prompt: "Generate documentation for this project: a clear README with overview, setup, and usage, plus concise inline comments where the code is non-obvious." },
+  { slug: "feature", name: "Add a feature", icon: "✨", desc: "Scaffold a new feature end-to-end", prompt: "I want to add a new feature. First explore the codebase to understand the conventions, then propose a short plan, then implement it with tests. Ask me for the feature description first." },
+  { slug: "debug", name: "Explain this error", icon: "🚨", desc: "Diagnose from logs/stack traces", prompt: "Help me debug an error. Ask me to paste the error or point you at the failing command, then investigate the root cause in the code and propose a fix." },
+  { slug: "perf", name: "Speed it up", icon: "⚡", desc: "Find and fix performance issues", prompt: "Profile this project for performance problems: look for slow paths, N+1 patterns, unnecessary work, and heavy dependencies. Suggest and apply safe optimizations." },
 ];
+async function runRecipe(r) {
+  $("recipes-modal").classList.add("hidden");
+  const s = await api.createSession({ title: r.name });
+  if (s) { fileIndex = null; await switchTo(s.id); await api.sendMessage(s.id, r.prompt); }
+}
 function renderRecipes() {
   const g = $("recipes-grid"); g.innerHTML = "";
   RECIPES.forEach((r) => {
     const el = document.createElement("div");
     el.className = "gcard";
     el.innerHTML = `<div class="gc-top"><span class="gc-ic">${r.icon}</span><span class="gc-name">${esc(r.name)}</span></div><div class="gc-desc">${esc(r.desc)}</div><div class="gc-act">run →</div>`;
-    el.addEventListener("click", async () => {
-      $("recipes-modal").classList.add("hidden");
-      const s = await api.createSession({ title: r.name });
-      if (s) { fileIndex = null; await switchTo(s.id); await api.sendMessage(s.id, r.prompt); }
-    });
+    el.addEventListener("click", () => runRecipe(r));
     g.appendChild(el);
   });
 }
@@ -432,6 +589,7 @@ $("recipes-modal").addEventListener("click", (e) => { if (e.target.id === "recip
     populateModels(st.model);
     if (st.sessions && st.sessions.length) { renderSessions(st.sessions, st.activeId); await switchTo(st.activeId || st.sessions[0].id); }
     else welcome();
+    api.listSkills().then((s) => { skillsCache = s || []; }).catch(() => {});
   } else welcome();
   input.focus();
 })();

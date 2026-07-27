@@ -7,6 +7,9 @@
 // with its own context/tool-loop, and report a summary back to the parent.
 
 const { TOOL_SCHEMA, executeTool } = require("./tools");
+const { MEMORY_TOOL, saveMemory, loadForPrompt } = require("./memory");
+const { DEFAULT_CONTEXT, estimateTokens, shouldCompact, compact } = require("./compactor");
+const skills = require("./skills");
 
 const BASE_PROMPT = `You are OmniWork, an autonomous coding agent running on the user's machine, in the style of Claude Code.
 You have direct access to the user's workspace through tools: list_dir, read_file, write_file, edit_file, run_command, web_fetch, open_url.
@@ -18,7 +21,9 @@ Guidelines:
 - Use run_command for builds, tests, git, installing deps, and searching.
 - Use web_fetch to read docs/APIs; open_url to show the user a page or running server.
 - After changes, verify by running the relevant build/test/command when possible.
-- When done, give a short summary of what you did.`;
+- When done, give a short summary of what you did.
+- When you learn something durable — a user preference, a project convention, a hard-won fix —
+  save it with save_memory so future sessions recall it. Don't save session trivia.`;
 
 const ORCHESTRATOR_EXTRA = `
 
@@ -63,13 +68,16 @@ function subLabel(name, args) {
 }
 
 class Agent {
-  constructor({ baseUrl, apiKey, model, workspace, emit, mcp, canSpawn = true, depth = 0, approvalMode = "auto", approver = null }) {
+  constructor({ baseUrl, apiKey, model, workspace, emit, mcp, memory = null, skillsDir = null, canSpawn = true, depth = 0, approvalMode = "auto", approver = null }) {
     this.baseUrl = baseUrl.replace(/\/$/, "");
     this.apiKey = apiKey;
     this.model = model || "auto";
     this.workspace = workspace;
     this.emit = emit; // (event, payload) => void
     this.mcp = mcp || null;
+    this.memory = memory; // { globalDir, projectDir } | null
+    this.skillsDir = skillsDir || null; // global skills root
+    this.contextTokens = DEFAULT_CONTEXT;
     this.canSpawn = canSpawn;
     this.depth = depth;
     this.approvalMode = approvalMode;   // "auto" | "ask"
@@ -94,6 +102,13 @@ class Agent {
         if (fs.existsSync(p) && fs.statSync(p).isFile()) mem += `\n\n## ${f}\n${fs.readFileSync(p, "utf8").slice(0, 8000)}`;
       } catch {}
     }
+    // Durable memory (global + this project) saved by past sessions.
+    if (this.memory) {
+      const saved = loadForPrompt(this.memory.globalDir, this.memory.projectDir);
+      if (saved) mem += `\n\n${saved}`;
+    }
+    // Skills: names + descriptions only; bodies load via use_skill.
+    if (this.skillsDir) mem += skills.promptSection(this.skillsDir, this.workspace);
     return mem.trim();
   }
 
@@ -119,11 +134,40 @@ class Agent {
   toolSchema() {
     const extra = this.mcp ? this.mcp.toolSchema() : [];
     const sub = this.canSpawn ? [SUBAGENT_TOOL] : [];
-    return [...TOOL_SCHEMA, ...sub, ...extra];
+    const mem = this.memory ? [MEMORY_TOOL] : [];
+    const sk = this.skillsDir ? [skills.USE_SKILL_TOOL, skills.SAVE_SKILL_TOOL] : [];
+    return [...TOOL_SCHEMA, ...sub, ...mem, ...sk, ...extra];
   }
 
   abort() { this.aborted = true; }
   setWorkspace(dir) { this.workspace = dir; }
+
+  // One-off model call outside the session's message history (summaries,
+  // titles, memory capture).
+  async oneShot(prompt) {
+    const res = await fetch(`${this.baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}` },
+      body: JSON.stringify({ model: this.model, messages: [{ role: "user", content: prompt }], temperature: 0.2 }),
+    });
+    if (!res.ok) throw new Error(`Gateway ${res.status}`);
+    const data = await res.json();
+    return data.choices?.[0]?.message?.content || "";
+  }
+
+  #emitContext() {
+    this.emit("context", { pct: Math.min(100, Math.round((estimateTokens(this.messages) / this.contextTokens) * 100)) });
+  }
+
+  // Compact when over threshold (or forced by /compact). Returns the notice, or null.
+  async compactNow({ force = false } = {}) {
+    if (!force && !shouldCompact(this.messages, this.contextTokens)) return null;
+    const { messages, note } = await compact(this.messages, (p) => this.oneShot(p));
+    this.messages = messages;
+    this.#emitContext();
+    if (note) return note;
+    return force ? "Nothing to compact yet — the conversation is still short." : null;
+  }
 
   async callModel() {
     // Try streaming for a live feel. Free `auto` routing hits many providers and
@@ -268,6 +312,13 @@ class Agent {
 
     for (let step = 0; step < MAX_STEPS; step++) {
       if (this.aborted) { this.emit("aborted", {}); return; }
+      // Auto-compact before the call would overflow; a failed summary degrades
+      // to truncation inside compact(), never a crashed turn.
+      try {
+        const note = await this.compactNow();
+        if (note) this.emit("system", { content: "⛁ " + note });
+      } catch {}
+      this.#emitContext();
       this.emit("thinking", { step });
 
       let msg;
@@ -307,6 +358,17 @@ class Agent {
         let result;
         if (name === "spawn_subagents" && this.canSpawn) {
           result = await this.runSubagents(parsedArgs.tasks);
+        } else if (name === "use_skill" && this.skillsDir) {
+          result = skills.readSkill(this.skillsDir, this.workspace, parsedArgs.name || "");
+        } else if (name === "save_skill" && this.skillsDir) {
+          try {
+            const made = skills.createSkill(this.skillsDir, parsedArgs.name, parsedArgs.description, parsedArgs.instructions);
+            result = `Saved skill "${made.name}" — available in every project via /` + made.name;
+          } catch (e) { result = "Failed to save skill: " + e.message; }
+        } else if (name === "save_memory" && this.memory) {
+          const dir = parsedArgs.scope === "global" ? this.memory.globalDir : this.memory.projectDir;
+          try { result = saveMemory(dir, parsedArgs.title || "note", parsedArgs.content || ""); }
+          catch (e) { result = "Failed to save memory: " + e.message; }
         } else if (this.mcp && this.mcp.isMcpTool(name)) {
           result = await this.mcp.callTool(name, parsedArgs);
         } else {
