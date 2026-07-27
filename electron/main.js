@@ -49,7 +49,19 @@ function createWindow() {
     },
   });
   win.loadFile(path.join(__dirname, "..", "renderer", "index.html"));
-  if (process.env.OMNIWORK_DEV) win.webContents.openDevTools({ mode: "detach" });
+  if (process.env.OMNIWORK_DEV) {
+    win.webContents.openDevTools({ mode: "detach" });
+    // Surface renderer errors in the terminal — silent UI failures are unfindable otherwise.
+    win.webContents.on("console-message", (_e, level, msg) => { if (level >= 2) console.log("[renderer]", msg); });
+  }
+  // Scripted UI test: evaluate a JS file in the page and print its result.
+  if (process.env.OMNIWORK_UI_TEST) {
+    setTimeout(() => {
+      win.webContents.executeJavaScript(fs.readFileSync(process.env.OMNIWORK_UI_TEST, "utf8"), true)
+        .then((r) => console.log("[ui-test]", JSON.stringify(r)))
+        .catch((e) => console.log("[ui-test-error]", e.message));
+    }, 15_000);
+  }
 }
 
 async function boot() {
@@ -128,6 +140,8 @@ ipcMain.handle("session:send", async (_e, { id, text, images }) => {
 ipcMain.handle("session:stop", (_e, id) => { if (sessions) sessions.stop(id); return true; });
 ipcMain.handle("session:remove", (_e, id) => { if (sessions) sessions.remove(id); return true; });
 ipcMain.handle("session:undo", (_e, id) => { if (sessions) sessions.undo(id); return true; });
+ipcMain.handle("session:rename", (_e, { id, title }) => { if (sessions) sessions.rename(id, title); return true; });
+ipcMain.handle("project:rename", (_e, { id, name }) => { if (sessions) sessions.renameProject(id, name); return true; });
 ipcMain.handle("session:compact", async (_e, id) => { if (sessions) await sessions.compactNow(id); return true; });
 ipcMain.handle("agent:approve", (_e, { callId, ok }) => { if (sessions) sessions.resolveApproval(callId, ok); return true; });
 ipcMain.handle("app:setApproval", (_e, mode) => {

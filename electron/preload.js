@@ -23,6 +23,8 @@ contextBridge.exposeInMainWorld("omniwork", {
   openSkills: () => ipcRenderer.invoke("skills:open"),
   home: process.env.HOME || process.env.USERPROFILE || "",
   undo: (id) => ipcRenderer.invoke("session:undo", id),
+  renameSession: (id, title) => ipcRenderer.invoke("session:rename", { id, title }),
+  renameProject: (id, name) => ipcRenderer.invoke("project:rename", { id, name }),
   compactSession: (id) => ipcRenderer.invoke("session:compact", id),
   approve: (callId, ok) => ipcRenderer.invoke("agent:approve", { callId, ok }),
   setApproval: (mode) => ipcRenderer.invoke("app:setApproval", mode),

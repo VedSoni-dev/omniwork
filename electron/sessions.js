@@ -168,7 +168,9 @@ class SessionManager {
     if (this.projects) this.projects.touch(sess.projectId);
     this.#buildAgent(sess);
     this.sessions.set(id, sess);
-    if (!this.activeId) this.activeId = id;
+    // A new session is what the user is now looking at — every broadcast must
+    // agree, or the renderer navigates back to the stale active session.
+    this.activeId = id;
     this.#pushList();
     this.save();
     return this.serialize(sess);
@@ -268,7 +270,24 @@ class SessionManager {
     this.save();
   }
 
-  setActive(id) { if (this.sessions.has(id)) { this.activeId = id; this.save(); } }
+  setActive(id) {
+    if (!this.sessions.has(id) || this.activeId === id) return; // no-change guard breaks broadcast loops
+    this.activeId = id;
+    this.#pushList();
+    this.save();
+  }
+
+  rename(id, title) {
+    const s = this.sessions.get(id);
+    const t = String(title || "").trim().slice(0, 60);
+    if (s && t) { s.title = t; this.#pushList(); this.save(); }
+  }
+
+  renameProject(projectId, name) {
+    const p = this.projects && this.projects.byId(projectId);
+    const n = String(name || "").trim().slice(0, 60);
+    if (p && n) { p.name = n; this.projects.save(); this.#pushList(); }
+  }
 
   // Changing folder can move the session to another project — its file and
   // memory follow it.

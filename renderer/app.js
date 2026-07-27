@@ -7,6 +7,7 @@ const stub = {
   getTranscript: async () => [], sendMessage: async () => {}, stopSession: async () => {},
   removeSession: async () => {}, pickWorkspace: async () => {},
   setWorkspacePath: async () => null, revealFolder: async () => {}, home: "",
+  renameSession: async () => {}, renameProject: async () => {},
   listMcp: async () => [], addMcp: async () => [], removeMcp: async () => [],
   listDir: async () => ({ root: null, entries: [] }), readFile: async () => ({ content: "" }),
   getState: async () => ({ model: "auto", sessions: [], activeId: null, mcp: [] }),
@@ -206,13 +207,19 @@ function handleSubagent(ev) {
 }
 
 // ── session switching ──────────────────────────────────────────────
+// Sequence-guarded: overlapping calls (user clicks + broadcast refreshes) can
+// interleave across awaits; only the newest call may touch the DOM.
+let switchSeq = 0;
 async function switchTo(id) {
+  const seq = ++switchSeq;
   activeId = id;
   await api.setActiveSession(id);
+  if (seq !== switchSeq) return;
   toolEls.clear(); decks.clear(); stopThinking();
   streamEl = null; streamText = ""; pendingApproval = null;
-  scroll.innerHTML = "";
   const t = await api.getTranscript(id);
+  if (seq !== switchSeq) return;
+  scroll.innerHTML = "";
   if (!t || !t.length) welcome();
   else for (const ev of t) renderEvent(ev, false);
   $("ctx-meter").classList.add("hidden"); // repopulates from the session's context events
@@ -252,6 +259,29 @@ function syncComposer() { const s = activeSession(); const running = s && s.stat
 
 // ── rail rendering: sessions grouped under their project ───────────
 const collapsedProjects = new Set();
+
+// Double-click a title to rename it in place. Enter/blur commits, Esc cancels.
+function inlineRename(span, current, commit) {
+  const inp = document.createElement("input");
+  inp.className = "rename-input";
+  inp.value = current;
+  span.replaceWith(inp);
+  inp.focus(); inp.select();
+  let done = false;
+  const finish = (save) => {
+    if (done) return; done = true;
+    const v = inp.value.trim();
+    inp.replaceWith(span);
+    if (save && v && v !== current) commit(v);
+  };
+  inp.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter") finish(true);
+    if (e.key === "Escape") finish(false);
+  });
+  inp.addEventListener("blur", () => finish(true));
+  inp.addEventListener("click", (e) => e.stopPropagation());
+}
 function renderSessions(list, act) {
   sessionsCache = list; if (act !== undefined) activeId = act ?? activeId;
   const box = $("session-list"); box.innerHTML = "";
@@ -272,12 +302,20 @@ function renderSessions(list, act) {
       if (s) { fileIndex = null; await switchTo(s.id); } else engineNotReady();
     });
     head.addEventListener("click", () => { closed ? collapsedProjects.delete(pid) : collapsedProjects.add(pid); renderSessions(sessionsCache, activeId); });
+    head.querySelector(".pname").addEventListener("dblclick", (e) => {
+      e.stopPropagation();
+      inlineRename(e.currentTarget, g.name, (v) => api.renameProject(pid, v));
+    });
     box.appendChild(head);
     if (closed) continue;
     for (const s of g.items) {
       const el = document.createElement("div");
       el.className = "sitem" + (s.id === activeId ? " active" : "");
-      el.innerHTML = `<span class="sdot ${s.status}"></span><span class="sinfo"><span class="stitle">${esc(s.title)}</span></span><span class="sx" title="Close">✕</span>`;
+      el.innerHTML = `<span class="sdot ${s.status}"></span><span class="sinfo"><span class="stitle" title="Double-click to rename">${esc(s.title)}</span></span><span class="sx" title="Close">✕</span>`;
+      el.querySelector(".stitle").addEventListener("dblclick", (e) => {
+        e.stopPropagation();
+        inlineRename(e.currentTarget, s.title, (v) => api.renameSession(s.id, v));
+      });
       el.addEventListener("click", (e) => { if (e.target.classList.contains("sx")) { api.removeSession(s.id); return; } if (s.id !== activeId) switchTo(s.id); });
       box.appendChild(el);
     }
