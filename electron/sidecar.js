@@ -104,6 +104,7 @@ class Gateway {
       this.ready = true;
       this.adopted = true; // not ours to kill on shutdown
       this.status("ready", "OmniRoute · free models");
+      this.#watchdog(); // adopted gateways can die under us (their owner exits)
       return this.baseUrl;
     }
 
@@ -156,6 +157,7 @@ class Gateway {
       this.#spawnServer(serverEntry, omniDir, env);
       try {
         await this.#waitHealthy();
+        this.#watchdog();
         return this.baseUrl;
       } catch (e) {
         this.stop();
@@ -187,6 +189,24 @@ class Gateway {
       if (code && code !== 0) this.status("error", `Gateway exited (code ${code})`);
     });
     this.proc.on("error", (e) => this.status("error", e.message));
+  }
+
+  // A gateway can vanish after we're "ready": an adopted one dies with its
+  // owner, or our own child crashes. Probe every 20s; if it's gone, take
+  // ownership and boot a fresh one on the same port — agents recover
+  // transparently since the base URL never changes.
+  #watchdog() {
+    clearInterval(this._watch);
+    this._watch = setInterval(async () => {
+      if (this._restarting || (await this.#adoptRunning())) return;
+      this._restarting = true;
+      this.ready = false;
+      this.adopted = false;
+      this.status("boot", "Engine went away — restarting…");
+      try { await this.start(); } catch {}
+      this._restarting = false;
+    }, 20_000);
+    if (this._watch.unref) this._watch.unref();
   }
 
   #log(d) {
@@ -221,6 +241,7 @@ class Gateway {
   }
 
   stop() {
+    clearInterval(this._watch);
     const proc = this.proc;
     this.proc = null;
     this.ready = false;

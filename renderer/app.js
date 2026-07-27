@@ -3,6 +3,8 @@ const stub = {
   createSession: async () => ({ id: "demo", title: "Main", workspace: "", status: "idle" }),
   newProject: async () => null, openMemory: async () => {}, compactSession: async () => {},
   listSkills: async () => [], installSkills: async () => ({ error: "unavailable" }), newSkill: async () => ({}), openSkills: async () => {},
+  readMemory: async () => ({ content: "" }), writeMemory: async () => {}, openKnowledge: async () => {}, importKnowledge: async () => ({ added: [] }),
+  projectInfo: async () => null, updateProject: async () => null, writeInstructions: async () => {}, addSchedule: async () => ({}), removeSchedule: async () => {},
   listSessions: async () => ({ sessions: [], activeId: null }), setActiveSession: async () => {},
   getTranscript: async () => [], sendMessage: async () => {}, stopSession: async () => {},
   removeSession: async () => {}, pickWorkspace: async () => {},
@@ -31,6 +33,7 @@ let approvalMode = "auto";
 let currentMcp = [];
 const mentions = new Set();
 const pastedImages = []; // data URLs
+const attachedFiles = []; // { name, content } — text files attached as context
 
 const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const scrollDown = () => (scroll.scrollTop = scroll.scrollHeight);
@@ -248,6 +251,7 @@ function handleSubagent(ev) {
 let switchSeq = 0;
 async function switchTo(id) {
   const seq = ++switchSeq;
+  viewingProject = null;
   activeId = id;
   await api.setActiveSession(id);
   if (seq !== switchSeq) return;
@@ -255,9 +259,14 @@ async function switchTo(id) {
   streamEl = null; streamText = ""; pendingApproval = null;
   const t = await api.getTranscript(id);
   if (seq !== switchSeq) return;
+  const events = Array.isArray(t) ? t : (t && t.events) || [];
   scroll.innerHTML = "";
-  if (!t || !t.length) welcome();
-  else for (const ev of t) renderEvent(ev, false);
+  if (!events.length) welcome();
+  else for (const ev of events) renderEvent(ev, false);
+  // A turn may be parked on an approval prompt — re-render its card, or the
+  // agent waits forever with no way to answer.
+  const pa = !Array.isArray(t) && t && t.pendingApproval;
+  if (pa) addApproval(pa.callId, pa.name, pa.args, pa.preview);
   $("ctx-meter").classList.add("hidden"); // repopulates from the session's context events
   updateFolder(); syncComposer(); scrollDown();
   input.focus();
@@ -282,6 +291,9 @@ function folderMenu() {
   const items = [
     { label: "Change folder…", hint: "pick any folder", onPick: () => api.pickWorkspace(activeId) },
     { label: api.platform === "darwin" ? "Reveal in Finder" : "Show in file manager", hint: prettyPath(s.workspace), onPick: () => api.revealFolder(s.workspace) },
+    { label: "🧠 Project memory…", hint: "view & edit what the agent remembers", onPick: () => openMemoryEditor() },
+    { label: "📚 Add files to knowledge…", hint: "reference docs for every session here", onPick: async () => { const r = await api.importKnowledge(); if (r.added && r.added.length) addSystem(`📚 Added to project knowledge: ${r.added.join(", ")}`); } },
+    { label: "📂 Open knowledge folder", hint: "drop files in directly", onPick: () => api.openKnowledge() },
   ];
   const seen = new Set([s.workspace]);
   for (const o of sessionsCache) {
@@ -337,7 +349,9 @@ function renderSessions(list, act) {
       const s = await api.createSession({ workspace: g.workspace }).catch(() => null);
       if (s) { fileIndex = null; await switchTo(s.id); } else engineNotReady();
     });
-    head.addEventListener("click", () => { closed ? collapsedProjects.delete(pid) : collapsedProjects.add(pid); renderSessions(sessionsCache, activeId); });
+    // Caret collapses; the name opens the project page.
+    head.querySelector(".pcaret").addEventListener("click", (e) => { e.stopPropagation(); closed ? collapsedProjects.delete(pid) : collapsedProjects.add(pid); renderSessions(sessionsCache, activeId); });
+    head.addEventListener("click", () => openProjectView(pid));
     head.querySelector(".pname").addEventListener("dblclick", (e) => {
       e.stopPropagation();
       inlineRename(e.currentTarget, g.name, (v) => api.renameProject(pid, v));
@@ -399,7 +413,38 @@ function renderChips() {
   const box = $("chips"); box.innerHTML = "";
   mentions.forEach((p) => { const c = document.createElement("span"); c.className = "chip"; c.innerHTML = `@${esc(p)} <span class="x">✕</span>`; c.querySelector(".x").addEventListener("click", () => { mentions.delete(p); renderChips(); }); box.appendChild(c); });
   pastedImages.forEach((url, i) => { const c = document.createElement("span"); c.className = "chip imgchip"; c.innerHTML = `<img src="${url}" class="imgthumb"/> image <span class="x">✕</span>`; c.querySelector(".x").addEventListener("click", () => { pastedImages.splice(i, 1); renderChips(); }); box.appendChild(c); });
+  attachedFiles.forEach((f, i) => { const c = document.createElement("span"); c.className = "chip"; c.innerHTML = `📄 ${esc(f.name)} <span class="x">✕</span>`; c.querySelector(".x").addEventListener("click", () => { attachedFiles.splice(i, 1); renderChips(); }); box.appendChild(c); });
 }
+
+// ── attachments: 📎 button + drag & drop ───────────────────────────
+// Images become vision input; text files ride along as context blocks.
+const MAX_ATTACH = 8, MAX_FILE_BYTES = 400_000, MAX_FILE_CHARS = 100_000;
+function addAttachment(file) {
+  if (pastedImages.length + attachedFiles.length >= MAX_ATTACH) { addSystem(`Attachment limit is ${MAX_ATTACH} per message.`); return; }
+  if (file.type && file.type.startsWith("image/")) {
+    const r = new FileReader();
+    r.onload = () => { pastedImages.push(r.result); renderChips(); };
+    r.readAsDataURL(file);
+    return;
+  }
+  if (file.size > MAX_FILE_BYTES) { addSystem(`"${file.name}" is too large to attach (max ${Math.round(MAX_FILE_BYTES / 1000)} KB). Add it to project knowledge instead (folder menu).`); return; }
+  const r = new FileReader();
+  r.onload = () => {
+    const text = String(r.result || "");
+    if (text.includes("\u0000")) { addSystem(`"${file.name}" looks binary — attach images or text files.`); return; }
+    attachedFiles.push({ name: file.name, content: text.slice(0, MAX_FILE_CHARS) });
+    renderChips();
+  };
+  r.readAsText(file);
+}
+function handleFiles(list) { for (const f of list || []) addAttachment(f); input.focus(); }
+$("attach").addEventListener("click", () => $("file-input").click());
+$("file-input").addEventListener("change", (e) => { handleFiles(e.target.files); e.target.value = ""; });
+let dragDepth = 0;
+window.addEventListener("dragover", (e) => e.preventDefault());
+window.addEventListener("dragenter", (e) => { e.preventDefault(); if (++dragDepth === 1 && e.dataTransfer?.types?.includes("Files")) document.body.classList.add("dropping"); });
+window.addEventListener("dragleave", () => { if (--dragDepth <= 0) { dragDepth = 0; document.body.classList.remove("dropping"); } });
+window.addEventListener("drop", (e) => { e.preventDefault(); dragDepth = 0; document.body.classList.remove("dropping"); handleFiles(e.dataTransfer.files); });
 // paste an image into the composer
 input.addEventListener("paste", (e) => {
   const items = (e.clipboardData && e.clipboardData.items) || [];
@@ -481,20 +526,39 @@ input.addEventListener("input", () => {
 input.addEventListener("keydown", (e) => {
   if (e.key === "Tab" && e.shiftKey) { e.preventDefault(); cycleApproval(); return; }
   if (pendingApproval && !input.value.trim() && (e.key === "y" || e.key === "n")) { e.preventDefault(); pendingApproval(e.key === "y"); return; }
-  if (mpop) { if (e.key === "ArrowDown") { e.preventDefault(); moveSel(1); return; } if (e.key === "ArrowUp") { e.preventDefault(); moveSel(-1); return; } if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); pickSel(); return; } if (e.key === "Escape") { hidePop(); return; } }
+  if (mpop) { if (e.key === "ArrowDown") { e.preventDefault(); moveSel(1); return; } if (e.key === "ArrowUp") { e.preventDefault(); moveSel(-1); return; } if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); pickSel(); return; } if (e.key === "Escape") { e.preventDefault(); hidePop(); return; } }
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
-  if (e.key === "Escape") api.stopSession(activeId);
+});
+// Esc stops the running turn from anywhere — not only while the input has focus.
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape" || e.defaultPrevented) return;
+  if (!$("memory-modal").classList.contains("hidden")) { $("memory-modal").classList.add("hidden"); return; }
+  if (mpop) { hidePop(); return; }
+  if (activeId) api.stopSession(activeId);
 });
 $("approval-toggle").addEventListener("click", cycleApproval);
 async function send() {
   const text = input.value.trim();
   if ((!text && !mentions.size && !pastedImages.length) || !activeId) return;
   if (text.startsWith("/")) { input.value = ""; grow(); hidePop(); handleSlash(text); return; }
+  // On a project page, a message starts a new session in that project.
+  if (viewingProject) {
+    const s = await api.createSession({ workspace: viewingProjectPath }).catch(() => null);
+    if (!s) { engineNotReady(); return; }
+    fileIndex = null;
+    await switchTo(s.id);
+  }
   let full = text; if (mentions.size) full = `${text}\n\nReferenced files: ${[...mentions].map((p) => "@" + p).join(", ")}`;
+  // Attached text files ride along for the model; the transcript shows only a label.
+  let label = null;
+  if (attachedFiles.length) {
+    label = text + `  📎 ${attachedFiles.map((f) => f.name).join(", ")}`;
+    full += "\n\n" + attachedFiles.map((f) => `## Attached file: ${f.name}\n\`\`\`\n${f.content}\n\`\`\``).join("\n\n");
+  }
   const images = pastedImages.slice();
   const w = $("welcome"); if (w) w.remove();
-  input.value = ""; mentions.clear(); pastedImages.length = 0; renderChips(); grow(); hidePop();
-  await api.sendMessage(activeId, full, images);
+  input.value = ""; mentions.clear(); pastedImages.length = 0; attachedFiles.length = 0; renderChips(); grow(); hidePop();
+  await api.sendMessage(activeId, full, images, label);
 }
 
 // ── slash commands ─────────────────────────────────────────────────
@@ -516,7 +580,8 @@ const COMMANDS = [
   { name: "clear", desc: "Start a fresh session", run: () => newSession() },
   { name: "new", desc: "Start a fresh session", run: () => newSession() },
   { name: "project", desc: "New project — pick a folder", run: () => newProject() },
-  { name: "memory", desc: "Open this project's memory file", run: (arg) => api.openMemory(arg === "global" ? "global" : undefined) },
+  { name: "memory", desc: "View & edit what the agent remembers", run: () => openMemoryEditor() },
+  { name: "knowledge", desc: "Open this project's knowledge folder", run: () => api.openKnowledge() },
   { name: "folder", alias: "cwd", desc: "Change the working folder", run: () => api.pickWorkspace(activeId) },
   { name: "model", args: "<name>", desc: "Switch AI model", run: (arg) => { if (arg) { $("model").value = arg; api.setModel(arg); addSystem("model → " + arg); } else addSystem("usage: /model <name>"); } },
   { name: "undo", desc: "Undo last turn's file changes", run: () => api.undo(activeId) },
@@ -576,6 +641,81 @@ function cycleApproval() {
 }
 stopBtn.addEventListener("click", () => api.stopSession(activeId));
 document.addEventListener("click", (e) => { const t = e.target.closest(".tip"); if (t) { input.value = t.dataset.p; grow(); input.focus(); } });
+
+// ── memory editor ──────────────────────────────────────────────────
+let memScope = "project";
+let memProjectId = null; // explicit project, else the active session's
+async function loadMemoryEditor(scope) {
+  memScope = scope;
+  $("mem-tab-project").classList.toggle("on", scope === "project");
+  $("mem-tab-global").classList.toggle("on", scope === "global");
+  const r = await api.readMemory(scope, scope === "project" ? memProjectId : undefined);
+  $("mem-text").value = r.content || "";
+}
+function openMemoryEditor(projectId) { memProjectId = projectId || null; $("memory-modal").classList.remove("hidden"); loadMemoryEditor("project"); }
+async function saveMemoryEditor() { await api.writeMemory(memScope, $("mem-text").value, memScope === "project" ? memProjectId : undefined); }
+$("mem-tab-project").addEventListener("click", async () => { await saveMemoryEditor(); loadMemoryEditor("project"); });
+$("mem-tab-global").addEventListener("click", async () => { await saveMemoryEditor(); loadMemoryEditor("global"); });
+$("mem-save").addEventListener("click", async () => { await saveMemoryEditor(); $("memory-modal").classList.add("hidden"); addSystem("🧠 Memory saved."); });
+$("mem-cancel").addEventListener("click", () => $("memory-modal").classList.add("hidden"));
+$("mem-reveal").addEventListener("click", () => api.openMemory(memScope === "global" ? "global" : undefined));
+$("memory-modal").addEventListener("click", (e) => { if (e.target.id === "memory-modal") $("memory-modal").classList.add("hidden"); });
+
+// ── project page (like Claude's project view) ──────────────────────
+let viewingProject = null, viewingProjectPath = null;
+const fmtDate = (ts) => new Date(ts || Date.now()).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+function pvSection(title, actionsHtml, bodyHtml) {
+  return `<section class="pv-card"><div class="pv-card-head"><h3>${title}</h3><span class="pv-actions">${actionsHtml || ""}</span></div>${bodyHtml}</section>`;
+}
+async function openProjectView(pid) {
+  const info = await api.projectInfo(pid);
+  if (!info) return;
+  viewingProject = pid;
+  viewingProjectPath = info.project.path;
+  switchSeq++; // cancel any in-flight transcript render
+  stopThinking(); endStream();
+  $("ctx-meter").classList.add("hidden");
+  const p = info.project;
+  const mySessions = sessionsCache.filter((s) => s.projectId === pid);
+  scroll.innerHTML = "";
+  const el = document.createElement("div");
+  el.className = "pview";
+  el.innerHTML =
+    `<div class="pv-head"><h1 class="pv-title" title="Double-click to rename">${esc(p.name)}</h1><span class="dim wpath">${esc(prettyPath(p.path))}</span></div>` +
+    `<textarea class="pv-desc" rows="1" placeholder="Add a short description…">${esc(p.description || "")}</textarea>` +
+    pvSection("Instructions", "",
+      `<textarea id="pv-instructions" rows="4" placeholder="Tailor how the agent works in this project — style, stack, boundaries. Applied to every session here.">${esc(info.instructions || "")}</textarea>`) +
+    pvSection("Memory", `<button class="pv-btn" id="pv-mem-edit">Edit</button>`,
+      `<p class="pv-body dim">${info.memory ? esc(info.memory.replace(/^# Memory\s*/, "").slice(0, 280)) + (info.memory.length > 280 ? "…" : "") : "Nothing saved yet — the agent adds entries with save_memory, or write your own."}</p>`) +
+    pvSection("Context", `<button class="pv-btn" id="pv-know-add">+ Add files</button><button class="pv-btn" id="pv-know-open">Open folder</button>`,
+      info.knowledge.length
+        ? `<ul class="pv-list">${info.knowledge.map((f) => `<li>📄 ${esc(f.name)} <span class="dim">${f.size > 1024 ? Math.round(f.size / 1024) + " KB" : f.size + " B"}</span></li>`).join("")}</ul>`
+        : `<p class="pv-body dim">Add documents for the agent to reference in every session of this project.</p>`) +
+    pvSection("Scheduled", "",
+      `<ul class="pv-list" id="pv-sched-list">${info.schedule.map((t) => `<li data-tid="${esc(t.id)}">⏰ ${esc(t.prompt.slice(0, 60))} <span class="dim">every ${esc(t.every)}</span> <span class="pv-x" title="Remove">✕</span></li>`).join("")}</ul>` +
+      `<div class="pv-sched-add"><input id="pv-sched-prompt" placeholder="Prompt to run on a schedule…" /><select id="pv-sched-every"><option value="hour">hourly</option><option value="day" selected>daily</option><option value="week">weekly</option></select><button class="pv-btn" id="pv-sched-btn">Add</button></div>`) +
+    pvSection("Recents", "",
+      mySessions.length
+        ? `<ul class="pv-list pv-recents">${mySessions.map((s) => `<li data-sid="${esc(s.id)}"><span class="sdot ${s.status}"></span> ${esc(s.title)} <span class="dim">${fmtDate(s.createdAt)}</span></li>`).join("")}</ul>`
+        : `<p class="pv-body dim">Sessions you start here will show up below. Type a message to begin one.</p>`);
+  scroll.appendChild(el);
+
+  // wiring
+  el.querySelector(".pv-title").addEventListener("dblclick", (e) => inlineRename(e.currentTarget, p.name, async (v) => { await api.updateProject(pid, { name: v }); openProjectView(pid); }));
+  el.querySelector(".pv-desc").addEventListener("blur", (e) => api.updateProject(pid, { description: e.target.value }));
+  el.querySelector("#pv-instructions").addEventListener("blur", (e) => api.writeInstructions(pid, e.target.value));
+  el.querySelector("#pv-mem-edit").addEventListener("click", () => openMemoryEditor(pid));
+  el.querySelector("#pv-know-add").addEventListener("click", async () => { const r = await api.importKnowledge(pid); if (r.added && r.added.length) openProjectView(pid); });
+  el.querySelector("#pv-know-open").addEventListener("click", () => api.openKnowledge(pid));
+  el.querySelector("#pv-sched-btn").addEventListener("click", async () => {
+    const r = await api.addSchedule(pid, $("pv-sched-prompt").value, $("pv-sched-every").value);
+    if (r && r.error) addSystem("✗ " + r.error); else openProjectView(pid);
+  });
+  el.querySelectorAll("#pv-sched-list .pv-x").forEach((x) => x.addEventListener("click", async (e) => { await api.removeSchedule(pid, e.target.closest("li").dataset.tid); openProjectView(pid); }));
+  el.querySelectorAll(".pv-recents li").forEach((li) => li.addEventListener("click", () => switchTo(li.dataset.sid)));
+  scroll.scrollTop = 0;
+  input.focus();
+}
 
 // ── new session / cwd / model / dashboard ──────────────────────────
 $("new-project").addEventListener("click", () => newProject());

@@ -117,13 +117,16 @@ class SessionManager {
       model: this.model,
       workspace: sess.workspace,
       mcp: this.mcp,
-      memory: this.projects ? { globalDir: this.globalMemoryDir, projectDir: this.projects.memoryDir(sess.projectId) } : null,
+      memory: this.projects ? { globalDir: this.globalMemoryDir, projectDir: this.projects.memoryDir(sess.projectId), knowledgeDir: this.projects.knowledgeDir(sess.projectId), instructionsFile: this.projects.instructionsFile(sess.projectId) } : null,
       skillsDir: this.skillsDir,
       browser: this.browser,
       approvalMode: this.approvalMode,
       approver: (callId, name, args, preview) =>
         new Promise((resolve) => {
           this.pendingApprovals.set(callId, resolve);
+          // Remember what we're waiting on: switching sessions destroys the
+          // renderer's approval card, and the turn hangs forever without it.
+          sess.pendingApproval = { callId, name, args, preview };
           this.emit(id, "approval_request", { callId, name, args, preview });
         }),
       emit: (type, payload) => this.#onAgentEvent(id, type, payload),
@@ -134,6 +137,9 @@ class SessionManager {
   resolveApproval(callId, ok) {
     const r = this.pendingApprovals.get(callId);
     if (r) { this.pendingApprovals.delete(callId); r(!!ok); }
+    for (const s of this.sessions.values()) {
+      if (s.pendingApproval && s.pendingApproval.callId === callId) s.pendingApproval = null;
+    }
   }
 
   setApprovalMode(mode) {
@@ -231,14 +237,16 @@ class SessionManager {
     } catch {}
   }
 
-  async send(id, text, images) {
+  // `label` is what the transcript shows (e.g. prompt + attachment names);
+  // `text` is the full model input, which may embed attached file contents.
+  async send(id, text, images, label) {
     const sess = this.sessions.get(id);
     if (!sess) return;
     sess.status = "running";
     this.#pushList();
-    const label = text + (images && images.length ? `  📎 ${images.length} image${images.length > 1 ? "s" : ""}` : "");
-    sess.transcript.push({ type: "user", content: label });
-    this.emit(id, "user", { content: label });
+    const shown = (label || text) + (images && images.length ? `  📎 ${images.length} image${images.length > 1 ? "s" : ""}` : "");
+    sess.transcript.push({ type: "user", content: shown });
+    this.emit(id, "user", { content: shown });
     try {
       await sess.agent.send(text, images);
     } catch (e) {
@@ -248,7 +256,14 @@ class SessionManager {
     }
   }
 
-  stop(id) { const s = this.sessions.get(id); if (s && s.agent) s.agent.abort(); }
+  stop(id) {
+    const s = this.sessions.get(id);
+    if (!s) return;
+    // A turn parked on an approval prompt isn't in the agent loop — deny it so
+    // the abort flag is actually reached.
+    if (s.pendingApproval) this.resolveApproval(s.pendingApproval.callId, false);
+    if (s.agent) s.agent.abort();
+  }
 
   // Manual /compact. No-op while the agent is mid-turn — the step loop compacts itself.
   async compactNow(id) {
@@ -299,7 +314,7 @@ class SessionManager {
       if (proj.id !== s.projectId) {
         try { fs.unlinkSync(this.#sessionFile(s)); } catch {}
         s.projectId = proj.id;
-        if (s.agent) s.agent.memory = { globalDir: this.globalMemoryDir, projectDir: this.projects.memoryDir(proj.id) };
+        if (s.agent) s.agent.memory = { globalDir: this.globalMemoryDir, projectDir: this.projects.memoryDir(proj.id), knowledgeDir: this.projects.knowledgeDir(proj.id), instructionsFile: this.projects.instructionsFile(proj.id) };
       }
       this.projects.touch(proj.id);
     }

@@ -7,7 +7,7 @@
 // with its own context/tool-loop, and report a summary back to the parent.
 
 const { TOOL_SCHEMA, executeTool } = require("./tools");
-const { MEMORY_TOOL, saveMemory, loadForPrompt } = require("./memory");
+const { MEMORY_TOOL, saveMemory, loadForPrompt, KNOWLEDGE_TOOL, knowledgeSection, readKnowledge } = require("./memory");
 const { DEFAULT_CONTEXT, estimateTokens, shouldCompact, compact } = require("./compactor");
 const skills = require("./skills");
 
@@ -97,7 +97,7 @@ class Agent {
     this.workspace = workspace;
     this.emit = emit; // (event, payload) => void
     this.mcp = mcp || null;
-    this.memory = memory; // { globalDir, projectDir } | null
+    this.memory = memory; // { globalDir, projectDir, knowledgeDir? } | null
     this.skillsDir = skillsDir || null; // global skills root
     this.browser = browser || null;    // BrowserManager
     this.contextTokens = DEFAULT_CONTEXT;
@@ -142,6 +142,13 @@ class Agent {
     const path = require("node:path");
     const files = ["AGENTS.md", "CLAUDE.md", "CLAUDE.local.md", ".omniwork.md", ".cursorrules"];
     let mem = "";
+    // Project instructions the user set in the project page — first, they lead.
+    if (this.memory && this.memory.instructionsFile) {
+      try {
+        const ins = fs.readFileSync(this.memory.instructionsFile, "utf8").trim();
+        if (ins) mem += `\n\n## Project instructions (set by the user — follow these)\n${ins.slice(0, 8000)}`;
+      } catch {}
+    }
     for (const f of files) {
       try {
         const p = path.join(this.workspace, f);
@@ -152,6 +159,7 @@ class Agent {
     if (this.memory) {
       const saved = loadForPrompt(this.memory.globalDir, this.memory.projectDir);
       if (saved) mem += `\n\n${saved}`;
+      if (this.memory.knowledgeDir) mem += knowledgeSection(this.memory.knowledgeDir);
     }
     // Skills: names + descriptions only; bodies load via use_skill.
     if (this.skillsDir) mem += skills.promptSection(this.skillsDir, this.workspace);
@@ -181,12 +189,18 @@ class Agent {
     const extra = this.mcp ? this.mcp.toolSchema() : [];
     const sub = this.canSpawn ? [SUBAGENT_TOOL] : [];
     const mem = this.memory ? [MEMORY_TOOL] : [];
+    const kn = this.memory && this.memory.knowledgeDir ? [KNOWLEDGE_TOOL] : [];
     const sk = this.skillsDir ? [skills.USE_SKILL_TOOL, skills.SAVE_SKILL_TOOL, skills.INSTALL_SKILLS_TOOL] : [];
     const web = this.browser ? [require("./browser").WEB_SEARCH_TOOL, require("./browser").BROWSE_TOOL] : [];
-    return [...TOOL_SCHEMA, ...sub, ...mem, ...sk, ...web, ...extra];
+    return [...TOOL_SCHEMA, ...sub, ...mem, ...kn, ...sk, ...web, ...extra];
   }
 
-  abort() { this.aborted = true; }
+  // Aborting must also kill in-flight network work — a flag alone leaves the
+  // user waiting out a slow or hung stream before Esc "takes".
+  abort() {
+    this.aborted = true;
+    try { this.abortCtl?.abort(); } catch {}
+  }
   setWorkspace(dir) { this.workspace = dir; }
 
   // One-off model call outside the session's message history (summaries,
@@ -194,6 +208,7 @@ class Agent {
   async oneShot(prompt) {
     const res = await fetch(`${this.baseUrl}/chat/completions`, {
       method: "POST",
+      signal: AbortSignal.timeout(60_000),
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}` },
       body: JSON.stringify({ model: this.model, messages: [{ role: "user", content: prompt }], temperature: 0.2 }),
     });
@@ -233,6 +248,7 @@ class Agent {
   async #requestModel(stream) {
     const res = await fetch(`${this.baseUrl}/chat/completions`, {
       method: "POST",
+      signal: this.abortCtl?.signal,
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}` },
       body: JSON.stringify({
         model: this.model,
@@ -275,6 +291,7 @@ class Agent {
     let usage = null;
     const toolCalls = [];
     while (true) {
+      if (this.aborted) { try { reader.cancel(); } catch {} break; }
       const { done, value } = await reader.read();
       if (done) break;
       buf += decoder.decode(value, { stream: true });
@@ -356,6 +373,7 @@ class Agent {
 
   async send(userText, images) {
     this.aborted = false;
+    this.abortCtl = new AbortController();
     this.turnUndo = new Map();
     this.undoAvailable = false;
     this.turnStats = { startedAt: Date.now(), inTokens: 0, outTokens: 0, estimated: false };
@@ -387,7 +405,14 @@ class Agent {
 
       let msg;
       try { msg = await this.callModel(); }
-      catch (err) { this.emit("error", { message: err.message }); return; }
+      catch (err) {
+        if (this.aborted) { this.emit("aborted", this.#statsPayload()); return; }
+        const friendly = /fetch failed|ECONNREFUSED/i.test(err.message)
+          ? "Lost connection to the engine — it restarts itself within ~20s. Try again in a moment."
+          : err.message;
+        this.emit("error", { message: friendly });
+        return;
+      }
 
       if (msg.content && msg.content.trim()) {
         this.lastText = msg.content;
@@ -448,6 +473,8 @@ class Agent {
             const made = skills.createSkill(this.skillsDir, parsedArgs.name, parsedArgs.description, parsedArgs.instructions);
             result = `Saved skill "${made.name}" — available in every project via /` + made.name;
           } catch (e) { result = "Failed to save skill: " + e.message; }
+        } else if (name === "read_knowledge" && this.memory && this.memory.knowledgeDir) {
+          result = readKnowledge(this.memory.knowledgeDir, parsedArgs.name || "");
         } else if (name === "save_memory" && this.memory) {
           const dir = parsedArgs.scope === "global" ? this.memory.globalDir : this.memory.projectDir;
           try { result = saveMemory(dir, parsedArgs.title || "note", parsedArgs.content || ""); }

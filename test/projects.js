@@ -2,7 +2,7 @@
 // (save, inject, cap). No gateway needed — runs in milliseconds.
 const fs = require("fs"), os = require("os"), path = require("path");
 const { ProjectManager, projectId } = require("../electron/projects");
-const { saveMemory, loadForPrompt, memoryFile } = require("../electron/memory");
+const { saveMemory, loadForPrompt, memoryFile, listKnowledge, knowledgeSection, readKnowledge } = require("../electron/memory");
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ow-proj-"));
 const ws1 = fs.mkdtempSync(path.join(os.tmpdir(), "ow-ws1-"));
@@ -39,6 +39,20 @@ check("inject contains saved facts", inject.includes("concise answers") && injec
 check("memory file is plain markdown", fs.readFileSync(memoryFile(pDir), "utf8").startsWith("# Memory"));
 for (let i = 0; i < 200; i++) saveMemory(pDir, "Fact " + i, "x".repeat(100));
 check("inject respects 8KB cap", loadForPrompt(gDir, pDir).length <= 8000);
+
+// project knowledge: list → prompt section → read, with guardrails
+const kDir = pm.knowledgeDir(a.id);
+fs.writeFileSync(path.join(kDir, "spec.md"), "# The Spec\nBuild the thing.");
+fs.writeFileSync(path.join(kDir, "data.bin"), Buffer.from([0, 1, 2, 255]));
+fs.writeFileSync(path.join(kDir, "big.txt"), "y".repeat(30_000));
+check("knowledge listed with sizes", listKnowledge(kDir).some((f) => f.name === "spec.md" && f.size > 0));
+check("prompt section names the files", knowledgeSection(kDir).includes("spec.md"));
+check("empty knowledge → empty section", knowledgeSection(pm.knowledgeDir(c.id)) === "");
+check("read returns contents", readKnowledge(kDir, "spec.md").includes("Build the thing"));
+check("read refuses binary", readKnowledge(kDir, "data.bin").includes("binary"));
+check("read truncates big files", readKnowledge(kDir, "big.txt").includes("truncated"));
+check("read blocks path escapes", readKnowledge(kDir, "../memory/MEMORY.md").includes("No knowledge file"));
+check("read unknown → helpful list", readKnowledge(kDir, "nope.txt").includes("spec.md"));
 
 console.log(fails ? `\n❌ ${fails} FAILED` : "\n✅ PROJECTS + MEMORY TEST PASSED");
 process.exit(fails ? 1 : 0);
