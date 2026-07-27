@@ -137,7 +137,7 @@ class SessionManager {
   }
 
   setApprovalMode(mode) {
-    this.approvalMode = mode === "ask" ? "ask" : "auto";
+    this.approvalMode = ["auto", "ask", "edits", "plan"].includes(mode) ? mode : "auto";
     for (const s of this.sessions.values()) if (s.agent) s.agent.approvalMode = this.approvalMode;
     return this.approvalMode;
   }

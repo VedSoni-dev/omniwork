@@ -58,7 +58,7 @@ async function boot() {
   if (envWs && fs.existsSync(envWs)) state.lastWorkspace = envWs;
   else if (prefs.workspace && fs.existsSync(prefs.workspace)) state.lastWorkspace = prefs.workspace;
   state.model = prefs.model || "auto";
-  state.approval = prefs.approval === "ask" ? "ask" : "auto";
+  state.approval = ["auto", "ask", "edits", "plan"].includes(prefs.approval) ? prefs.approval : "auto";
 
   createWindow();
 
@@ -88,6 +88,7 @@ async function boot() {
     if (!restored) sessions.create({ workspace: state.lastWorkspace, title: "Main" });
     // Bring up MCP servers in the background; refresh connection list when ready.
     mcp.startAll().then(() => send("mcp:list", { servers: mcp.list() })).catch(() => {});
+    installDefaultSkills();
   }).catch((e) => send("gateway:status", { state: "error", detail: e.message }));
 }
 
@@ -146,6 +147,19 @@ ipcMain.handle("project:new", async () => {
   savePrefs();
   return sessions.create({ workspace: r.filePaths[0] });
 });
+
+// Every install starts with Anthropic's public skill set. Background,
+// marker-gated (won't clobber user edits on later boots), and silent on
+// failure — needs git + network, and the app is fully usable without it.
+function installDefaultSkills() {
+  const marker = path.join(skillsDir(), ".defaults-installed");
+  if (fs.existsSync(marker)) return;
+  skillsApi.installSkills(skillsDir(), "anthropics/skills").then((names) => {
+    fs.mkdirSync(skillsDir(), { recursive: true });
+    fs.writeFileSync(marker, JSON.stringify({ when: new Date().toISOString(), source: "anthropics/skills", names }, null, 2));
+    broadcastSkills();
+  }).catch(() => {});
+}
 
 // ── IPC: skills ─────────────────────────────────────────────────────
 const skillsApi = require("./skills");

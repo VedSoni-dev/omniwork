@@ -405,12 +405,13 @@ input.addEventListener("input", () => {
   if (m) showFilePop(m[1]); else hidePop();
 });
 input.addEventListener("keydown", (e) => {
+  if (e.key === "Tab" && e.shiftKey) { e.preventDefault(); cycleApproval(); return; }
   if (pendingApproval && !input.value.trim() && (e.key === "y" || e.key === "n")) { e.preventDefault(); pendingApproval(e.key === "y"); return; }
   if (mpop) { if (e.key === "ArrowDown") { e.preventDefault(); moveSel(1); return; } if (e.key === "ArrowUp") { e.preventDefault(); moveSel(-1); return; } if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); pickSel(); return; } if (e.key === "Escape") { hidePop(); return; } }
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
   if (e.key === "Escape") api.stopSession(activeId);
 });
-$("approval-toggle").addEventListener("click", () => setApproval(approvalMode === "ask" ? "auto" : "ask"));
+$("approval-toggle").addEventListener("click", cycleApproval);
 async function send() {
   const text = input.value.trim();
   if ((!text && !mentions.size && !pastedImages.length) || !activeId) return;
@@ -453,7 +454,7 @@ const COMMANDS = [
     const r = await api.installSkills(arg);
     addSystem(r.error ? "✗ " + r.error : (r.installed.length ? `✓ Installed: ${r.installed.map((n) => "/" + n).join("  ")}` : "No SKILL.md directories found there."));
   } },
-  { name: "approve", args: "ask|auto", desc: "Set approval mode", run: (arg) => setApproval(arg === "ask" ? "ask" : "auto") },
+  { name: "approve", args: "auto|ask|edits|plan", desc: "Set approval mode (Shift+Tab cycles)", run: (arg) => setApproval(arg) },
 ];
 function allCommands() {
   const base = [...COMMANDS, ...RECIPES.map((r) => ({ name: "recipe:" + r.slug, desc: r.desc, run: () => runRecipe(r) }))];
@@ -478,13 +479,26 @@ function handleSlash(text) {
   else addSystem("unknown command: /" + cmd + "  (try /help)");
 }
 
-function setApproval(mode) {
-  approvalMode = mode === "ask" ? "ask" : "auto";
+// Approval modes, cycled with Shift+Tab (like Claude Code) or by clicking.
+const MODES = [
+  { id: "auto", label: "⚡ auto", desc: "auto: runs everything without asking" },
+  { id: "ask", label: "🛡 ask", desc: "ask: approve commands & file changes" },
+  { id: "edits", label: "✏ edits", desc: "accept edits: file changes run, commands still ask" },
+  { id: "plan", label: "⏸ plan", desc: "plan: read-only — explores and proposes a plan" },
+];
+function setApproval(mode, { announce = true } = {}) {
+  const m = MODES.find((x) => x.id === mode) || MODES[0];
+  approvalMode = m.id;
   api.setApproval(approvalMode);
   const btn = $("approval-toggle");
-  btn.textContent = approvalMode === "ask" ? "🛡 ask" : "🛡 auto";
-  btn.classList.toggle("on", approvalMode === "ask");
-  addSystem(approvalMode === "ask" ? "approval: ask before commands & file writes" : "approval: auto (runs without asking)");
+  btn.textContent = m.label;
+  btn.title = m.desc + " — Shift+Tab to cycle";
+  btn.classList.toggle("on", m.id !== "auto");
+  if (announce) addSystem(m.desc);
+}
+function cycleApproval() {
+  const i = MODES.findIndex((x) => x.id === approvalMode);
+  setApproval(MODES[(i + 1) % MODES.length].id);
 }
 stopBtn.addEventListener("click", () => api.stopSession(activeId));
 document.addEventListener("click", (e) => { const t = e.target.closest(".tip"); if (t) { input.value = t.dataset.p; grow(); input.focus(); } });
@@ -586,7 +600,7 @@ $("recipes-modal").addEventListener("click", (e) => { if (e.target.id === "recip
   const st = await api.getState();
   if (st) {
     if (st.model) $("model").value = st.model;
-    if (st.approval) { approvalMode = st.approval; const b = $("approval-toggle"); b.textContent = approvalMode === "ask" ? "🛡 ask" : "🛡 auto"; b.classList.toggle("on", approvalMode === "ask"); }
+    if (st.approval) setApproval(st.approval, { announce: false });
     if (st.mcp) renderMcp(st.mcp);
     populateModels(st.model);
     if (st.sessions && st.sessions.length) { renderSessions(st.sessions, st.activeId); await switchTo(st.activeId || st.sessions[0].id); }

@@ -63,6 +63,26 @@ const SUBAGENT_TOOL = {
 
 const MAX_STEPS = 40;
 
+const PLAN_MODE_PROMPT = `
+
+# PLAN MODE
+You are in plan mode: explore, analyze, and design — do NOT change anything.
+File writes and edits are disabled; commands require the user's approval, so run only read-only ones.
+End your reply with a clear, numbered plan and ask the user to switch modes (Shift+Tab) to execute it.`;
+
+// Pure: what happens to a tool call under each approval mode.
+// Returns "allow" | "ask" | "block".
+function approvalDecision(mode, name, isMcpTool = false) {
+  const isEdit = name === "write_file" || name === "edit_file";
+  const isCmd = name === "run_command" || name === "install_skills" || isMcpTool;
+  switch (mode) {
+    case "ask": return isEdit || isCmd ? "ask" : "allow";
+    case "edits": return isCmd ? "ask" : "allow";           // auto-accept file edits
+    case "plan": return isEdit || name === "install_skills" ? "block" : (isCmd ? "ask" : "allow");
+    default: return "allow";                                  // "auto"
+  }
+}
+
 function subLabel(name, args) {
   const label = { run_command: "Bash", read_file: "Read", write_file: "Write", edit_file: "Edit", list_dir: "List", web_fetch: "Fetch", open_url: "Open" }[name] || name;
   const a = name === "run_command" ? args.command : args.path || args.url || "";
@@ -306,7 +326,12 @@ class Agent {
     this.undoAvailable = false;
     // Refresh the system prompt with current project instructions (AGENTS.md, etc.).
     const mem = this.loadProjectMemory();
-    this.messages[0] = { role: "system", content: this.baseSystem + (mem ? `\n\n# Project instructions (from the workspace)\n${mem}` : "") };
+    this.messages[0] = {
+      role: "system",
+      content: this.baseSystem
+        + (mem ? `\n\n# Project instructions (from the workspace)\n${mem}` : "")
+        + (this.approvalMode === "plan" ? PLAN_MODE_PROMPT : ""),
+    };
     // Multimodal: attach pasted images (vision) as an OpenAI content array.
     if (images && images.length) {
       this.messages.push({ role: "user", content: [{ type: "text", text: userText }, ...images.map((url) => ({ type: "image_url", image_url: { url } }))] });
@@ -346,9 +371,15 @@ class Agent {
         try { parsedArgs = JSON.parse(call.function.arguments || "{}"); } catch { parsedArgs = {}; }
         this.emit("tool_call", { id: call.id, name, args: parsedArgs });
 
-        // Approval gate (top-level agents only): pause for destructive tools.
-        const needsApproval = ["run_command", "write_file", "edit_file", "install_skills"].includes(name) || (this.mcp && this.mcp.isMcpTool(name));
-        if (this.approvalMode === "ask" && this.approver && needsApproval) {
+        // Approval gate (top-level agents only): mode decides per tool.
+        const decision = approvalDecision(this.approvalMode, name, !!(this.mcp && this.mcp.isMcpTool(name)));
+        if (decision === "block") {
+          const blocked = "⏸ Plan mode — changes are disabled. Present your plan instead; the user can switch modes to execute it.";
+          this.emit("tool_result", { id: call.id, name, result: blocked });
+          this.messages.push({ role: "tool", tool_call_id: call.id, content: blocked });
+          continue;
+        }
+        if (decision === "ask" && this.approver) {
           const preview = this.#approvalPreview(name, parsedArgs);
           const ok = await this.approver(call.id, name, parsedArgs, preview);
           if (!ok) {
@@ -406,4 +437,4 @@ class Agent {
   }
 }
 
-module.exports = { Agent };
+module.exports = { Agent, approvalDecision };
