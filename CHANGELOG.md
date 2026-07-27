@@ -9,6 +9,42 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 _Nothing yet._
 
+## [0.11.0] — 2026-07-27
+
+Context features from Claude's project view, brought to a coding agent: attachments,
+project knowledge, per-project instructions, and scheduled prompts.
+
+### Added
+
+- **Chat attachments.** A 📎 button plus window-wide drag & drop. Images go to vision; text
+  files travel as fenced context blocks while the transcript shows a clean `prompt 📎 name`
+  label. Oversized files are pointed at project knowledge instead.
+- **Project knowledge.** Reference files under `projects/<id>/knowledge/`, listed by name and
+  size in the system prompt and read on demand through a `read_knowledge` tool — path-escape
+  safe, binary-refusing, truncation-marked.
+- **Project home page.** Clicking a project's name opens instructions, memory, context files,
+  recents, and scheduled tasks in one view. Per-project `INSTRUCTIONS.md` is injected ahead of
+  workspace files into every session in that project.
+- **Scheduled prompts.** Recurring hourly/daily/weekly prompts fired into fresh sessions by
+  `electron/scheduler.js`. `lastRun` persists, so a restart never replays missed runs.
+- **Memory editor.** `/memory` opens an in-app editor over the real `MEMORY.md`, with
+  project/global tabs and reveal-in-Finder.
+- **Homebrew cask** on a self-hosted tap — `brew install --cask --no-quarantine
+  VedSoni-dev/tap/omniwork` — so installing does not require the Gatekeeper dance.
+- **Gateway watchdog.** The engine is probed every 20 s; if it disappears (an adopted gateway's
+  owner exited, or our own child crashed) a fresh one is started on the same port, so agents
+  recover without the base URL changing.
+
+### Fixed
+
+- **Esc now aborts for real**, and pending approvals survive switching between sessions.
+- **The watchdog could orphan a gateway on quit.** `stop()` had no guard against an in-flight
+  `start()`, so quitting while the watchdog was mid-restart let `start()` spawn a server
+  *after* teardown — stranding it on port 20128 and blocking the next launch, the regression
+  0.9.1 had fixed. `stop()` now latches an abort flag that `start()` checks before spawning
+  and after health, and the watchdog will not resurrect the engine once shutdown has begun.
+  Reproduced against the merged code and re-verified after the fix.
+
 ## [0.10.0] — 2026-07-27
 
 A large feature release: sessions gain structure (projects, memory, compaction), the agent
@@ -195,7 +231,8 @@ not start on any machine other than the one that built it.
 Initial release: Claude Code–style terminal UI, coding agent with file/shell/web tools, and
 the OmniRoute gateway bundled as an in-app sidecar.
 
-[Unreleased]: https://github.com/VedSoni-dev/omniwork/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/VedSoni-dev/omniwork/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/VedSoni-dev/omniwork/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/VedSoni-dev/omniwork/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/VedSoni-dev/omniwork/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/VedSoni-dev/omniwork/compare/v0.8.0...v0.9.0

@@ -99,6 +99,7 @@ class Gateway {
 
   async start() {
     this.status("boot", "Launching OmniRoute…");
+    this._stopped = false;
 
     if (await this.#adoptRunning()) {
       this.ready = true;
@@ -154,15 +155,22 @@ class Gateway {
     // but never turn healthy. If the first boot times out, quarantine the DB
     // and try once more with a fresh one.
     for (let attempt = 0; ; attempt++) {
+      // stop() may have landed while we were awaiting above (the watchdog can be
+      // mid-restart when the app quits). Spawning now would strand a gateway on
+      // the port with nobody left to kill it.
+      if (this._stopped) throw new Error("gateway start aborted by shutdown");
       this.#spawnServer(serverEntry, omniDir, env);
       try {
         await this.#waitHealthy();
+        if (this._stopped) { this.#killProc(); throw new Error("gateway start aborted by shutdown"); }
         this.#watchdog();
         return this.baseUrl;
       } catch (e) {
-        this.stop();
+        // #killProc, not stop(): this is a retry, not a shutdown, so it must not
+        // latch the abort flag that stop() sets.
+        this.#killProc();
         const db = path.join(gwDataDir, "storage.sqlite");
-        if (attempt === 0 && fs.existsSync(db)) {
+        if (!this._stopped && attempt === 0 && fs.existsSync(db)) {
           this.status("boot", "Recovering gateway storage…");
           try { fs.renameSync(db, db + ".corrupt-" + Date.now() + ".bak"); } catch {}
           continue;
@@ -197,8 +205,9 @@ class Gateway {
   // transparently since the base URL never changes.
   #watchdog() {
     clearInterval(this._watch);
+    if (this._stopped) return; // shutting down — do not resurrect the engine
     this._watch = setInterval(async () => {
-      if (this._restarting || (await this.#adoptRunning())) return;
+      if (this._stopped || this._restarting || (await this.#adoptRunning())) return;
       this._restarting = true;
       this.ready = false;
       this.adopted = false;
@@ -241,7 +250,16 @@ class Gateway {
   }
 
   stop() {
+    // Set before anything else: an in-flight start() checks this to avoid
+    // spawning a gateway we would then have no handle on.
+    this._stopped = true;
     clearInterval(this._watch);
+    this.#killProc();
+  }
+
+  // Tear down the child process without signalling shutdown intent, so start()
+  // can reuse it between retry attempts.
+  #killProc() {
     const proc = this.proc;
     this.proc = null;
     this.ready = false;
