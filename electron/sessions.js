@@ -181,7 +181,7 @@ class SessionManager {
     if (!sess) return;
     if (type === "error") sess.status = "error";
     else if (type === "done" || type === "aborted") sess.status = "done";
-    if (type !== "assistant_delta" && type !== "tool_stream" && type !== "thinking" && type !== "approval_request" && type !== "context") {
+    if (type !== "assistant_delta" && type !== "tool_stream" && type !== "thinking" && type !== "approval_request" && type !== "context" && type !== "stats") {
       sess.transcript.push({ type, ...payload });
       if (sess.transcript.length > 4000) sess.transcript.splice(0, 1000);
     }

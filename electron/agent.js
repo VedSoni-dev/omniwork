@@ -111,6 +111,29 @@ class Agent {
     this.baseSystem = BASE_PROMPT + (canSpawn ? ORCHESTRATOR_EXTRA : "");
     this.messages = [{ role: "system", content: this.baseSystem }];
     this.aborted = false;
+    this.turnStats = null; // { startedAt, inTokens, outTokens, estimated } during a turn
+  }
+
+  // ── per-turn usage accounting ────────────────────────────────────
+  // Real API usage when the gateway reports it; chars/4 as a marked estimate
+  // when it doesn't. Every model call in the turn counts, compaction included.
+  #addUsage(usage, fallbackChars) {
+    const s = this.turnStats;
+    if (!s) return;
+    if (usage && (usage.completion_tokens != null || usage.prompt_tokens != null)) {
+      s.inTokens += usage.prompt_tokens || 0;
+      s.outTokens += usage.completion_tokens || 0;
+    } else {
+      s.outTokens += Math.ceil((fallbackChars || 0) / 4);
+      s.estimated = true;
+    }
+    this.emit("stats", this.#statsPayload());
+  }
+
+  #statsPayload() {
+    const s = this.turnStats;
+    if (!s) return {};
+    return { elapsedMs: Date.now() - s.startedAt, inTokens: s.inTokens, outTokens: s.outTokens, estimated: s.estimated };
   }
 
   // Read project instruction files from the workspace (like Claude Code's CLAUDE.md).
@@ -176,7 +199,9 @@ class Agent {
     });
     if (!res.ok) throw new Error(`Gateway ${res.status}`);
     const data = await res.json();
-    return data.choices?.[0]?.message?.content || "";
+    const content = data.choices?.[0]?.message?.content || "";
+    this.#addUsage(data.usage, content.length); // counts only while a turn is active
+    return content;
   }
 
   #emitContext() {
@@ -216,6 +241,10 @@ class Agent {
         tool_choice: "auto",
         temperature: 0.3,
         stream,
+        // Ask for exact usage in the final stream chunk (OpenAI-compatible).
+        // Providers that reject it fail the stream; callModel then falls back
+        // to non-streaming, which always reports usage.
+        ...(stream ? { stream_options: { include_usage: true } } : {}),
       }),
     });
     if (!res.ok) {
@@ -224,11 +253,14 @@ class Agent {
     }
     const ctype = res.headers.get("content-type") || "";
     if (stream && ctype.includes("event-stream") && res.body) {
-      return await this.#readStream(res.body);
+      const { message, usage } = await this.#readStream(res.body);
+      this.#addUsage(usage, (message.content || "").length + JSON.stringify(message.tool_calls || []).length);
+      return message;
     }
     const data = await res.json();
     const choice = data.choices && data.choices[0];
     if (!choice) throw new Error("No choices returned from gateway");
+    this.#addUsage(data.usage, ((choice.message && choice.message.content) || "").length);
     if (choice.message && choice.message.content) this.emit("assistant_delta", { chunk: choice.message.content });
     return choice.message;
   }
@@ -240,6 +272,7 @@ class Agent {
     const decoder = new TextDecoder();
     let buf = "";
     let content = "";
+    let usage = null;
     const toolCalls = [];
     while (true) {
       const { done, value } = await reader.read();
@@ -254,6 +287,7 @@ class Agent {
         if (data === "[DONE]") { try { reader.cancel(); } catch {} break; }
         let json;
         try { json = JSON.parse(data); } catch { continue; }
+        if (json.usage) usage = json.usage; // final chunk carries exact usage
         const choice = json.choices && json.choices[0];
         if (!choice) continue;
         const delta = choice.delta || {};
@@ -270,7 +304,7 @@ class Agent {
       }
     }
     const calls = toolCalls.filter(Boolean);
-    return { role: "assistant", content: content || "", tool_calls: calls.length ? calls : undefined };
+    return { message: { role: "assistant", content: content || "", tool_calls: calls.length ? calls : undefined }, usage };
   }
 
   // Build a diff preview for the approval prompt (file writes/edits).
@@ -324,6 +358,7 @@ class Agent {
     this.aborted = false;
     this.turnUndo = new Map();
     this.undoAvailable = false;
+    this.turnStats = { startedAt: Date.now(), inTokens: 0, outTokens: 0, estimated: false };
     // Refresh the system prompt with current project instructions (AGENTS.md, etc.).
     const mem = this.loadProjectMemory();
     this.messages[0] = {
@@ -340,7 +375,7 @@ class Agent {
     }
 
     for (let step = 0; step < MAX_STEPS; step++) {
-      if (this.aborted) { this.emit("aborted", {}); return; }
+      if (this.aborted) { this.emit("aborted", this.#statsPayload()); return; }
       // Auto-compact before the call would overflow; a failed summary degrades
       // to truncation inside compact(), never a crashed turn.
       try {
@@ -362,10 +397,10 @@ class Agent {
       const toolCalls = msg.tool_calls || [];
       this.messages.push({ role: "assistant", content: msg.content || "", tool_calls: toolCalls.length ? toolCalls : undefined });
 
-      if (!toolCalls.length) { this.emit("done", {}); return; }
+      if (!toolCalls.length) { this.emit("done", this.#statsPayload()); return; }
 
       for (const call of toolCalls) {
-        if (this.aborted) { this.emit("aborted", {}); return; }
+        if (this.aborted) { this.emit("aborted", this.#statsPayload()); return; }
         const name = call.function.name;
         let parsedArgs = {};
         try { parsedArgs = JSON.parse(call.function.arguments || "{}"); } catch { parsedArgs = {}; }

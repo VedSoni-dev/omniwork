@@ -143,13 +143,45 @@ function addToolCard(id, name, args) {
 function streamTool(id, chunk) { const t = toolEls.get(id); if (t && !t.isDiff) { t.body.style.display = "flex"; t.out.textContent += chunk; scrollDown(); } }
 function finishTool(id, result) { const t = toolEls.get(id); if (!t) return; if (t.spin) t.spin.remove(); t.dot.classList.add("done"); if (!t.isDiff && !t.out.textContent) { t.body.style.display = "flex"; t.out.textContent = result; } scrollDown(); }
 
+// ── turn stats (time + tokens, like Claude Code's spinner line) ────
+let turnStart = null, turnStats = null;
+const fmtTokens = (n) => (n >= 1000 ? (n / 1000).toFixed(1) + "k" : String(n));
+const fmtDur = (ms) => { const s = Math.max(0, Math.round(ms / 1000)); return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`; };
+function liveStatsText() {
+  if (turnStart == null) return "";
+  let t = fmtDur(Date.now() - turnStart);
+  if (turnStats && turnStats.outTokens) t += ` · ↓ ${turnStats.estimated ? "~" : ""}${fmtTokens(turnStats.outTokens)} tokens`;
+  return ` (${t})`;
+}
+function addStatsLine(ev, ok) {
+  if (ev.outTokens == null) return; // pre-stats transcripts
+  const e = document.createElement("div");
+  e.className = "statline";
+  e.innerHTML = `<span class="${ok ? "green" : "dim"}">${ok ? "✔" : "✕"}</span> ${fmtDur(ev.elapsedMs || 0)} · ↓ ${ev.estimated ? "~" : ""}${fmtTokens(ev.outTokens)} tokens`;
+  scroll.appendChild(e); scrollDown();
+}
+
 const GLYPHS = ["✻", "✳", "✶", "✽", "✢", "✦"];
-function startThinking() { stopThinking(); thinkingEl = document.createElement("div"); thinkingEl.className = "thinking"; thinkingEl.innerHTML = `<span class="glyph">✻</span> Working…`; scroll.appendChild(thinkingEl); scrollDown(); let i = 0; thinkTimer = setInterval(() => { const g = thinkingEl && thinkingEl.querySelector(".glyph"); if (g) g.textContent = GLYPHS[i++ % GLYPHS.length]; }, 260); }
+function startThinking() {
+  stopThinking();
+  thinkingEl = document.createElement("div");
+  thinkingEl.className = "thinking";
+  thinkingEl.innerHTML = `<span class="glyph">✻</span> Working…<span class="tstats dim"></span>`;
+  scroll.appendChild(thinkingEl); scrollDown();
+  let i = 0;
+  thinkTimer = setInterval(() => {
+    if (!thinkingEl) return;
+    const g = thinkingEl.querySelector(".glyph");
+    if (g) g.textContent = GLYPHS[i++ % GLYPHS.length];
+    const s = thinkingEl.querySelector(".tstats");
+    if (s) s.textContent = liveStatsText();
+  }, 260);
+}
 function stopThinking() { if (thinkTimer) { clearInterval(thinkTimer); thinkTimer = null; } if (thinkingEl) { thinkingEl.remove(); thinkingEl = null; } }
 
 function renderEvent(ev, live) {
   switch (ev.type) {
-    case "user": addUser(ev.content); break;
+    case "user": addUser(ev.content); if (live) { turnStart = Date.now(); turnStats = null; } break;
     case "assistant_delta": if (live) streamDelta(ev.chunk); break;
     case "assistant": if (!endStream(ev.content)) addAssistant(ev.content); break;
     case "system": addSystem(ev.content); break;
@@ -159,9 +191,13 @@ function renderEvent(ev, live) {
     case "tool_result": finishTool(ev.id, ev.result); break;
     case "thinking": if (live && !streamEl) startThinking(); break;
     case "context": if (live) updateCtxMeter(ev.pct); break;
+    case "stats": if (live) turnStats = ev; break;
     case "subagent": handleSubagent(ev); break;
     case "error": addError(ev.message); break;
-    case "done": case "aborted": if (live) { endStream(); stopThinking(); } break;
+    case "done": case "aborted":
+      if (live) { endStream(); stopThinking(); turnStart = null; turnStats = null; }
+      addStatsLine(ev, ev.type === "done");
+      break;
   }
 }
 
