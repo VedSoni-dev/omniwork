@@ -32,6 +32,7 @@
     "test:mcp": "node test/mcp.js",
     "test:scheduler": "node test/scheduler.js",
     "test:approvals": "node test/approvals.js",
+    "test:selection": "node test/selection.js",
     "mcp": "node electron/mcp-server.js"
   },
   "bin": {

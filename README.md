@@ -44,6 +44,8 @@ delegate** *inside* Claude Code or Codex.
 | 🔌 **MCP connections** | Plug in tools (filesystem, GitHub, Postgres, Slack…) via any stdio MCP server. Add from the UI. |
 | 🪙 **Delegate tool** | OmniWork is *also* an MCP server — let Claude Code / Codex offload grunt work to its free models. |
 | 🌐 **Web-aware** | `web_fetch` reads pages/APIs; `open_url` opens links in your browser. |
+| ✂️ **Select to quote** | Highlighting output copies it instantly; a pill (or `⌘L`) quotes it into the prompt as `> ` lines. |
+| 📋 **Collapsed pastes** | Paste 300 lines and the prompt shows `[Pasted text #1 +322 lines]` — the model still gets all of it. |
 | 🔒 **100% local** | Everything runs on your machine. The gateway never phones home. |
 | 🧩 **MIT, hackable** | Plain CommonJS, no build step for the UI. Fork it, ship it, sell it. |
 

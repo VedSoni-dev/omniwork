@@ -88,10 +88,16 @@ npm run test:smoke     # end-to-end: gateway -> agent -> file written on disk
 npm run test:cowork    # parallel sessions
 npm run test:features  # streaming, undo, approval
 npm run test:persist   # save/restore across restarts
+npm run test:selection # copy-on-select, "add to chat", collapsed pastes (real renderer)
 ```
 
 `test:boot` is the CI gate. The rest need network access and live free-provider
 availability, so they are run locally before a release.
+
+`test:selection` is the exception: it launches the app and drives the page through
+`OMNIWORK_UI_TEST`, so it needs a display but no network. It also reads the system
+clipboard to prove copy-on-select really wrote to it — that assertion is skipped
+off macOS/Linux.
 
 ## Building installers
 

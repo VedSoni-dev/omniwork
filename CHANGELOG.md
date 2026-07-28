@@ -9,6 +9,26 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Add to chat** — highlight any text in the transcript and a small pill offers to quote it
+  into the composer, or press `⌘L` / `Ctrl+L`. The quote lands in the prompt as visible `> `
+  lines you can read and edit before sending, dimmed by a highlight layer behind the
+  textarea.
+- **Collapsed pastes** — paste (or quote) more than a few lines and the prompt shows
+  `[Pasted text #1 +322 lines]` instead of a wall of text, the way Claude Code does. The body
+  is held aside and spliced back in on the way to the model.
+
+  The token is a single unit: one Backspace or Delete touching it removes the whole block
+  rather than nibbling it into unmatchable debris, so the keypress right after pasting undoes
+  the paste. Editing a token apart also drops its body — what gets sent is always what you
+  can see.
+
+  Once submitted the block opens under the prompt line, capped and scrollable like a tool
+  card, with a click to collapse it again. The bodies ride on the transcript event, so they
+  are still there after a restart.
+- **Copy on select** — highlighting text in the transcript copies it to the clipboard
+  immediately, the way a terminal does. Scoped to agent output: selections inside the
+  composer, project fields, and modals are left alone, since selecting there means editing.
+  Toggle with `/copy on|off`; the setting persists in `prefs.json`.
 - **`npm run connect`** — wires OmniWork into Claude Code as a delegate target: registers the
   `omniwork` MCP server for the current user and adds a section to the global
   `~/.claude/CLAUDE.md` describing when delegating is worth it.
