@@ -191,14 +191,30 @@ function writeClipboard(text) {
   try { require('node:child_process').execSync('pbcopy', { input: text }); return true; } catch { return false; }
 }
 
+// SIGTERM, never SIGKILL: main.js traps it to stop the gateway, which is
+// spawned detached and would otherwise outlive us as an orphan still holding
+// its port — the next launch adopts a dead engine and reports "engine error".
+function shutdown(child) {
+  return new Promise((resolve) => {
+    if (child.exitCode !== null || child.signalCode) return resolve();
+    const hard = setTimeout(() => { try { child.kill('SIGKILL'); } catch {} resolve(); }, 8000);
+    child.once('exit', () => { clearTimeout(hard); resolve(); });
+    try { child.kill('SIGTERM'); } catch { clearTimeout(hard); resolve(); }
+  });
+}
+
 (async () => {
   const scriptPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ow-sel-')), 'page.js');
   fs.writeFileSync(scriptPath, page);
   const clipboardTestable = writeClipboard(SENTINEL);
 
+  // Its own port and profile, so a test run can never collide with — or edit
+  // the prefs of — a copy of the app the developer has open.
+  const PORT = 20429;
+  const profile = path.join(os.tmpdir(), 'omniwork-selection-test');
   const electron = require.resolve('electron/cli.js');
-  const child = spawn(process.execPath, [electron, path.join(__dirname, '..')], {
-    env: { ...process.env, OMNIWORK_UI_TEST: scriptPath },
+  const child = spawn(process.execPath, [electron, path.join(__dirname, '..'), `--user-data-dir=${profile}`], {
+    env: { ...process.env, OMNIWORK_UI_TEST: scriptPath, OMNIWORK_GATEWAY_PORT: String(PORT) },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let buf = '';
@@ -206,17 +222,24 @@ function writeClipboard(text) {
   child.stderr.on('data', (d) => { buf += d; });
 
   const result = await new Promise((resolve) => {
-    const kill = setTimeout(() => { child.kill('SIGKILL'); resolve(null); }, 120_000);
+    const bail = setTimeout(() => { clearInterval(poll); resolve(null); }, 120_000);
     const poll = setInterval(() => {
       const m = buf.match(/\[ui-test\] (.+)/);
       const err = buf.match(/\[ui-test-error\] (.+)/);
-      if (m || err) {
-        clearInterval(poll); clearTimeout(kill);
-        // Let the renderer's last IPC (the /copy on prefs write) land.
-        setTimeout(() => { child.kill('SIGKILL'); resolve(m ? JSON.parse(m[1]) : { error: err[1] }); }, 500);
-      }
+      if (!m && !err) return;
+      clearInterval(poll); clearTimeout(bail);
+      // Let the renderer's last IPC (the /copy on prefs write) land.
+      setTimeout(() => resolve(m ? JSON.parse(m[1]) : { error: err[1] }), 500);
     }, 250);
   });
+  await shutdown(child);
+
+  // Prove we cleaned up after ourselves rather than leaving a spinning orphan.
+  let leaked = false;
+  if (process.platform !== 'win32') {
+    try { require('node:child_process').execFileSync('lsof', ['-nP', `-iTCP:${PORT}`, '-sTCP:LISTEN'], { stdio: 'pipe' }); leaked = true; } catch {}
+  }
+  if (leaked) console.log(`⚠ a gateway is still listening on ${PORT} — orphaned sidecar`);
 
   if (!result) { console.log('❌ FAILED — timed out waiting for the renderer'); process.exit(1); }
   console.log(JSON.stringify(result, null, 2));
@@ -245,7 +268,7 @@ function writeClipboard(text) {
     result.pillSuppressedInComposer && result.pillSuppressedInProjectField &&
     result.pillReshown && result.pillHiddenOnDeselect &&
     result.copyCommandFound && result.copyButtonWhenOff &&
-    clipboardOk;
+    clipboardOk && !leaked;
 
   console.log('\n' + (ok ? '✅ SELECTION TEST PASSED (copy-on-select + add to chat)' : '❌ FAILED'));
   process.exit(ok ? 0 : 1);
