@@ -9,6 +9,20 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 _Nothing yet._
 
+## [0.11.1] — 2026-07-29
+
+A gateway-stability fix.
+
+### Fixed
+
+- **The gateway could die of EPIPE when Electron went away.** Its stdout/stderr were piped to
+  the app, but the engine is deliberately built to outlive the process that started it (an
+  adopted gateway is reused across relaunches). Once the reader exited, the detached child took
+  EPIPE on its next write and Next.js went down with it — most visibly as an engine that
+  vanished right after an app relaunch. Output now goes to `/dev/null` in production; under
+  `OMNIWORK_DEV` it appends to `omniroute-sidecar.log` in the gateway data dir, which is
+  strictly more than before (the old pipe was read into a handler that only logged in dev).
+
 ## [0.11.0] — 2026-07-27
 
 Context features from Claude's project view, brought to a coding agent: attachments,
@@ -231,7 +245,8 @@ not start on any machine other than the one that built it.
 Initial release: Claude Code–style terminal UI, coding agent with file/shell/web tools, and
 the OmniRoute gateway bundled as an in-app sidecar.
 
-[Unreleased]: https://github.com/VedSoni-dev/omniwork/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/VedSoni-dev/omniwork/compare/v0.11.1...HEAD
+[0.11.1]: https://github.com/VedSoni-dev/omniwork/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/VedSoni-dev/omniwork/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/VedSoni-dev/omniwork/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/VedSoni-dev/omniwork/compare/v0.9.0...v0.9.1

@@ -181,17 +181,31 @@ class Gateway {
   }
 
   #spawnServer(serverEntry, omniDir, env) {
+    // Never pipe to us: the gateway is meant to outlive this process (see
+    // #adoptRunning), and a detached child writing to a pipe whose reader has
+    // exited takes EPIPE and dies. /dev/null by default; in DEV, append to a
+    // log file instead so the output is still there to read.
+    let stdio = ["ignore", "ignore", "ignore"];
+    let logFd = null;
+    if (process.env.OMNIWORK_DEV) {
+      try {
+        logFd = fs.openSync(path.join(this.dataDir, "omniroute-sidecar.log"), "a");
+        stdio = ["ignore", logFd, logFd];
+      } catch { /* keep ignore */ }
+    }
+
     // detached: gives the child its own process group so stop() can take down
     // any workers Next.js spawned, not just the parent.
     this.proc = spawn(this.nodeBinary, [serverEntry], {
       cwd: path.join(omniDir, "dist"),
       env,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio,
       detached: process.platform !== "win32",
     });
 
-    this.proc.stdout.on("data", (d) => this.#log(d));
-    this.proc.stderr.on("data", (d) => this.#log(d));
+    // The child dup'd the fd; ours would otherwise leak on every watchdog respawn.
+    if (logFd !== null) { try { fs.closeSync(logFd); } catch {} }
+
     this.proc.on("exit", (code) => {
       this.ready = false;
       if (code && code !== 0) this.status("error", `Gateway exited (code ${code})`);
@@ -216,11 +230,6 @@ class Gateway {
       this._restarting = false;
     }, 20_000);
     if (this._watch.unref) this._watch.unref();
-  }
-
-  #log(d) {
-    const line = d.toString().trim();
-    if (line && process.env.OMNIWORK_DEV) console.log("[omniroute]", line);
   }
 
   async #waitHealthy(timeoutMs = 90000) {
