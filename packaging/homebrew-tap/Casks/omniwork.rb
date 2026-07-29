@@ -1,6 +1,6 @@
 cask "omniwork" do
-  version "0.10.0"
-  sha256 "20671ad1a3f03fe74591680b57e7304d1d87e1213ff1e0ab6510b9e83a26e0cb"
+  version "0.11.1"
+  sha256 "8f8892490e6c83ff7cca91c14374003e84253e94b75f0bee20938e524324a127"
 
   url "https://github.com/VedSoni-dev/omniwork/releases/download/v#{version}/OmniWork-#{version}-arm64.dmg"
   name "OmniWork"
