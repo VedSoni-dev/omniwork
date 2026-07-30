@@ -1,5 +1,5 @@
 "use strict";
-const { app, BrowserWindow, ipcMain, dialog, shell } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, shell, clipboard } = require("electron");
 const path = require("node:path");
 const os = require("node:os");
 const fs = require("node:fs");
@@ -24,7 +24,7 @@ let projects = null;
 let browser = null;
 let scheduler = null;
 
-const state = { model: "auto", approval: "auto", lastWorkspace: null, gateway: { state: "boot" } };
+const state = { model: "auto", approval: "auto", copyOnSelect: true, lastWorkspace: null, gateway: { state: "boot" } };
 
 function prefsPath() { return path.join(app.getPath("userData"), "prefs.json"); }
 function loadPrefs() {
@@ -32,7 +32,7 @@ function loadPrefs() {
   return {};
 }
 function savePrefs() {
-  try { fs.writeFileSync(prefsPath(), JSON.stringify({ workspace: state.lastWorkspace, model: state.model, approval: state.approval }, null, 2)); } catch {}
+  try { fs.writeFileSync(prefsPath(), JSON.stringify({ workspace: state.lastWorkspace, model: state.model, approval: state.approval, copyOnSelect: state.copyOnSelect }, null, 2)); } catch {}
 }
 function send(channel, payload) { if (win && !win.isDestroyed()) win.webContents.send(channel, payload); }
 function activeWorkspace() {
@@ -73,6 +73,7 @@ async function boot() {
   else if (prefs.workspace && fs.existsSync(prefs.workspace)) state.lastWorkspace = prefs.workspace;
   state.model = prefs.model || "auto";
   state.approval = ["auto", "ask", "edits", "plan"].includes(prefs.approval) ? prefs.approval : "auto";
+  state.copyOnSelect = prefs.copyOnSelect !== false;
 
   createWindow();
 
@@ -112,12 +113,18 @@ async function boot() {
 ipcMain.handle("app:state", () => ({
   model: state.model,
   approval: state.approval,
+  copyOnSelect: state.copyOnSelect,
   gateway: state.gateway,
   sessions: sessions ? sessions.list() : [],
   activeId: sessions ? sessions.activeId : null,
   mcp: mcp ? mcp.list() : [],
 }));
 ipcMain.handle("app:setModel", (_e, model) => { state.model = model; if (sessions) sessions.setModel(model); savePrefs(); return true; });
+// Copy-on-select goes through the main process: the renderer's async clipboard
+// API needs focus + a permission grant, and neither holds while a drag-select
+// is still in flight.
+ipcMain.handle("app:copy", (_e, text) => { const t = String(text || ""); if (t) clipboard.writeText(t); return true; });
+ipcMain.handle("app:setCopyOnSelect", (_e, on) => { state.copyOnSelect = !!on; savePrefs(); return state.copyOnSelect; });
 ipcMain.handle("gateway:openDashboard", () => { if (gateway) shell.openExternal(gateway.dashboardUrl()); return true; });
 ipcMain.handle("models:list", async () => {
   if (!gateway) return [];
@@ -140,9 +147,9 @@ ipcMain.handle("session:transcript", (_e, id) => {
   const s = sessions.sessions.get(id);
   return { events: sessions.transcript(id), pendingApproval: (s && s.pendingApproval) || null };
 });
-ipcMain.handle("session:send", async (_e, { id, text, images, label }) => {
+ipcMain.handle("session:send", async (_e, { id, text, images, label, pastes }) => {
   if (!sessions) { send("session:event", { sessionId: id, type: "error", message: "Engine still starting." }); return false; }
-  await sessions.send(id, text, images, label);
+  await sessions.send(id, text, images, label, pastes);
   return true;
 });
 ipcMain.handle("session:stop", (_e, id) => { if (sessions) sessions.stop(id); return true; });

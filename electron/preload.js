@@ -9,7 +9,7 @@ contextBridge.exposeInMainWorld("omniwork", {
   listSessions: () => ipcRenderer.invoke("session:list"),
   setActiveSession: (id) => ipcRenderer.invoke("session:setActive", id),
   getTranscript: (id) => ipcRenderer.invoke("session:transcript", id),
-  sendMessage: (id, text, images, label) => ipcRenderer.invoke("session:send", { id, text, images, label }),
+  sendMessage: (id, text, images, label, pastes) => ipcRenderer.invoke("session:send", { id, text, images, label, pastes }),
   stopSession: (id) => ipcRenderer.invoke("session:stop", id),
   removeSession: (id) => ipcRenderer.invoke("session:remove", id),
   pickWorkspace: (id) => ipcRenderer.invoke("session:pickWorkspace", id),
@@ -52,6 +52,8 @@ contextBridge.exposeInMainWorld("omniwork", {
   listModels: () => ipcRenderer.invoke("models:list"),
   setModel: (model) => ipcRenderer.invoke("app:setModel", model),
   openDashboard: () => ipcRenderer.invoke("gateway:openDashboard"),
+  copyText: (text) => ipcRenderer.invoke("app:copy", text),
+  setCopyOnSelect: (on) => ipcRenderer.invoke("app:setCopyOnSelect", on),
 
   on: (channel, cb) => {
     const allowed = new Set(["session:event", "sessions:list", "gateway:status", "mcp:list", "skills:list"]);

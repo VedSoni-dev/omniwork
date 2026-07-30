@@ -14,6 +14,7 @@ const stub = {
   listDir: async () => ({ root: null, entries: [] }), readFile: async () => ({ content: "" }),
   getState: async () => ({ model: "auto", sessions: [], activeId: null, mcp: [] }),
   setModel: async () => {}, openDashboard: async () => {}, on: () => () => {},
+  copyText: async () => {}, setCopyOnSelect: async () => {},
 };
 const api = window.omniwork || stub;
 // macOS uses a hidden-inset titlebar, so the rail needs room for the traffic lights.
@@ -21,6 +22,7 @@ document.documentElement.dataset.platform = api.platform || "web";
 const $ = (id) => document.getElementById(id);
 const scroll = $("scroll");
 const input = $("input");
+const hl = $("input-hl");
 const stopBtn = $("stop");
 
 let activeId = null;
@@ -34,6 +36,8 @@ let currentMcp = [];
 const mentions = new Set();
 const pastedImages = []; // data URLs
 const attachedFiles = []; // { name, content } — text files attached as context
+const pastes = new Map(); // n -> { text, lines } — bodies behind [Pasted text #n] tokens
+let pasteSeq = 0;
 
 const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const scrollDown = () => (scroll.scrollTop = scroll.scrollHeight);
@@ -72,7 +76,36 @@ function welcome() {
   $("w-cwd")?.addEventListener("click", () => api.pickWorkspace(activeId));
 }
 
-function addUser(text) { stopThinking(); endStream(); const e = document.createElement("div"); e.className = "blk user"; e.innerHTML = `<span class="caret">&gt;</span><span class="utext">${esc(text)}</span>`; scroll.appendChild(e); scrollDown(); }
+// Quoted lines stay dim and paste tokens stay collapsed in the transcript, so a
+// 300-line paste reads as one chip instead of burying the conversation.
+function userHtml(text) {
+  return String(text).split("\n").map((line) =>
+    /^>/.test(line) ? `<span class="uquote">${esc(line)}</span>`
+                    : esc(line).replace(/\[Pasted text #\d+ \+\d+ lines?\]/g, (m) => `<span class="upaste">${m}</span>`)
+  ).join("\n");
+}
+// The prompt line keeps the compact token; the body opens underneath it, capped
+// and scrollable like a tool card, so nothing you sent is hidden from you.
+function addUser(text, pastes) {
+  stopThinking(); endStream();
+  const e = document.createElement("div");
+  e.className = "blk user";
+  e.innerHTML = `<span class="caret">&gt;</span><span class="utext">${userHtml(text)}</span>`;
+  for (const p of pastes || []) {
+    if (!text.includes(`[Pasted text #${p.n} +`)) continue; // token was edited out before sending
+    const b = document.createElement("div");
+    b.className = "pasted";
+    b.innerHTML =
+      `<div class="pasted-head"><span class="tool-elbow">⎿</span><span>Pasted text #${p.n}</span>` +
+      `<span class="dim">· ${p.lines} line${p.lines === 1 ? "" : "s"}</span><span class="pasted-toggle">hide</span></div>` +
+      `<pre class="pasted-body">${esc(p.text)}</pre>`;
+    b.querySelector(".pasted-head").addEventListener("click", () => {
+      b.querySelector(".pasted-toggle").textContent = b.classList.toggle("collapsed") ? "show" : "hide";
+    });
+    e.appendChild(b);
+  }
+  scroll.appendChild(e); scrollDown();
+}
 function addAssistant(text) { stopThinking(); const e = document.createElement("div"); e.className = "blk assistant"; e.innerHTML = md(text); scroll.appendChild(e); scrollDown(); }
 function addError(msg) { stopThinking(); endStream(); const e = document.createElement("div"); e.className = "errline"; e.textContent = "✗ " + msg; scroll.appendChild(e); scrollDown(); }
 function addSystem(text) { const e = document.createElement("div"); e.className = "sysline"; e.textContent = text; scroll.appendChild(e); scrollDown(); }
@@ -184,7 +217,7 @@ function stopThinking() { if (thinkTimer) { clearInterval(thinkTimer); thinkTime
 
 function renderEvent(ev, live) {
   switch (ev.type) {
-    case "user": addUser(ev.content); if (live) { turnStart = Date.now(); turnStats = null; } break;
+    case "user": addUser(ev.content, ev.pastes); if (live) { turnStart = Date.now(); turnStats = null; } break;
     case "assistant_delta": if (live) streamDelta(ev.chunk); break;
     case "assistant": if (!endStream(ev.content)) addAssistant(ev.content); break;
     case "system": addSystem(ev.content); break;
@@ -445,20 +478,212 @@ window.addEventListener("dragover", (e) => e.preventDefault());
 window.addEventListener("dragenter", (e) => { e.preventDefault(); if (++dragDepth === 1 && e.dataTransfer?.types?.includes("Files")) document.body.classList.add("dropping"); });
 window.addEventListener("dragleave", () => { if (--dragDepth <= 0) { dragDepth = 0; document.body.classList.remove("dropping"); } });
 window.addEventListener("drop", (e) => { e.preventDefault(); dragDepth = 0; document.body.classList.remove("dropping"); handleFiles(e.dataTransfer.files); });
-// paste an image into the composer
+// paste into the composer: images become chips, long text collapses to a token
 input.addEventListener("paste", (e) => {
   const items = (e.clipboardData && e.clipboardData.items) || [];
+  let sawImage = false;
   for (const it of items) {
     if (it.type && it.type.startsWith("image/")) {
       const file = it.getAsFile();
       if (!file) continue;
+      sawImage = true;
       const reader = new FileReader();
       reader.onload = () => { pastedImages.push(reader.result); renderChips(); };
       reader.readAsDataURL(file);
       e.preventDefault();
     }
   }
+  if (sawImage) return;
+  const text = e.clipboardData && e.clipboardData.getData("text/plain");
+  if (text && isLong(text)) { e.preventDefault(); insertPaste(text); }
 });
+// ── composer text: quoted lines + collapsed pastes ─────────────────
+// Short text lands in the prompt as `> ` quoted lines you can see and edit.
+// Anything long collapses to a "[Pasted text #1 +322 lines]" token, exactly as
+// Claude Code does — the body is held aside and spliced back in on send.
+const PASTE_MAX_LINES = 6, PASTE_MAX_CHARS = 800;
+const PASTE_TOKEN = /\[Pasted text #(\d+) \+\d+ lines?\]/g;
+const lineCount = (t) => t.split("\n").length;
+const isLong = (t) => lineCount(t) > PASTE_MAX_LINES || t.length > PASTE_MAX_CHARS;
+const tidy = (t) => String(t).replace(/\r\n?/g, "\n").replace(/\s+$/, "");
+
+// Quoted lines and paste tokens are the only things the mirror styles; the rest
+// is plain text and must land at exactly the same coordinates as the textarea's.
+function syncHighlight() {
+  // Every line is wrapped and the newlines only join them: a bare leading
+  // newline would be swallowed by <pre> parsing and shift the mirror one line
+  // off the textarea, and a trailing one would add a phantom line.
+  hl.innerHTML = input.value.split("\n").map((line) =>
+    /^>/.test(line)
+      ? `<span class="q">${esc(line)}</span>`
+      : `<span>${esc(line).replace(PASTE_TOKEN, (m) => `<span class="pt">${m}</span>`)}</span>`
+  ).join("\n");
+  hl.scrollTop = input.scrollTop;
+}
+input.addEventListener("scroll", () => { hl.scrollTop = input.scrollTop; });
+
+function insertAtCaret(text) {
+  const a = input.selectionStart, b = input.selectionEnd, v = input.value;
+  input.value = v.slice(0, a) + text + v.slice(b);
+  const pos = a + text.length;
+  input.setSelectionRange(pos, pos);
+  grow(); input.focus();
+}
+
+function insertPaste(text) {
+  const t = tidy(text);
+  if (!t) return;
+  const n = ++pasteSeq, lines = lineCount(t);
+  pastes.set(n, { text: t, lines });
+  const before = input.value.slice(0, input.selectionStart);
+  const pad = before && !/\s$/.test(before) ? " " : "";
+  insertAtCaret(`${pad}[Pasted text #${n} +${lines} line${lines === 1 ? "" : "s"}] `);
+}
+
+// Appended rather than inserted at the caret: you quote first, then type at it.
+function insertQuote(text) {
+  const t = tidy(text);
+  if (!t) return;
+  if (isLong(t)) { insertPaste(t); return; }
+  const v = input.value;
+  input.value = v + (v && !v.endsWith("\n") ? "\n" : "") + t.split("\n").map((l) => "> " + l).join("\n") + "\n";
+  input.setSelectionRange(input.value.length, input.value.length);
+  grow(); input.focus();
+}
+
+// A paste token is one thing, not 27 characters. Backspace/Delete touching it
+// removes the whole block in a single keystroke rather than nibbling it into
+// unmatchable debris. The trailing space we inserted goes with it, so the
+// keypress right after pasting undoes the paste.
+function deleteTokenAtCaret(key) {
+  if (input.selectionStart !== input.selectionEnd) return false; // a real selection deletes normally
+  const pos = input.selectionStart, v = input.value;
+  for (const m of v.matchAll(PASTE_TOKEN)) {
+    const start = m.index;
+    const end = start + m[0].length + (v[start + m[0].length] === " " ? 1 : 0);
+    const inside = key === "Backspace" ? pos > start && pos <= end : pos >= start && pos < end;
+    if (!inside) continue;
+    input.value = v.slice(0, start) + v.slice(end);
+    input.setSelectionRange(start, start);
+    pastes.delete(Number(m[1]));
+    grow();
+    return true;
+  }
+  return false;
+}
+
+// Deleting a token from the prompt drops its body — the text is the source of
+// truth, so what gets sent is always what you can see.
+function expandPastes(text) {
+  return text.replace(PASTE_TOKEN, (m, n) => {
+    const p = pastes.get(Number(n));
+    return p ? p.text : m;
+  });
+}
+
+// ── selection: copy-on-select + "add to chat" ──────────────────────
+// Like Claude Code's terminal: highlighting transcript text copies it straight
+// to the clipboard, and a floating pill offers to quote it into the composer.
+let copyOnSelect = true;
+let selBar = null, lastCopied = "", toastTimer = null;
+const MOD = api.platform === "darwin" ? "⌘" : "Ctrl+";
+const EDITABLE = "input, textarea, [contenteditable=true]";
+
+// Only transcript text participates. Selections inside the composer, the
+// project-page fields, or a modal mean the user is editing, not quoting.
+function transcriptSelection() {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
+  const text = sel.toString();
+  if (!text.trim()) return null;
+  if (document.activeElement && document.activeElement.matches(EDITABLE)) return null;
+  const r = sel.getRangeAt(0);
+  const node = r.commonAncestorContainer;
+  const el = node.nodeType === 1 ? node : node.parentElement;
+  if (!el || !scroll.contains(el) || el.closest(EDITABLE)) return null;
+  return { text, rect: r.getBoundingClientRect() };
+}
+
+function flashToast(msg) {
+  let t = $("toast");
+  if (!t) { t = document.createElement("div"); t.id = "toast"; t.className = "toast"; document.body.appendChild(t); }
+  t.textContent = msg;
+  t.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove("show"), 1000);
+}
+
+function hideSelBar() { if (selBar) { selBar.remove(); selBar = null; } }
+function showSelBar(text, rect) {
+  hideSelBar();
+  selBar = document.createElement("div");
+  selBar.className = "selbar";
+  selBar.innerHTML =
+    `<button class="selbar-btn" data-act="add">❝ Add to chat <span class="kbd">${esc(MOD)}L</span></button>` +
+    (copyOnSelect ? "" : `<button class="selbar-btn" data-act="copy">Copy</button>`);
+  // mousedown + preventDefault keeps the highlight from flickering away as the
+  // pill is clicked; the text is captured here anyway, so it can't be lost.
+  selBar.addEventListener("mousedown", (e) => {
+    const b = e.target.closest(".selbar-btn");
+    if (!b) return;
+    e.preventDefault(); e.stopPropagation();
+    if (b.dataset.act === "add") addQuote(text);
+    else { copySelection(text); hideSelBar(); }
+  });
+  document.body.appendChild(selBar);
+  placeSelBar(rect);
+}
+function placeSelBar(rect) {
+  const w = selBar.offsetWidth, h = selBar.offsetHeight;
+  const left = Math.max(8, Math.min(rect.left + rect.width / 2 - w / 2, window.innerWidth - w - 8));
+  const above = rect.top - h - 8;
+  selBar.style.left = left + "px";
+  selBar.style.top = (above >= 8 ? above : Math.min(rect.bottom + 8, window.innerHeight - h - 8)) + "px";
+}
+// The transcript auto-scrolls while the agent streams. Follow the selection
+// instead of dismissing the pill out from under whoever is reaching for it.
+function repositionSelBar() {
+  if (!selBar) return;
+  const s = transcriptSelection();
+  if (!s) { hideSelBar(); return; }
+  const view = scroll.getBoundingClientRect();
+  if (s.rect.bottom < view.top || s.rect.top > view.bottom) { hideSelBar(); return; }
+  placeSelBar(s.rect);
+}
+
+function copySelection(text) { lastCopied = text; api.copyText?.(text); flashToast("✓ copied"); }
+
+function addQuote(text) {
+  insertQuote(text);
+  hideSelBar();
+  window.getSelection()?.removeAllRanges();
+}
+
+function onSelectionSettled() {
+  const s = transcriptSelection();
+  if (!s) { hideSelBar(); lastCopied = ""; return; }
+  if (copyOnSelect && s.text !== lastCopied) copySelection(s.text);
+  showSelBar(s.text, s.rect);
+}
+document.addEventListener("mouseup", () => setTimeout(onSelectionSettled, 0));
+document.addEventListener("keyup", (e) => { if (e.shiftKey || e.key === "Shift") setTimeout(onSelectionSettled, 0); });
+// The pill is anchored to viewport coordinates, so scrolling has to move it.
+scroll.addEventListener("scroll", repositionSelBar, { passive: true });
+window.addEventListener("resize", repositionSelBar);
+document.addEventListener("keydown", (e) => {
+  if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey) return;
+  if (e.key !== "l" && e.key !== "L") return;
+  const s = transcriptSelection();
+  if (s) { e.preventDefault(); addQuote(s.text); }
+});
+
+// announce:false is the restore-from-prefs path — no need to write them back.
+function setCopyOnSelect(on, { announce = true } = {}) {
+  copyOnSelect = !!on;
+  if (announce) api.setCopyOnSelect?.(copyOnSelect);
+  if (announce) addSystem(copyOnSelect ? "Copy-on-select is on — highlighting text copies it." : "Copy-on-select is off — use the Copy button or ⌘/Ctrl+C.");
+}
+
 async function buildIndex() { if (fileIndex) return fileIndex; const out = []; async function walk(rel, d) { if (d > 4 || out.length > 2000) return; const res = await api.listDir(rel); if (!res.entries) return; for (const e of res.entries) { if (e.type === "file") out.push(e.path); else await walk(e.path, d + 1); } } await walk(".", 0); return (fileIndex = out); }
 // One popup component for @-files, /-commands, and the folder menu.
 // items: [{ label, hint, onPick }]
@@ -492,7 +717,7 @@ async function showFilePop(q) {
   const matches = idx.filter((p) => p.toLowerCase().includes(q.toLowerCase())).slice(0, 20);
   openMenu(matches.map((p) => ({
     label: p.split("/").pop(), hint: p,
-    onPick: () => { mentions.add(p); renderChips(); input.value = input.value.replace(/@[^\s]*$/, "").trimEnd(); input.focus(); },
+    onPick: () => { mentions.add(p); renderChips(); input.value = input.value.replace(/@[^\s]*$/, "").trimEnd(); grow(); input.focus(); },
   })));
 }
 function showCommandPop(q) {
@@ -515,7 +740,13 @@ function applyCommand(c) {
 }
 
 // ── composer ───────────────────────────────────────────────────────
-function grow() { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 200) + "px"; }
+// Every path that changes input.value routes through grow(), so the mirror
+// re-renders here rather than at a dozen call sites.
+function grow() {
+  input.style.height = "auto";
+  input.style.height = Math.min(input.scrollHeight, 200) + "px";
+  syncHighlight();
+}
 input.addEventListener("input", () => {
   grow();
   const sm = input.value.match(/^\/([a-z0-9:_-]*)$/i);
@@ -525,6 +756,7 @@ input.addEventListener("input", () => {
 });
 input.addEventListener("keydown", (e) => {
   if (e.key === "Tab" && e.shiftKey) { e.preventDefault(); cycleApproval(); return; }
+  if ((e.key === "Backspace" || e.key === "Delete") && deleteTokenAtCaret(e.key)) { e.preventDefault(); return; }
   if (pendingApproval && !input.value.trim() && (e.key === "y" || e.key === "n")) { e.preventDefault(); pendingApproval(e.key === "y"); return; }
   if (mpop) { if (e.key === "ArrowDown") { e.preventDefault(); moveSel(1); return; } if (e.key === "ArrowUp") { e.preventDefault(); moveSel(-1); return; } if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); pickSel(); return; } if (e.key === "Escape") { e.preventDefault(); hidePop(); return; } }
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
@@ -538,9 +770,12 @@ document.addEventListener("keydown", (e) => {
 });
 $("approval-toggle").addEventListener("click", cycleApproval);
 async function send() {
-  const text = input.value.trim();
-  if ((!text && !mentions.size && !pastedImages.length) || !activeId) return;
-  if (text.startsWith("/")) { input.value = ""; grow(); hidePop(); handleSlash(text); return; }
+  // `shown` is what stays in the transcript — paste tokens still collapsed.
+  // `text` is what the model gets, with those bodies spliced back in.
+  const shown = input.value.trim();
+  const text = expandPastes(shown);
+  if ((!shown && !mentions.size && !pastedImages.length && !attachedFiles.length) || !activeId) return;
+  if (shown.startsWith("/")) { input.value = ""; grow(); hidePop(); handleSlash(shown); return; }
   // On a project page, a message starts a new session in that project.
   if (viewingProject) {
     const s = await api.createSession({ workspace: viewingProjectPath }).catch(() => null);
@@ -549,16 +784,20 @@ async function send() {
     await switchTo(s.id);
   }
   let full = text; if (mentions.size) full = `${text}\n\nReferenced files: ${[...mentions].map((p) => "@" + p).join(", ")}`;
+  let label = text !== shown ? shown : null;
   // Attached text files ride along for the model; the transcript shows only a label.
-  let label = null;
   if (attachedFiles.length) {
-    label = text + `  📎 ${attachedFiles.map((f) => f.name).join(", ")}`;
+    label = (label || shown) + `  📎 ${attachedFiles.map((f) => f.name).join(", ")}`;
     full += "\n\n" + attachedFiles.map((f) => `## Attached file: ${f.name}\n\`\`\`\n${f.content}\n\`\`\``).join("\n\n");
   }
+  // Only the tokens still in the prompt travel — an edited-out paste is gone.
+  const usedPastes = [...pastes.entries()]
+    .filter(([n]) => shown.includes(`[Pasted text #${n} +`))
+    .map(([n, p]) => ({ n, text: p.text, lines: p.lines }));
   const images = pastedImages.slice();
   const w = $("welcome"); if (w) w.remove();
-  input.value = ""; mentions.clear(); pastedImages.length = 0; attachedFiles.length = 0; renderChips(); grow(); hidePop();
-  await api.sendMessage(activeId, full, images, label);
+  input.value = ""; mentions.clear(); pastedImages.length = 0; attachedFiles.length = 0; pastes.clear(); pasteSeq = 0; renderChips(); grow(); hidePop();
+  await api.sendMessage(activeId, full, images, label, usedPastes);
 }
 
 // ── slash commands ─────────────────────────────────────────────────
@@ -594,6 +833,7 @@ const COMMANDS = [
     addSystem(r.error ? "✗ " + r.error : (r.installed.length ? `✓ Installed: ${r.installed.map((n) => "/" + n).join("  ")}` : "No SKILL.md directories found there."));
   } },
   { name: "approve", args: "auto|ask|edits|plan", desc: "Set approval mode (Shift+Tab cycles)", run: (arg) => setApproval(arg) },
+  { name: "copy", args: "on|off", desc: "Copy highlighted text automatically", run: (arg) => setCopyOnSelect(arg ? arg.toLowerCase() !== "off" : !copyOnSelect) },
 ];
 function allCommands() {
   const base = [...COMMANDS, ...RECIPES.map((r) => ({ name: "recipe:" + r.slug, desc: r.desc, run: () => runRecipe(r) }))];
@@ -815,6 +1055,7 @@ $("recipes-modal").addEventListener("click", (e) => { if (e.target.id === "recip
   if (st) {
     if (st.model) $("model").value = st.model;
     if (st.approval) setApproval(st.approval, { announce: false });
+    if (st.copyOnSelect !== undefined) setCopyOnSelect(st.copyOnSelect, { announce: false });
     if (st.mcp) renderMcp(st.mcp);
     populateModels(st.model);
     if (st.sessions && st.sessions.length) { renderSessions(st.sessions, st.activeId); await switchTo(st.activeId || st.sessions[0].id); }

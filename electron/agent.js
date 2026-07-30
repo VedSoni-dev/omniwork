@@ -90,7 +90,7 @@ function subLabel(name, args) {
 }
 
 class Agent {
-  constructor({ baseUrl, apiKey, model, workspace, emit, mcp, memory = null, skillsDir = null, browser = null, canSpawn = true, depth = 0, approvalMode = "auto", approver = null }) {
+  constructor({ baseUrl, apiKey, model, workspace, emit, mcp, memory = null, skillsDir = null, browser = null, canSpawn = true, depth = 0, approvalMode = "auto", approver = null, streaming = true }) {
     this.baseUrl = baseUrl.replace(/\/$/, "");
     this.apiKey = apiKey;
     this.model = model || "auto";
@@ -105,6 +105,7 @@ class Agent {
     this.depth = depth;
     this.approvalMode = approvalMode;   // "auto" | "ask"
     this.approver = approver;           // async (name, args) => boolean
+    this.streaming = streaming;         // false when nobody is watching the deltas
     this.lastText = "";
     this.turnUndo = new Map();           // path -> original content (or null if newly created)
     this.undoAvailable = false;
@@ -234,6 +235,12 @@ class Agent {
   }
 
   async callModel() {
+    // Headless callers (MCP delegation) throw the deltas away, so the streaming
+    // attempt buys nothing — and when free `auto` routing lands on a provider
+    // that returns an empty stream, it costs a whole second request per step.
+    // One request per step is dramatically faster there.
+    if (!this.streaming) return await this.#requestModel(false);
+
     // Try streaming for a live feel. Free `auto` routing hits many providers and
     // some return empty streams — if that happens, fall back to a reliable
     // non-streaming request.
@@ -354,6 +361,10 @@ class Agent {
         const child = new Agent({
           baseUrl: this.baseUrl, apiKey: this.apiKey, model: this.model,
           workspace: this.workspace, mcp: this.mcp, browser: this.browser, canSpawn: false, depth: this.depth + 1,
+          // Nobody reads a subagent's token-by-token output — only its tool
+          // labels and final summary. Skipping the stream attempt halves the
+          // worst-case request count across the whole fan-out.
+          streaming: false,
           emit: (type, payload) => {
             if (type === "tool_call") this.emit("subagent", { groupId, subId, kind: "tool", tool: subLabel(payload.name, payload.args) });
             else if (type === "assistant") this.emit("subagent", { groupId, subId, kind: "text", snippet: String(payload.content || "").slice(0, 160) });

@@ -32,10 +32,15 @@
     "test:mcp": "node test/mcp.js",
     "test:scheduler": "node test/scheduler.js",
     "test:approvals": "node test/approvals.js",
-    "mcp": "node electron/mcp-server.js"
+    "test:selection": "node test/selection.js",
+    "test:acp": "node test/acp.js",
+    "test:sidecar": "node test/sidecar.js",
+    "mcp": "node electron/mcp-server.js",
+    "acp": "node electron/acp-server.js"
   },
   "bin": {
-    "omniwork-mcp": "electron/mcp-server.js"
+    "omniwork-mcp": "electron/mcp-server.js",
+    "omniwork-acp": "electron/acp-server.js"
   },
   "dependencies": {
     "omniroute": "^3.8.48",

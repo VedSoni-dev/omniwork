@@ -7,7 +7,12 @@ const path = require("path");
 let fails = 0;
 const check = (name, ok) => { console.log((ok ? "✓" : "✗"), name); if (!ok) fails++; };
 
-const proc = spawn(process.execPath, [path.join(__dirname, "..", "electron", "mcp-server.js")], { stdio: ["pipe", "pipe", "pipe"] });
+// NO_PREWARM: initialize now boots the gateway in the background, which we don't
+// want a unit test spawning a real OmniRoute server for.
+const proc = spawn(process.execPath, [path.join(__dirname, "..", "electron", "mcp-server.js")], {
+  stdio: ["pipe", "pipe", "pipe"],
+  env: { ...process.env, OMNIWORK_NO_PREWARM: "1" },
+});
 const pending = new Map();
 let nextId = 1;
 let buf = "";

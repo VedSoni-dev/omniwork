@@ -47,6 +47,9 @@ delegate** *inside* Claude Code or Codex.
 | 🌐 **Browsing built in** | `web_search` + `browse_page` render in a real Chromium window — JavaScript pages work, no API key. |
 | 🔌 **MCP connections** | Plug in tools (filesystem, GitHub, Postgres, Slack…) via any stdio MCP server. Add from the UI. |
 | 🪙 **Delegate tool** | OmniWork is *also* an MCP server — let Claude Code / Codex offload grunt work to its free models. |
+| 🔗 **ACP agent** | Speaks Agent Client Protocol, so OpenClaw / acpx / Zed can drive OmniWork as a full coding agent. |
+| ✂️ **Select to quote** | Highlighting output copies it instantly; a pill (or `⌘L`) quotes it into the prompt as `> ` lines. |
+| 📋 **Collapsed pastes** | Paste 300 lines and the prompt shows `[Pasted text #1 +322 lines]` — the model still gets all of it. |
 | 🔒 **100% local** | Everything runs on your machine. The gateway never phones home. |
 | 🧩 **MIT, hackable** | Plain CommonJS, no build step for the UI. Fork it, ship it, sell it. |
 
@@ -148,6 +151,47 @@ matters — free models drift on instruction details.
 Treat the returned summary as a **claim, not evidence**, and verify before calling the work done.
 `npm run connect` installs this guidance so your agent applies it automatically.
 
+## Drive OmniWork from OpenClaw, Zed, or any ACP harness 🔌
+
+The MCP server makes OmniWork a *tool* your agent calls. The **ACP server** makes it a full
+**coding agent** that another harness drives — OpenClaw, [acpx](https://github.com/openclaw/acpx),
+Zed, Neovim, anything that speaks the
+[Agent Client Protocol](https://agentclientprotocol.com). The harness owns the UI, the approval
+prompts, and the transcript; OmniWork does the work on free models.
+
+```json
+// ~/.acpx/config.json  or  <repo>/.acpxrc.json
+{ "agents": { "omniwork": { "argv": ["npx", "-y", "omniwork-acp"] } } }
+```
+
+```json
+// openclaw.json
+{ "plugins": { "entries": { "acpx": { "enabled": true, "config": {
+  "agents": { "omniwork": { "command": "npx", "args": ["-y", "omniwork-acp"] } }
+} } } } }
+```
+
+Then `acpx omniwork "fix the flaky test"`, or spawn it as an OpenClaw subagent.
+
+What the harness gets:
+
+| | |
+|---|---|
+| **Streaming output** | Text, reasoning, and per-tool status as they happen |
+| **Native diffs** | `write_file` / `edit_file` arrive as ACP diffs, not "wrote 412 bytes" |
+| **Permission prompts** | Every gated tool call becomes `session/request_permission` — "allow always" flips the session to auto |
+| **The Agent Deck** | `spawn_subagents` shows up as *N* live parallel tool calls, not one opaque block |
+| **Skills as slash commands** | Installed skills are published via `available_commands_update` |
+| **Modes** | `ask` (default), `edits`, `auto`, `plan` — switch with `acpx omniwork set-mode plan` |
+| **Resumable sessions** | `session/load` replays the transcript, so a crashed harness picks up where it left off |
+
+Modes default to **ask** because ACP's whole point is that the client owns the permission
+boundary. Set `OMNIWORK_ACP_MODE=auto` if you'd rather it run unattended.
+
+By default OmniWork runs on its own bundled OmniRoute gateway (free models). To spend a different
+provider's budget instead, point it elsewhere — `OMNIWORK_BASE_URL`, `OMNIWORK_API_KEY`, and
+`OMNIWORK_MODEL` apply to both the ACP and MCP servers.
+
 ## Build from source
 
 Requires **Node.js 22+** (24 recommended).
@@ -201,6 +245,7 @@ Locally built `.app`s are unsigned — same right-click → Open dance as above.
               OmniRoute ──► 278+ providers (free tier default)
 
   mcp-server.js  ──►  Claude Code / Codex delegate here
+  acp-server.js  ──►  OpenClaw / acpx / Zed drive OmniWork here
 ```
 
 - On boot, `electron/sidecar.js` runs OmniRoute's prebuilt server on a **bundled Node** runtime
@@ -209,7 +254,9 @@ Locally built `.app`s are unsigned — same right-click → Open dance as above.
 - `electron/agent.js` runs an OpenAI-compatible tool-use loop; `spawn_subagents` fans out; MCP
   tools merge in namespaced as `mcp__<server>__<tool>`.
 - `electron/sessions.js` runs many agents in parallel; `electron/mcp.js` is the MCP client;
-  `electron/mcp-server.js` exposes OmniWork *as* an MCP server (the delegate tool).
+  `electron/mcp-server.js` exposes OmniWork *as* an MCP server (the delegate tool), and
+  `electron/acp-server.js` exposes it as an ACP agent. Both are headless stdio servers sharing
+  `electron/headless.js` for gateway, skills, and memory wiring.
 - Agent file tools are confined to the workspace folder you pick. See [SECURITY.md](SECURITY.md)
   for what that does and does not cover.
 
@@ -222,7 +269,11 @@ provider keys (stored encrypted, locally), or pick a specific model in the statu
 |-----|---------|---------|
 | `OMNIWORK_GATEWAY_PORT` | `20128` | Gateway port |
 | `OMNIWORK_WORKSPACE` | — | Open a folder on launch |
-| `OMNIWORK_MODEL` | `auto` | Pin a model (delegate server) |
+| `OMNIWORK_MODEL` | `auto` | Pin a model (MCP + ACP servers) |
+| `OMNIWORK_BASE_URL` | — | Run headless servers against another OpenAI-compatible endpoint |
+| `OMNIWORK_API_KEY` | `omniwork` | Key for `OMNIWORK_BASE_URL` |
+| `OMNIWORK_ACP_MODE` | `ask` | Starting approval mode for ACP sessions |
+| `OMNIWORK_DELEGATE_TIMEOUT_MS` | `600000` | Backstop before a stalled delegate returns partial work |
 | `OMNIWORK_NODE` | — | Node binary used to run the gateway in dev |
 | `OMNIWORK_NODE_VERSION` | build host's | Node version staged into packaged builds |
 | `OMNIWORK_DEV` | — | Devtools + verbose logs |
@@ -240,6 +291,8 @@ electron/
   tools.js        file/shell/web tools (workspace-confined)
   mcp.js          MCP client (connect external tool servers)
   mcp-server.js   MCP server (delegate tool for Claude Code / Codex)
+  acp-server.js   ACP agent (OpenClaw / acpx / Zed drive OmniWork)
+  headless.js     shared bootstrap for both stdio servers
   preload.js      contextIsolation-safe IPC bridge
 renderer/         the terminal UI (index.html, styles.css, app.js)
 scripts/
@@ -248,7 +301,7 @@ scripts/
   connect.js      registers the MCP server and installs delegate guidance
   doctor.js       setup verification + repair
   gen-icon.js     dependency-free app-icon generator
-test/             boot · smoke · cowork · features · persist
+test/             boot · smoke · cowork · features · persist · mcp · acp · sidecar
 ```
 
 ## Documentation

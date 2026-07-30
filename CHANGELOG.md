@@ -7,7 +7,91 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+
+- **ACP server** — OmniWork now speaks the [Agent Client Protocol](https://agentclientprotocol.com)
+  (v1) over stdio, so any ACP harness can drive it as a full coding agent: OpenClaw, acpx, Zed,
+  Neovim. Where the MCP server makes OmniWork a *tool* your agent calls, this makes it an *agent*
+  another harness runs.
+
+  Register it with `{ "agents": { "omniwork": { "argv": ["npx","-y","omniwork-acp"] } } }` in
+  `~/.acpx/config.json`, or under `plugins.entries.acpx.config.agents` in `openclaw.json`.
+
+  The agent loop's existing events map onto the protocol directly: text and reasoning stream as
+  message chunks, every tool call reports `pending → in_progress → completed` with its ACP kind,
+  and `write_file`/`edit_file` arrive as native diffs rather than a byte count. Gated tool calls
+  become `session/request_permission`, where "allow always" flips the session to auto mode instead
+  of silently prompting again. The Agent Deck surfaces as *N* live parallel tool calls, installed
+  skills are published as slash commands, and `session/load` replays a transcript so a crashed
+  harness resumes where it left off. Approval modes (`ask`, `edits`, `auto`, `plan`) are exposed as
+  ACP session modes; `ask` is the default, because in ACP the client owns the permission boundary.
+- **Add to chat** — highlight any text in the transcript and a small pill offers to quote it
+  into the composer, or press `⌘L` / `Ctrl+L`. The quote lands in the prompt as visible `> `
+  lines you can read and edit before sending, dimmed by a highlight layer behind the
+  textarea.
+- **Collapsed pastes** — paste (or quote) more than a few lines and the prompt shows
+  `[Pasted text #1 +322 lines]` instead of a wall of text, the way Claude Code does. The body
+  is held aside and spliced back in on the way to the model.
+
+  The token is a single unit: one Backspace or Delete touching it removes the whole block
+  rather than nibbling it into unmatchable debris, so the keypress right after pasting undoes
+  the paste. Editing a token apart also drops its body — what gets sent is always what you
+  can see.
+
+  Once submitted the block opens under the prompt line, capped and scrollable like a tool
+  card, with a click to collapse it again. The bodies ride on the transcript event, so they
+  are still there after a restart.
+- **Copy on select** — highlighting text in the transcript copies it to the clipboard
+  immediately, the way a terminal does. Scoped to agent output: selections inside the
+  composer, project fields, and modals are left alone, since selecting there means editing.
+  Toggle with `/copy on|off`; the setting persists in `prefs.json`.
+### Changed
+
+- **Delegation is substantially faster.** Three things were making an MCP `delegate` call take
+  far longer than the work justified:
+
+  The agent tried a streaming request first and fell back to a non-streaming one whenever the
+  stream came back empty — which free `auto` routing does often. Nobody reads the token stream
+  during delegation, so that fallback was buying nothing and costing a second full request on
+  every affected step, up to 40 steps per task. Headless callers now make exactly one request per
+  step, and parallel subagents never stream either, since only their tool labels and final summary
+  are ever read.
+
+  The OmniRoute gateway also booted lazily on the *first* delegate call, so the caller paid the
+  entire cold start — tens of seconds, or an engine download on lite builds — before any work
+  started. It now starts in the background at `initialize`, overlapping with the host reading the
+  tool list.
+
+  Finally, delegation reported nothing until it was completely finished, so a slow call and a hung
+  one looked identical. Delegate calls now emit `notifications/progress` per step and per finished
+  subagent, and a stalled turn is cut off at `OMNIWORK_DELEGATE_TIMEOUT_MS` (default 10 min) and
+  returns its partial work instead of hanging until the client gives up.
+- Both headless servers (MCP and ACP) share `electron/headless.js` for gateway, skills, memory,
+  and project wiring, and both honour `OMNIWORK_BASE_URL` / `OMNIWORK_API_KEY` to run against an
+  OpenAI-compatible endpoint other than the bundled gateway.
+
+### Fixed
+
+- **A wedged gateway no longer takes the app down with it.** If a previous run left an OmniRoute
+  process bound to port 20128 but no longer answering, every subsequent boot failed — and failed
+  slowly, then reported only `Gateway exited (code 1)`.
+
+  Two things were wrong. The health-check loop called `fetch` with no per-request timeout, so a
+  process that accepts the connection and never replies parked each poll for undici's 300 s
+  default; the loop's own 90 s deadline is only evaluated between iterations, so it never fired.
+  And a child that died instantly on `EADDRINUSE` was indistinguishable from one still starting
+  up, so the loop kept polling a port owned by somebody else.
+
+  Health checks are now bounded per request, and a dead child ends the wait immediately rather
+  than burning the full budget. The busy port is detected before spawning, by asking the OS
+  whether we can bind it: since 0.11.1 the child's output goes to `/dev/null` so a detached
+  gateway can outlive us without taking EPIPE, which means its `EADDRINUSE` is no longer ours to
+  read. When the port is held, the sidecar re-probes patiently first — the holder is often a
+  healthy gateway that was merely slower than the 2 s startup probe — and adopts it if it wakes
+  up. If it really is wedged, the sidecar starts on an OS-assigned free port instead.
+
+  It deliberately does not kill the holder. That process may not belong to OmniWork, and taking a
+  port by force isn't a decision to make on the user's behalf.
 
 ## [0.11.1] — 2026-07-29
 

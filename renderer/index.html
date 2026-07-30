@@ -37,7 +37,12 @@
           <div id="chips" class="chips"></div>
           <div class="inputbox" id="inputbox">
             <span class="prompt-caret">&gt;</span>
-            <textarea id="input" rows="1" placeholder="Try &quot;explain this project&quot; — / for commands · @ for a file"></textarea>
+            <!-- The textarea paints transparent text over #input-hl, which re-renders
+                 the same string with quoted lines dimmed and paste tokens accented. -->
+            <div class="inputwrap">
+              <pre id="input-hl" class="input-hl" aria-hidden="true"></pre>
+              <textarea id="input" rows="1" placeholder="Try &quot;explain this project&quot; — / for commands · @ for a file"></textarea>
+            </div>
             <button id="attach" class="attachbtn" title="Attach files or images (or drag &amp; drop)">📎</button>
             <button id="stop" class="stopbtn hidden" title="Stop (Esc)">esc ✕</button>
           </div>

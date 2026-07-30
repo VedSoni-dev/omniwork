@@ -239,14 +239,18 @@ class SessionManager {
 
   // `label` is what the transcript shows (e.g. prompt + attachment names);
   // `text` is the full model input, which may embed attached file contents.
-  async send(id, text, images, label) {
+  // `pastes` are the bodies behind any "[Pasted text #n]" tokens in the label —
+  // carried on the event so the transcript can expand them, now and on restore.
+  async send(id, text, images, label, pastes) {
     const sess = this.sessions.get(id);
     if (!sess) return;
     sess.status = "running";
     this.#pushList();
     const shown = (label || text) + (images && images.length ? `  📎 ${images.length} image${images.length > 1 ? "s" : ""}` : "");
-    sess.transcript.push({ type: "user", content: shown });
-    this.emit(id, "user", { content: shown });
+    const ev = { type: "user", content: shown };
+    if (pastes && pastes.length) ev.pastes = pastes;
+    sess.transcript.push(ev);
+    this.emit(id, "user", { content: shown, pastes: ev.pastes });
     try {
       await sess.agent.send(text, images);
     } catch (e) {
