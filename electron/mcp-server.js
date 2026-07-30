@@ -13,84 +13,52 @@
 // Speaks JSON-RPC 2.0 over stdio (newline-delimited). stdout is reserved for the
 // protocol; all logging goes to stderr.
 
-const path = require("node:path");
-const os = require("node:os");
 const fs = require("node:fs");
 const { ensureShellPath } = require("./shell-path");
-const { Gateway } = require("./sidecar");
 const { Agent } = require("./agent");
-const { ProjectManager } = require("./projects");
-const { BrowserManager } = require("./browser");
+const { agentEnv, browser, ensureGateway, prewarmGateway, SKILLS_DIR } = require("./headless");
 const skillsApi = require("./skills");
 
 ensureShellPath(); // MCP clients can launch us with a minimal environment too
 
 const log = (...a) => process.stderr.write("[omniwork-mcp] " + a.join(" ") + "\n");
-const PORT = Number(process.env.OMNIWORK_GATEWAY_PORT || 20128);
-const HOST = "127.0.0.1";
 
-// Same data dir as the desktop app: delegated agents share its installed
-// skills, saved memory, and project registry, so delegation gets everything
-// the user has taught OmniWork.
-function appDataDir() {
-  const h = os.homedir();
-  if (process.platform === "darwin") return path.join(h, "Library", "Application Support", "omniwork");
-  if (process.platform === "win32") return path.join(process.env.APPDATA || path.join(h, "AppData", "Roaming"), "omniwork");
-  return path.join(process.env.XDG_CONFIG_HOME || path.join(h, ".config"), "omniwork");
-}
-const DATA_DIR = appDataDir();
-const SKILLS_DIR = path.join(DATA_DIR, "skills");
-const GLOBAL_MEMORY_DIR = path.join(DATA_DIR, "memory");
-const browser = new BrowserManager(); // search + static page fetch (no Electron here)
-let projectsMgr = null;
-const projects = () => (projectsMgr ||= new ProjectManager(path.join(DATA_DIR, "projects")));
-
-function agentEnv(workspace) {
-  return {
-    skillsDir: SKILLS_DIR,
-    browser,
-    memory: { globalDir: GLOBAL_MEMORY_DIR, projectDir: projects().memoryDir(projects().forWorkspace(workspace).id) },
-  };
-}
-
-let gatewayInfo = null; // { baseUrl, apiKey }
-
-// Reuse a gateway already running (e.g. the desktop app); else boot our own.
-async function ensureGateway() {
-  if (gatewayInfo) return gatewayInfo;
-  try {
-    const res = await fetch(`http://${HOST}:${PORT}/v1/models`, { signal: AbortSignal.timeout(2500) });
-    if (res.ok) { gatewayInfo = { baseUrl: `http://${HOST}:${PORT}/v1`, apiKey: "omniwork" }; log("reusing running gateway"); return gatewayInfo; }
-  } catch {}
-  log("starting bundled gateway…");
-  const dataDir = path.join(os.homedir(), ".omniwork");
-  fs.mkdirSync(dataDir, { recursive: true });
-  const gw = new Gateway({ dataDir, onStatus: (s) => log("gateway", s.state, s.detail || "") });
-  await gw.start();
-  gatewayInfo = { baseUrl: gw.baseUrl, apiKey: gw.apiKey };
-  return gatewayInfo;
-}
+// A backstop, not a work budget: a free model that stalls mid-turn used to hang
+// the caller until *its* client timeout, with nothing to show for it. On expiry
+// we abort the agent and return whatever it managed to finish.
+const DELEGATE_TIMEOUT_MS = Number(process.env.OMNIWORK_DELEGATE_TIMEOUT_MS || 600_000);
 
 // Run one delegated task; capture a change log + final summary.
-async function runDelegate({ task, cwd, parallel }) {
-  const gw = await ensureGateway();
+async function runDelegate({ task, cwd, progress }) {
+  const gw = await ensureGateway(log);
   const workspace = cwd && fs.existsSync(cwd) ? cwd : process.cwd();
   const changes = [];
+  let steps = 0;
   const agent = new Agent({
     baseUrl: gw.baseUrl, apiKey: gw.apiKey, model: process.env.OMNIWORK_MODEL || "auto",
     workspace, canSpawn: true, ...agentEnv(workspace),
+    // The caller sees a single tool result, never the token stream.
+    streaming: false,
     emit: (type, p) => {
-      if (type === "tool_call") {
+      if (type === "thinking") progress(++steps, "thinking…");
+      else if (type === "tool_call") {
         if (p.name === "write_file") changes.push(`wrote ${p.args.path}`);
         else if (p.name === "edit_file") changes.push(`edited ${p.args.path}`);
         else if (p.name === "run_command") changes.push(`ran: ${String(p.args.command).slice(0, 80)}`);
+        progress(steps, `${p.name} ${String(p.args.path || p.args.command || p.args.query || "").slice(0, 60)}`.trim());
       }
     },
   });
-  await agent.send(task);
+
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; agent.abort(); }, DELEGATE_TIMEOUT_MS);
+  try { await agent.send(task); }
+  finally { clearTimeout(timer); }
+
   const summary = agent.lastText || "(no summary)";
   const changeLog = changes.length ? `\n\nChanges:\n- ${changes.join("\n- ")}` : "";
-  return `${summary}${changeLog}`;
+  const note = timedOut ? `\n\n[stopped after ${Math.round(DELEGATE_TIMEOUT_MS / 1000)}s — this is partial work]` : "";
+  return `${summary}${changeLog}${note}`;
 }
 
 const TOOLS = [
@@ -146,13 +114,22 @@ const TOOLS = [
   },
 ];
 
-async function callTool(name, args) {
-  if (name === "delegate") return await runDelegate({ task: args.task, cwd: args.cwd });
+async function callTool(name, args, progress = () => {}) {
+  if (name === "delegate") return await runDelegate({ task: args.task, cwd: args.cwd, progress });
   if (name === "delegate_parallel") {
-    const gw = await ensureGateway();
+    const gw = await ensureGateway(log);
     const workspace = args.cwd && fs.existsSync(args.cwd) ? args.cwd : process.cwd();
-    const agent = new Agent({ baseUrl: gw.baseUrl, apiKey: gw.apiKey, model: process.env.OMNIWORK_MODEL || "auto", workspace, canSpawn: true, ...agentEnv(workspace), emit: () => {} });
+    let done = 0;
     const tasks = (args.tasks || []).map((t, i) => ({ title: `task ${i + 1}`, prompt: t }));
+    const agent = new Agent({
+      baseUrl: gw.baseUrl, apiKey: gw.apiKey, model: process.env.OMNIWORK_MODEL || "auto",
+      workspace, canSpawn: true, ...agentEnv(workspace), streaming: false,
+      emit: (type, p) => {
+        if (type !== "subagent") return;
+        if (p.kind === "done") progress(++done, `${done}/${tasks.length} subagents finished`, tasks.length);
+        else if (p.kind === "tool") progress(done, `${p.title || "subagent"}: ${p.tool}`, tasks.length);
+      },
+    });
     return await agent.runSubagents(tasks);
   }
   if (name === "web_search") return await browser.search(args.query);
@@ -180,14 +157,26 @@ function replyErr(id, message) { sendMsg({ jsonrpc: "2.0", id, error: { code: -3
 async function handle(msg) {
   const { id, method, params } = msg;
   if (method === "initialize") {
-    reply(id, { protocolVersion: "2024-11-05", capabilities: { tools: { listChanged: false } }, serverInfo: { name: "omniwork", version: "0.5.0" } });
+    // Boot OmniRoute now, in the background. It used to start on the first
+    // delegate call, so the caller paid the whole cold-start (tens of seconds,
+    // or an engine download on lite builds) before any work began. Starting here
+    // overlaps it with the host reading our tool list and deciding what to do.
+    prewarmGateway(log);
+    reply(id, { protocolVersion: "2024-11-05", capabilities: { tools: { listChanged: false } }, serverInfo: { name: "omniwork", version: require("../package.json").version } });
   } else if (method === "notifications/initialized") {
     // no-op
   } else if (method === "tools/list") {
     reply(id, { tools: TOOLS });
   } else if (method === "tools/call") {
+    // Delegation is long-running; without progress the host just sees a silent
+    // block and no way to tell "working" from "hung".
+    const token = params && params._meta && params._meta.progressToken;
+    const progress = (n, message, total) => {
+      if (token === undefined || token === null) return;
+      sendMsg({ jsonrpc: "2.0", method: "notifications/progress", params: { progressToken: token, progress: n, ...(total ? { total } : {}), message } });
+    };
     try {
-      const text = await callTool(params.name, params.arguments || {});
+      const text = await callTool(params.name, params.arguments || {}, progress);
       reply(id, { content: [{ type: "text", text }] });
     } catch (e) {
       reply(id, { content: [{ type: "text", text: `Error: ${e.message}` }], isError: true });
