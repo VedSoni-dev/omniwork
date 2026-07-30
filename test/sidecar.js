@@ -7,7 +7,7 @@
 // test/smoke.js.
 const net = require("node:net");
 const http = require("node:http");
-const { probeGateway, freePort } = require("../electron/sidecar");
+const { probeGateway, portAvailable, freePort } = require("../electron/sidecar");
 
 let fails = 0;
 const check = (name, ok) => { console.log((ok ? "✓" : "✗"), name); if (!ok) fails++; };
@@ -47,6 +47,15 @@ const listen = (server) => new Promise((r) => server.listen(0, "127.0.0.1", () =
   const broken = http.createServer((req, res) => { res.writeHead(500); res.end(); });
   const brokenPort = await listen(broken);
   check("500 does not count as healthy", (await probeGateway(brokenPort, 2000)) === false);
+
+  // ── the pre-flight bind check ──
+  // Since 0.11.1 the child's output goes to /dev/null so a detached gateway can
+  // outlive us, which means we never see its EADDRINUSE. Asking the OS whether
+  // we could bind is what replaces reading that.
+  check("a port nobody holds is available", (await portAvailable(dead)) === true);
+  check("a wedged listener's port is not available", (await portAvailable(wedgedPort)) === false);
+  check("a healthy gateway's port is not available", (await portAvailable(healthyPort)) === false);
+  check("checking availability does not steal the port", (await portAvailable(dead)) === true);
 
   // ── freePort hands back something actually bindable ──
   const p = await freePort();

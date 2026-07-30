@@ -27,6 +27,18 @@ async function probeGateway(port, timeoutMs = 2000, host = HOST) {
   } catch { return false; }
 }
 
+// Could we actually bind this port, or is something else holding it? Asking the
+// OS directly is the only way left to tell: since the child's output goes to
+// /dev/null (so a detached gateway can outlive us without taking EPIPE), we
+// never get to read its EADDRINUSE on the way out.
+function portAvailable(port, host = HOST) {
+  return new Promise((resolve) => {
+    const srv = net.createServer();
+    srv.once("error", () => resolve(false));
+    srv.listen(port, host, () => srv.close(() => resolve(true)));
+  });
+}
+
 // Ask the OS for a port nobody is using. Only needed when our well-known port is
 // held by something we can't use and mustn't kill.
 function freePort() {
@@ -106,26 +118,15 @@ class Gateway {
     this.proc = null;
     this.ready = false;
     this.adopted = false; // true when we reused a gateway we didn't spawn
-    // Normally the well-known port, so other OmniWork processes can discover us.
-    // Only moves if that port turns out to be unusable (see start()).
+    // Normally the well-known port, so other OmniWork processes can discover and
+    // adopt us. Only moves if that port turns out to be unusable (see start()).
     this.port = PORT;
-    this.baseUrl = `http://${HOST}:${this.port}/v1`;
+    this.baseUrl = BASE_URL;
   }
 
   #setPort(port) {
     this.port = port;
     this.baseUrl = `http://${HOST}:${port}/v1`;
-  }
-
-  // Something already holds the port. Give it a chance to be a gateway that was
-  // simply slower to come up than the startup probe allowed.
-  async #probePatiently(port, budgetMs) {
-    const until = Date.now() + budgetMs;
-    while (Date.now() < until) {
-      if (await probeGateway(port, 3000)) return true;
-      await sleep(1000);
-    }
-    return false;
   }
 
   status(state, detail) {
@@ -139,8 +140,21 @@ class Gateway {
     return probeGateway(this.port, 2000);
   }
 
+  // Something already holds the port. Give it a chance to be a gateway that was
+  // simply slower to come up than the 2s startup probe allowed.
+  async #probePatiently(port, budgetMs) {
+    const until = Date.now() + budgetMs;
+    while (Date.now() < until) {
+      if (this._stopped) return false;
+      if (await probeGateway(port, 3000)) return true;
+      await sleep(1000);
+    }
+    return false;
+  }
+
   async start() {
     this.status("boot", "Launching OmniRoute…");
+    this._stopped = false;
 
     if (await this.#adoptRunning()) {
       this.ready = true;
@@ -177,10 +191,32 @@ class Gateway {
     const gwDataDir = path.join(this.dataDir, "omniroute");
     fs.mkdirSync(gwDataDir, { recursive: true });
 
+    // Nobody healthy answered above, so if we also cannot bind the port then
+    // something is sitting on it without serving — a gateway wedged by an
+    // earlier hard kill, usually. Spawning into that just dies on EADDRINUSE,
+    // and every later launch dies the same way until someone finds the process
+    // by hand. Two outs, in order of preference.
+    if (!(await portAvailable(this.port))) {
+      this.status("boot", "Port in use — looking for a healthy gateway…");
+      // It may simply have been slower to boot than the 2s startup probe.
+      if (await this.#probePatiently(this.port, 20_000)) {
+        this.ready = true;
+        this.adopted = true; // not ours to kill on shutdown
+        this.status("ready", "OmniRoute · free models");
+        this.#watchdog();
+        return this.baseUrl;
+      }
+      // Genuinely wedged. Move rather than kill: that process may not belong to
+      // OmniWork, and taking a port by force isn't a decision to make for the user.
+      const alt = await freePort();
+      this.#setPort(alt);
+      this.status("boot", `Port ${PORT} is blocked — starting on ${alt}…`);
+    }
+
     const env = {
       ...process.env,
       NODE_ENV: "production",
-      PORT: String(PORT),
+      PORT: String(this.port), // may differ from PORT if the well-known one was blocked
       HOSTNAME: HOST, // bind loopback only
       DATA_DIR: gwDataDir, // OmniRoute reads DATA_DIR for its storage + .env
       // Let the free "auto" pool fall back to the full pool if a sub-combo is empty.
@@ -192,85 +228,66 @@ class Gateway {
     // Ensure no stray Electron-as-node flag leaks into the child.
     delete env.ELECTRON_RUN_AS_NODE;
 
-    // Boot failures come in three flavours, each with its own recovery.
-    for (let attempt = 0; attempt < 4; attempt++) {
+    // Corrupt gateway storage (e.g. after a hard kill) makes the server listen
+    // but never turn healthy. If the first boot times out, quarantine the DB
+    // and try once more with a fresh one.
+    for (let attempt = 0; ; attempt++) {
+      // stop() may have landed while we were awaiting above (the watchdog can be
+      // mid-restart when the app quits). Spawning now would strand a gateway on
+      // the port with nobody left to kill it.
+      if (this._stopped) throw new Error("gateway start aborted by shutdown");
       this.#spawnServer(serverEntry, omniDir, env);
       try {
         await this.#waitHealthy();
+        if (this._stopped) { this.#killProc(); throw new Error("gateway start aborted by shutdown"); }
         this.#watchdog();
         return this.baseUrl;
       } catch (e) {
-        this.stop();
-
-        // 1. Someone else already holds the port, so our child died on
-        //    EADDRINUSE. Either a healthy gateway that was slower than the 2s
-        //    startup probe — adopt it — or a wedged process that will never
-        //    answer. In that second case move to another port rather than
-        //    failing: the holder may not be ours to kill, and killing an
-        //    unknown process to take its port is not a decision to make
-        //    automatically.
-        if (this._portBusy) {
-          this.status("boot", "Port in use — looking for a healthy gateway…");
-          if (await this.#probePatiently(this.port, 20_000)) {
-            this.ready = true;
-            this.adopted = true; // not ours to kill on shutdown
-            this.status("ready", "OmniRoute · free models");
-            this.#watchdog();
-            return this.baseUrl;
-          }
-          if (!this._movedPort) {
-            this._movedPort = true;
-            const p = await freePort();
-            this.#setPort(p);
-            this.status("boot", `Port ${PORT} is blocked — starting on ${p}…`);
-            continue;
-          }
-          throw new Error(`port ${PORT} is held by an unresponsive process, and the fallback port failed too`);
-        }
-
-        // 2. Corrupt gateway storage (e.g. after a hard kill) makes the server
-        //    listen but never turn healthy. Quarantine the DB and try once more.
+        // #killProc, not stop(): this is a retry, not a shutdown, so it must not
+        // latch the abort flag that stop() sets.
+        this.#killProc();
         const db = path.join(gwDataDir, "storage.sqlite");
-        if (!this._triedDbRecovery && fs.existsSync(db)) {
-          this._triedDbRecovery = true;
+        if (!this._stopped && attempt === 0 && fs.existsSync(db)) {
           this.status("boot", "Recovering gateway storage…");
           try { fs.renameSync(db, db + ".corrupt-" + Date.now() + ".bak"); } catch {}
           continue;
         }
-
-        // 3. Nothing we know how to fix.
         throw e;
       }
     }
-    throw new Error("gateway failed to start after repeated attempts");
   }
 
   #spawnServer(serverEntry, omniDir, env) {
-    this._portBusy = false;
     this._exited = false;
+    // Never pipe to us: the gateway is meant to outlive this process (see
+    // #adoptRunning), and a detached child writing to a pipe whose reader has
+    // exited takes EPIPE and dies. /dev/null by default; in DEV, append to a
+    // log file instead so the output is still there to read.
+    let stdio = ["ignore", "ignore", "ignore"];
+    let logFd = null;
+    if (process.env.OMNIWORK_DEV) {
+      try {
+        logFd = fs.openSync(path.join(this.dataDir, "omniroute-sidecar.log"), "a");
+        stdio = ["ignore", logFd, logFd];
+      } catch { /* keep ignore */ }
+    }
+
     // detached: gives the child its own process group so stop() can take down
     // any workers Next.js spawned, not just the parent.
     this.proc = spawn(this.nodeBinary, [serverEntry], {
       cwd: path.join(omniDir, "dist"),
-      env: { ...env, PORT: String(this.port) },
-      stdio: ["ignore", "pipe", "pipe"],
+      env,
+      stdio,
       detached: process.platform !== "win32",
     });
 
-    // The child announces EADDRINUSE on its way out; catching it here is what
-    // lets start() tell "port taken" apart from "server is broken".
-    const scan = (d) => {
-      if (d.toString().includes("EADDRINUSE")) this._portBusy = true;
-      this.#log(d);
-    };
-    this.proc.stdout.on("data", scan);
-    this.proc.stderr.on("data", scan);
+    // The child dup'd the fd; ours would otherwise leak on every watchdog respawn.
+    if (logFd !== null) { try { fs.closeSync(logFd); } catch {} }
+
     this.proc.on("exit", (code) => {
       this.ready = false;
-      this._exited = true;
-      // A recoverable startup failure is reported by start(), which knows what
-      // it's going to do about it. Only surface unexpected deaths here.
-      if (code && code !== 0 && !this._portBusy) this.status("error", `Gateway exited (code ${code})`);
+      this._exited = true; // lets #waitHealthy give up now instead of at the deadline
+      if (code && code !== 0) this.status("error", `Gateway exited (code ${code})`);
     });
     this.proc.on("error", (e) => { this._exited = true; this.status("error", e.message); });
   }
@@ -281,8 +298,9 @@ class Gateway {
   // transparently since the base URL never changes.
   #watchdog() {
     clearInterval(this._watch);
+    if (this._stopped) return; // shutting down — do not resurrect the engine
     this._watch = setInterval(async () => {
-      if (this._restarting || (await this.#adoptRunning())) return;
+      if (this._stopped || this._restarting || (await this.#adoptRunning())) return;
       this._restarting = true;
       this.ready = false;
       this.adopted = false;
@@ -293,25 +311,19 @@ class Gateway {
     if (this._watch.unref) this._watch.unref();
   }
 
-  #log(d) {
-    const line = d.toString().trim();
-    if (line && process.env.OMNIWORK_DEV) console.log("[omniroute]", line);
-  }
-
   async #waitHealthy(timeoutMs = 90000) {
     const started = Date.now();
     const url = `http://${HOST}:${this.port}/v1/models`;
     let sick = 0; // listening but 5xx — broken storage, not "still booting"
     while (Date.now() - started < timeoutMs) {
-      // Our child is already gone; polling the port for another 80s would only
-      // be asking whoever *else* holds it how they're doing.
-      if (this._exited) {
-        throw new Error(this._portBusy ? `port ${this.port} already in use` : "gateway exited during startup");
-      }
+      // Our child is already gone. Polling the port for another 80s would only
+      // be asking whoever else holds it how they are getting on.
+      if (this._exited) throw new Error("gateway exited during startup");
       try {
         // Without a per-request timeout, a process that accepts the connection
-        // and then never answers parks this fetch forever — the loop's own
-        // deadline is only checked between iterations, so it never fires.
+        // and then never answers parks this fetch for undici's 300s default —
+        // and the loop's own deadline is only checked between iterations, so it
+        // never gets to fire.
         const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
         if (res.ok || res.status === 401) {
           this.ready = true;
@@ -333,7 +345,16 @@ class Gateway {
   }
 
   stop() {
+    // Set before anything else: an in-flight start() checks this to avoid
+    // spawning a gateway we would then have no handle on.
+    this._stopped = true;
     clearInterval(this._watch);
+    this.#killProc();
+  }
+
+  // Tear down the child process without signalling shutdown intent, so start()
+  // can reuse it between retry attempts.
+  #killProc() {
     const proc = this.proc;
     this.proc = null;
     this.ready = false;
@@ -354,4 +375,4 @@ class Gateway {
   }
 }
 
-module.exports = { Gateway, PORT, BASE_URL, probeGateway, freePort };
+module.exports = { Gateway, PORT, BASE_URL, probeGateway, portAvailable, freePort };
