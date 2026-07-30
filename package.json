@@ -34,6 +34,7 @@
     "test:approvals": "node test/approvals.js",
     "test:selection": "node test/selection.js",
     "test:acp": "node test/acp.js",
+    "test:sidecar": "node test/sidecar.js",
     "mcp": "node electron/mcp-server.js",
     "acp": "node electron/acp-server.js"
   },
