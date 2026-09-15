@@ -89,11 +89,55 @@ function subLabel(name, args) {
   return `${label} ${String(a || "").slice(0, 40)}`.trim();
 }
 
+const hasContent = (m) => Boolean(m && ((m.content && m.content.trim()) || (m.tool_calls && m.tool_calls.length)));
+
+// Accepts an array or a comma-separated string; drops blanks, dups, and the primary.
+function normalizeFallbacks(list, primary) {
+  const raw = Array.isArray(list) ? list : String(list || "").split(",");
+  const out = [];
+  for (const m of raw) {
+    const id = String(m || "").trim();
+    if (id && id !== primary && !out.includes(id)) out.push(id);
+  }
+  return out;
+}
+
+// Which failures are worth trying another model for: auth, quota, a retired
+// id, a provider 5xx — the gateway is fine, that model is not. A 400 counts
+// only when it names the model (OmniRoute maps upstream "unsupported model"
+// to 400); a malformed request or an oversized context (413) would fail the
+// same way on every model, and replaying the whole conversation to each of
+// them helps nobody. A dead socket propagates untouched for the same reason.
+const MODEL_STATUS = new Set([401, 403, 404, 429, 500, 502, 503, 504]);
+const MODEL_WORDS = /\bmodel\b|unsupported|unavailable|not (found|supported)|no such|retired|combo/i;
+const isModelFailure = (err) => {
+  if (!err) return false;
+  if (err.modelFailure) return true;
+  const s = err.status;
+  if (!Number.isFinite(s)) return false;
+  if (MODEL_STATUS.has(s)) return true;
+  return (s === 400 || s === 422) && MODEL_WORDS.test(String(err.message || ""));
+};
+const failureSignature = (err) => `${err.status || 0}:${String(err.message || "").replace(/^[^:]*: /, "").slice(0, 160)}`;
+const tuning = require("./tuning");
+
 class Agent {
-  constructor({ baseUrl, apiKey, model, workspace, emit, mcp, memory = null, skillsDir = null, browser = null, canSpawn = true, depth = 0, approvalMode = "auto", approver = null, streaming = true }) {
+  constructor({ baseUrl, apiKey, model, fallbackModels = [], workspace, emit, mcp, memory = null, skillsDir = null, browser = null, canSpawn = true, depth = 0, approvalMode = "auto", approver = null, streaming = true, utilityModel, tiers, sessionId } = {}) {
     this.baseUrl = baseUrl.replace(/\/$/, "");
     this.apiKey = apiKey;
     this.model = model || "auto";
+    // Tried in order when `model` fails. A fallback that answers becomes the
+    // session's model from then on — one failed request per session, not one
+    // per step — and the switch is announced through `model_switch`.
+    this.fallbackModels = normalizeFallbacks(fallbackModels, this.model);
+    this.modelSwitches = []; // [{ from, to, reason }] — what callers report back
+    // Token economy (see electron/tuning.js). The session id is stable so the
+    // gateway keeps prompt-cache affinity; the utility model runs housekeeping;
+    // tiers run grunt work on the fast pool and escalate to the coding pool.
+    this.sessionId = sessionId || tuning.newSessionId();
+    this.utilityModel = utilityModel || tuning.utilityModel(this.model);
+    this.tiers = tiers !== undefined ? tiers : tuning.tiersFor(this.model);
+    this.cooling = new Map(); // model -> ms timestamp it is rate-limited until
     this.workspace = workspace;
     this.emit = emit; // (event, payload) => void
     this.mcp = mcp || null;
@@ -206,18 +250,24 @@ class Agent {
 
   // One-off model call outside the session's message history (summaries,
   // titles, memory capture).
-  async oneShot(prompt) {
-    const res = await fetch(`${this.baseUrl}/chat/completions`, {
-      method: "POST",
-      signal: AbortSignal.timeout(60_000),
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}` },
-      body: JSON.stringify({ model: this.model, messages: [{ role: "user", content: prompt }], temperature: 0.2 }),
-    });
-    if (!res.ok) throw new Error(`Gateway ${res.status}`);
-    const data = await res.json();
-    const content = data.choices?.[0]?.message?.content || "";
-    this.#addUsage(data.usage, content.length); // counts only while a turn is active
-    return content;
+  async oneShot(prompt, { model = this.utilityModel } = {}) {
+    const call = async (m) => {
+      const res = await fetch(`${this.baseUrl}/chat/completions`, {
+        method: "POST",
+        signal: AbortSignal.timeout(60_000),
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}`, "x-session-id": this.sessionId },
+        body: JSON.stringify({ model: m, messages: [{ role: "user", content: prompt }], temperature: 0.2 }),
+      });
+      if (!res.ok) { const e = new Error(`Gateway ${res.status}`); e.status = res.status; throw e; }
+      const data = await res.json();
+      const content = data.choices?.[0]?.message?.content || "";
+      this.#addUsage(data.usage, content.length); // counts only while a turn is active
+      return content;
+    };
+    // Housekeeping runs on the cheap utility model; if the gateway doesn't know
+    // that id (e.g. a raw OpenAI base URL), fall back to the session's model once.
+    try { return await call(model); }
+    catch (e) { if (model !== this.model && (e.status === 400 || e.status === 404)) return await call(this.model); throw e; }
   }
 
   #emitContext() {
@@ -234,31 +284,115 @@ class Agent {
     return force ? "Nothing to compact yet — the conversation is still short." : null;
   }
 
+  // One model round-trip, walking the fallback chain when the current model
+  // fails. Free catalogs go stale — an advertised model can 401 as "not
+  // supported" the day a provider retires it — and a pinned paid model can be
+  // out of quota. Either way the caller wants an answer, not a dead turn, so
+  // the next model in the chain gets the same request. When every model fails,
+  // the error names each one and why, which is what a driving harness needs to
+  // fix its configuration.
   async callModel() {
+    const now = Date.now();
+    const full = [this.model, ...this.fallbackModels.filter((m) => m !== this.model)];
+    // Skip models still cooling from a recent 429, unless that leaves nothing.
+    let chain = full.filter((m) => !(this.cooling.get(m) > now));
+    if (!chain.length) chain = full;
+    const failures = [];
+    let lastErr = null;
+    let lastSig = null;
+    let transientPrimary = false; // primary only hit 429 — keep it, don't switch
+    for (let i = 0; i < chain.length; i++) {
+      const model = chain[i];
+      const last = i === chain.length - 1;
+      let msg;
+      try { msg = await this.#callOnce(model); }
+      catch (err) {
+        if (this.aborted || !isModelFailure(err)) throw err;
+        failures.push(`${model}: ${err.message}`);
+        // A 429 is transient load, not a dead model: cool it for a minute and
+        // rotate to the next provider, but keep the primary for later steps so
+        // connected free tiers share the load instead of one draining first.
+        if (err.status === 429) {
+          this.cooling.set(model, Date.now() + 60_000);
+          if (model === this.model) transientPrimary = true;
+          lastErr = err; continue;
+        }
+        // Two models failing identically is the gateway talking, not the
+        // models; walking further would only replay the conversation again.
+        const sig = failureSignature(err);
+        if (lastSig !== null && sig === lastSig) { lastErr = err; failures.push("(stopped: the next model failed the same way — this is the gateway, not the model)"); break; }
+        lastSig = sig; lastErr = err;
+        continue;
+      }
+      // An empty reply is the other way a free provider "fails": another
+      // model while one is queued, otherwise an error — a blank "done" would
+      // hide it, and the caller may have an engine to fall back to.
+      if (!hasContent(msg)) {
+        failures.push(`${model}: empty response`);
+        if (!last) continue;
+        lastErr = new Error(`${model}: empty response`); lastErr.modelFailure = true;
+        break;
+      }
+      // Rotating past a rate-limited primary is temporary — don't make the
+      // switch permanent, so the primary is retried once its cooldown passes.
+      if (model !== this.model && !transientPrimary) this.#switchModel(model, failures.join("; "));
+      return msg;
+    }
+    // One model, no chain: the gateway's own error, exactly as before.
+    if (chain.length === 1 && lastErr) throw lastErr;
+    const err = new Error(`All models failed:\n- ${failures.join("\n- ")}`);
+    err.modelFailure = true;
+    throw err;
+  }
+
+  // Tiering: grunt work runs on the fast pool; when it stalls we bring in the
+  // coding pool for the rest of the turn. Both are free `auto` routing, so this
+  // trades a little latency for quality only when the cheap model is struggling.
+  #escalate(reason) {
+    if (!this.tiers || this.model !== this.tiers.fast) return;
+    this.model = this.tiers.strong;
+    this._tierFails = 0;
+    this.emit("system", { content: `⇱ escalating to the coding tier (${reason})` });
+  }
+
+  #switchModel(to, reason) {
+    const from = this.model;
+    this.model = to;
+    this.modelSwitches.push({ from, to, reason });
+    this.emit("model_switch", { from, to, reason });
+    this.emit("system", { content: `⇄ ${from} failed (${reason.slice(0, 160)}) — continuing on ${to}` });
+  }
+
+  async #callOnce(model) {
     // Headless callers (MCP delegation) throw the deltas away, so the streaming
     // attempt buys nothing — and when free `auto` routing lands on a provider
     // that returns an empty stream, it costs a whole second request per step.
     // One request per step is dramatically faster there.
-    if (!this.streaming) return await this.#requestModel(false);
+    if (!this.streaming) return await this.#requestModel(false, model);
 
     // Try streaming for a live feel. Free `auto` routing hits many providers and
     // some return empty streams — if that happens, fall back to a reliable
     // non-streaming request.
     let streamed = null;
-    try { streamed = await this.#requestModel(true); } catch { streamed = null; }
-    if (streamed && ((streamed.content && streamed.content.trim()) || (streamed.tool_calls && streamed.tool_calls.length))) {
-      return streamed;
+    try { streamed = await this.#requestModel(true, model); }
+    catch (err) {
+      // Auth and unknown-model rejections don't depend on streaming — don't pay
+      // a second request to learn the same thing. Anything else (a provider that
+      // rejects stream_options, a flaky 5xx) still gets the non-streaming retry.
+      if (err.status === 401 || err.status === 403 || err.status === 404) throw err;
+      streamed = null;
     }
-    return await this.#requestModel(false);
+    if (hasContent(streamed)) return streamed;
+    return await this.#requestModel(false, model);
   }
 
-  async #requestModel(stream) {
+  async #requestModel(stream, model = this.model) {
     const res = await fetch(`${this.baseUrl}/chat/completions`, {
       method: "POST",
       signal: this.abortCtl?.signal,
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}` },
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}`, "x-session-id": this.sessionId },
       body: JSON.stringify({
-        model: this.model,
+        model,
         messages: this.messages,
         tools: this.toolSchema(),
         tool_choice: "auto",
@@ -272,7 +406,9 @@ class Agent {
     });
     if (!res.ok) {
       const body = await res.text().catch(() => "");
-      throw new Error(`Gateway ${res.status}: ${body.slice(0, 500)}`);
+      const err = new Error(`Gateway ${res.status}: ${body.slice(0, 500)}`);
+      err.status = res.status;
+      throw err;
     }
     const ctype = res.headers.get("content-type") || "";
     if (stream && ctype.includes("event-stream") && res.body) {
@@ -282,7 +418,7 @@ class Agent {
     }
     const data = await res.json();
     const choice = data.choices && data.choices[0];
-    if (!choice) throw new Error("No choices returned from gateway");
+    if (!choice) { const err = new Error("No choices returned from gateway"); err.modelFailure = true; throw err; }
     this.#addUsage(data.usage, ((choice.message && choice.message.content) || "").length);
     if (choice.message && choice.message.content) this.emit("assistant_delta", { chunk: choice.message.content });
     return choice.message;
@@ -359,7 +495,8 @@ class Agent {
         const title = t.title || `subagent ${i + 1}`;
         this.emit("subagent", { groupId, subId, title, kind: "start" });
         const child = new Agent({
-          baseUrl: this.baseUrl, apiKey: this.apiKey, model: this.model,
+          baseUrl: this.baseUrl, apiKey: this.apiKey, model: this.model, fallbackModels: this.fallbackModels,
+          utilityModel: this.utilityModel, tiers: this.tiers,
           workspace: this.workspace, mcp: this.mcp, browser: this.browser, canSpawn: false, depth: this.depth + 1,
           // Nobody reads a subagent's token-by-token output — only its tool
           // labels and final summary. Skipping the stream attempt halves the
@@ -369,6 +506,7 @@ class Agent {
             if (type === "tool_call") this.emit("subagent", { groupId, subId, kind: "tool", tool: subLabel(payload.name, payload.args) });
             else if (type === "assistant") this.emit("subagent", { groupId, subId, kind: "text", snippet: String(payload.content || "").slice(0, 160) });
             else if (type === "error") this.emit("subagent", { groupId, subId, kind: "error", message: payload.message });
+            else if (type === "model_switch") this.emit("subagent", { groupId, subId, kind: "model", from: payload.from, to: payload.to });
           },
         });
         try { await child.send(t.prompt || t.task || title); }
@@ -388,6 +526,10 @@ class Agent {
     this.turnUndo = new Map();
     this.undoAvailable = false;
     this.turnStats = { startedAt: Date.now(), inTokens: 0, outTokens: 0, estimated: false };
+    // Start each turn on the fast tier (grunt work is cheap); escalation below
+    // brings in the coding tier if the fast model stalls.
+    if (this.tiers && [tuning.AUTO, this.tiers.fast, this.tiers.strong].includes(this.model)) this.model = this.tiers.fast;
+    this._tierFails = 0;
     // Refresh the system prompt with current project instructions (AGENTS.md, etc.).
     const mem = this.loadProjectMemory();
     this.messages[0] = {
@@ -412,6 +554,11 @@ class Agent {
         if (note) this.emit("system", { content: "⛁ " + note });
       } catch {}
       this.#emitContext();
+      // Escalate when the fast tier shows trouble late in the turn, or as a hard
+      // backstop deep in — not on raw step count, so a fast model steadily
+      // editing many files stays cheap instead of jumping to the coding tier.
+      if (step >= 8 && this._tierFails > 0) this.#escalate("stalling on the fast tier");
+      else if (step >= Math.floor(MAX_STEPS / 2)) this.#escalate("halfway through the step budget");
       this.emit("thinking", { step });
 
       let msg;
@@ -504,6 +651,8 @@ class Agent {
 
         this.emit("tool_result", { id: call.id, name, result });
         this.messages.push({ role: "tool", tool_call_id: call.id, content: result });
+        if (tuning.toolFailed(result)) { if (++this._tierFails >= 2) this.#escalate("two failed steps in a row"); }
+        else this._tierFails = 0;
       }
     }
     this.emit("error", { message: `Reached max steps (${MAX_STEPS}) without finishing.` });

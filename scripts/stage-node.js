@@ -82,6 +82,35 @@ async function downloadOfficialNode(version, platform, arch, cacheDir) {
   return binInside;
 }
 
+// OpenCode, the engine behind `opencode/…` models, staged the same way: the
+// official release archive for the TARGET platform/arch, so a cross-arch build
+// ships the right binary and the user never touches npm or their PATH.
+// Version: whatever package.json pins for opencode-ai. A failed fetch is not
+// fatal — the app downloads the same archive on first use.
+async function stageOpenCode(projectDir, platform, arch) {
+  if (arch !== "x64" && arch !== "arm64") { console.warn(`[stage-opencode] no OpenCode build for ${arch} — the app will offer a download on first use`); return; }
+  const t = { platform: platform === "win32" ? "windows" : platform, arch };
+  const pkg = `opencode-${t.platform}-${t.arch}`;
+  const exe = t.platform === "windows" ? "opencode.exe" : "opencode";
+  const outDir = path.join(projectDir, "build", "runtime", "opencode");
+  const engine = require(path.join(projectDir, "electron", "opencode-engine.js"));
+  try {
+    // Same verified download the app uses, for the TARGET package; cached per version.
+    const entry = engine.lockEntry(pkg);
+    const cacheDir = path.join(projectDir, "build", ".opencode-cache", `v${entry.version}-${pkg}`);
+    let cached = path.join(cacheDir, exe);
+    if (!fs.existsSync(cached)) cached = await engine.download({ pkg, dir: cacheDir, entry, onProgress: (p) => { if (p.detail) console.log(`[stage-opencode] ${p.detail}`); } });
+    fs.mkdirSync(outDir, { recursive: true });
+    const dest = path.join(outDir, exe);
+    fs.copyFileSync(cached, dest);
+    if (t.platform !== "windows") fs.chmodSync(dest, 0o755);
+    console.log(`[stage-opencode] bundled OpenCode v${entry.version} (${pkg}, integrity verified) -> ${dest}`);
+  } catch (err) {
+    console.warn(`[stage-opencode] could not stage OpenCode (${err.message}) — the app will download it on first use`);
+    fs.rmSync(outDir, { recursive: true, force: true });
+  }
+}
+
 module.exports = async function stageNode(context) {
   const projectDir = context.packager.projectDir || process.cwd();
   const platform = nodePlatform(context);
@@ -132,4 +161,7 @@ module.exports = async function stageNode(context) {
   }
 
   console.log(`[stage-node] bundled Node v${version} (${platform}-${arch}): ${src} -> ${dest}`);
+
+  await stageOpenCode(projectDir, platform, arch);
 };
+module.exports.stageOpenCode = stageOpenCode;

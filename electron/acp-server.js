@@ -21,8 +21,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { ensureShellPath } = require("./shell-path");
-const { Agent } = require("./agent");
-const { agentEnv, ensureGateway, prewarmGateway, DATA_DIR, SKILLS_DIR } = require("./headless");
+const { agentEnv, ensureGateway, prewarmGateway, resolveModelsLive, listModels, invalidateModels, noModelHint, providers, makeAgent, isNoModelFailure, engineFallbackModel, opencode, DATA_DIR, SKILLS_DIR } = require("./headless");
 const skillsApi = require("./skills");
 
 ensureShellPath(); // ACP clients can launch us with a minimal environment too
@@ -44,6 +43,12 @@ const MODES = [
 const DEFAULT_MODE = MODES.some((m) => m.id === process.env.OMNIWORK_ACP_MODE)
   ? process.env.OMNIWORK_ACP_MODE
   : "ask";
+
+const AUTH_METHODS = [
+  { id: "openrouter", name: "Connect OpenRouter (free models)", description: "Opens your browser to create a free OpenRouter key — 20 free models, 18 with tool calling. No key to paste." },
+  { id: "local", name: "Use a local model server", description: "Registers Ollama, LM Studio, llama.cpp, or vLLM if one is running on this machine." },
+  { id: "opencode", name: "Get OpenCode (free Zen models, no account)", description: "Downloads OpenCode's official release (~45 MB) into OmniWork's data folder — no npm, no PATH. OmniWork then runs OpenCode's own server as an engine for its free models: Nemotron 3.5 Lightning, MiMo V2.5, Big Pickle, Ling 3.0 Flash, Nemotron 3 Ultra." },
+];
 
 const TOOL_KIND = {
   list_dir: "read", read_file: "read", read_knowledge: "read", use_skill: "read",
@@ -143,13 +148,16 @@ function persist(sess) {
     fs.mkdirSync(STORE_DIR, { recursive: true });
     fs.writeFileSync(sessionFile(sess.id), JSON.stringify({
       id: sess.id, cwd: sess.cwd, mode: sess.mode,
+      model: sess.agent.model, fallbackModels: sess.agent.fallbackModels,
+      engineSession: sess.agent.isEngine ? sess.agent.sessionID : null,
       messages: sess.agent.messages.slice(-200),
     }));
   } catch (e) { log("persist failed:", e.message); }
 }
 
-async function buildSession({ id, cwd, mode, messages }) {
+async function buildSession({ id, cwd, mode, messages, model, fallbackModels, engineSession }) {
   const gw = await ensureGateway(log);
+  const models = await resolveModelsLive(gw, { model, fallbackModels });
   const sess = {
     id, cwd, mode: mode || DEFAULT_MODE,
     sink: () => {},                 // replaced per turn
@@ -157,20 +165,32 @@ async function buildSession({ id, cwd, mode, messages }) {
     pendingPermissions: new Set(),
     agent: null,
   };
-  sess.agent = new Agent({
+  sess.gw = gw;
+  attachAgent(sess, models.model, models.fallbackModels, { messages: Array.isArray(messages) && messages.length ? messages : null, sessionID: engineSession || null });
+  sessions.set(id, sess);
+  return sess;
+}
+
+// The session's agent: OmniWork's loop on the gateway, or the OpenCode engine
+// for `opencode/…` models. Rebuilt when a model change crosses that line.
+function attachAgent(sess, model, fallbackModels, { messages = null, sessionID = null } = {}) {
+  const gw = sess.gw;
+  sess.agent = makeAgent({
     baseUrl: gw.baseUrl,
     apiKey: gw.apiKey,
-    model: process.env.OMNIWORK_MODEL || "auto",
-    workspace: cwd,
+    model,
+    fallbackModels,
+    messages,   // the engine carries these into its first prompt; the gateway agent restores them below
+    sessionID,  // an OpenCode session to resume
+    workspace: sess.cwd,
     canSpawn: true,
     approvalMode: sess.mode,
     approver: (callId, name, args, preview) => sess.approve(callId, name, args, preview),
     emit: (type, payload) => sess.sink(type, payload),
-    ...agentEnv(cwd),
+    ...agentEnv(sess.cwd),
   });
-  if (Array.isArray(messages) && messages.length) sess.agent.messages = messages;
-  sessions.set(id, sess);
-  return sess;
+  if (!sess.agent.isEngine && Array.isArray(messages) && messages.length) sess.agent.messages = messages;
+  return sess.agent;
 }
 
 // Skills become ACP slash commands, so `/deep-research` in the client's prompt
@@ -189,6 +209,69 @@ function pushCommands(sess) {
       })),
     },
   });
+}
+
+// ── model selection ───────────────────────────────────────────────
+// The model is an ACP session config option (category "model"), so a client
+// with a model picker shows the gateway's catalog and `session/set_config_option`
+// switches it; the pre-config-option `session/set_model` is honored too. A
+// harness without either sends `_meta.model` (and `_meta.fallbackModels`) on
+// `session/new`. Whatever is chosen, the fallback chain still applies — a
+// pinned model that fails falls through to the next one, and the switch is
+// pushed back as a `config_option_update`.
+const MAX_MODEL_OPTIONS = 300;
+
+async function modelOption(sess) {
+  const current = sess.agent.model;
+  const chain = sess.agent.fallbackModels;
+  let catalog = [];
+  try { catalog = await listModels(await ensureGateway(log)); } catch {}
+  const options = [];
+  const seen = new Set();
+  let engine = [];
+  if (opencode.available()) { try { engine = await opencode.getEngine().models(); } catch {} }
+  for (const id of [current, ...chain, ...engine.map((m) => m.id), ...catalog]) {
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const n = chain.indexOf(id);
+    const notes = [];
+    if (n >= 0) notes.push(`Fallback #${n + 1}`);
+    if (id === "auto") notes.push("free pool, routed by the gateway");
+    if (opencode.isEngineModel(id)) notes.push("OpenCode engine · free, no account");
+    options.push({ value: id, name: id, ...(notes.length ? { description: notes.join(" · ") } : {}) });
+    if (options.length >= MAX_MODEL_OPTIONS) break;
+  }
+  return {
+    id: "model", name: "Model", category: "model", type: "select",
+    description: "Model the agent runs on. If it fails (retired id, provider key, quota) OmniWork continues on the next model in its fallback chain.",
+    currentValue: current, options,
+  };
+}
+
+async function configOptionsFor(sess) { return [await modelOption(sess)]; }
+
+// What a scripted harness reads instead of parsing the option list.
+function sessionMeta(sess) {
+  return { omniwork: { model: sess.agent.model, fallbackModels: sess.agent.fallbackModels } };
+}
+
+async function setModel(sess, modelId) {
+  const id = String(modelId == null ? "" : modelId).trim();
+  if (!id) throw new RpcError(-32602, "model id is required");
+  if (sess.running) throw new RpcError(-32000, "cannot change the model while a prompt is running");
+  const catalog = await listModels(await ensureGateway(log)).catch(() => []);
+  // Not an error: passthrough providers accept ids the catalog doesn't list.
+  if (catalog.length && !catalog.includes(id)) log(`model ${id} is not in the gateway catalog — passing it through`);
+  if (Boolean(sess.agent.isEngine) !== opencode.isEngineModel(id)) {
+    attachAgent(sess, id, sess.agent.fallbackModels.filter((m) => m !== id), { messages: sess.agent.messages });
+  } else {
+    sess.agent.model = id;
+    sess.agent.fallbackModels = sess.agent.fallbackModels.filter((m) => m !== id);
+  }
+  persist(sess);
+  const configOptions = await configOptionsFor(sess);
+  notify("session/update", { sessionId: sess.id, update: { sessionUpdate: "config_option_update", configOptions } });
+  return configOptions;
 }
 
 // ── the prompt turn ───────────────────────────────────────────────
@@ -215,6 +298,12 @@ async function runTurn(sess, blocks) {
 
         case "assistant_delta":
           if (p.chunk) up({ sessionUpdate: "agent_message_chunk", messageId, content: { type: "text", text: p.chunk } });
+          break;
+
+        // The OpenCode engine streams the model's reasoning separately; ACP has
+        // a native lane for it.
+        case "reasoning_delta":
+          if (p.chunk) up({ sessionUpdate: "agent_thought_chunk", messageId, content: { type: "text", text: p.chunk } });
           break;
 
         // `assistant` repeats what the deltas already streamed — dropping it
@@ -274,10 +363,13 @@ async function runTurn(sess, blocks) {
             const acpId = `t${++toolSeq}`;
             tools.set("sub:" + p.subId, { acpId, name: "subagent", args: {} });
             up({ sessionUpdate: "tool_call", toolCallId: acpId, title: `subagent: ${p.title}`, kind: "think", status: "in_progress" });
-          } else if (p.kind === "tool" || p.kind === "text" || p.kind === "error") {
+          } else if (p.kind === "tool" || p.kind === "text" || p.kind === "error" || p.kind === "model") {
             const t = tools.get("sub:" + p.subId);
             if (!t) break;
-            const line = p.kind === "tool" ? `→ ${p.tool}` : p.kind === "error" ? `error: ${p.message}` : String(p.snippet || "");
+            const line = p.kind === "tool" ? `→ ${p.tool}`
+              : p.kind === "error" ? `error: ${p.message}`
+              : p.kind === "model" ? `⇄ ${p.from} failed — continuing on ${p.to}`
+              : String(p.snippet || "");
             up({
               sessionUpdate: "tool_call_update", toolCallId: t.acpId, status: "in_progress",
               content: [{ type: "content", content: { type: "text", text: line + "\n" } }],
@@ -288,6 +380,12 @@ async function runTurn(sess, blocks) {
           }
           break;
         }
+
+        case "model_switch":
+          configOptionsFor(sess)
+            .then((configOptions) => up({ sessionUpdate: "config_option_update", configOptions }))
+            .catch(() => {});
+          break;
 
         case "context":
           up({
@@ -355,13 +453,30 @@ async function runTurn(sess, blocks) {
 
   try {
     await sess.agent.send(text, images);
+    // No gateway model answered, but OpenCode is installed: finish the turn on
+    // its engine and keep the session there. The client sees the switch as a
+    // message and a config_option_update, same as any other model change.
+    if (failure && isNoModelFailure(failure) && !sess.agent.isEngine && !sess.agent.aborted) {
+      const model = await engineFallbackModel();
+      if (model) {
+        const prevFailure = failure;
+        failure = null;
+        attachAgent(sess, model, [], { messages: sess.agent.messages });
+        up({ sessionUpdate: "agent_message_chunk", messageId: `sys${Date.now().toString(36)}`, content: { type: "text", text: `⇄ no gateway model answered (${prevFailure.split("\n")[0].slice(0, 120)}) — continuing on the OpenCode engine (${model})\n` } });
+        configOptionsFor(sess).then((configOptions) => up({ sessionUpdate: "config_option_update", configOptions })).catch(() => {});
+        await sess.agent.send(text, images);
+      }
+    }
   } finally {
     sess.sink = () => {};
     sess.approve = async () => false;
     persist(sess);
   }
 
-  if (failure) throw new RpcError(-32000, failure);
+  if (failure) {
+    if (/All models failed|Gateway (401|403|429|503)/.test(failure)) failure += "\n\n" + noModelHint();
+    throw new RpcError(-32000, failure);
+  }
   return { stopReason };
 }
 
@@ -380,23 +495,46 @@ const handlers = {
         mcpCapabilities: { http: false, sse: false },
       },
       agentInfo: { name: "omniwork", title: "OmniWork", version: VERSION },
-      authMethods: [],
+      // Not required — the gateway is local and keyless — but the way an ACP
+      // client can give OmniWork a free provider that actually stays up.
+      authMethods: AUTH_METHODS,
     };
   },
 
-  // No auth: the gateway is local and keyless. Declared so clients that probe
-  // the method get a clean result instead of "unknown method".
-  async authenticate() { return {}; },
+  // Sessions never *require* auth; `authenticate` is how a client connects a
+  // free provider. `openrouter` opens the user's browser for a one-click key
+  // (PKCE); `local` registers model servers running on this machine.
+  async authenticate(params) {
+    const methodId = params && params.methodId;
+    if (!methodId) return {};
+    if (!AUTH_METHODS.some((m) => m.id === methodId)) throw new RpcError(-32602, `unknown auth method: ${methodId}`);
+    const gw = await ensureGateway(log);
+    const result = await providers.connect(gw, methodId, { install: true, onUrl: (url) => log("open this URL to connect OpenRouter:", url) });
+    invalidateModels();
+    const chain = providers.suggestChain(await listModels(gw));
+    for (const sess of sessions.values()) sess.agent.fallbackModels = chain.filter((m) => m !== sess.agent.model);
+    log("connected", methodId, JSON.stringify(result).slice(0, 200));
+    return {};
+  },
 
   async "session/new"(params) {
     const cwd = params && params.cwd;
     if (!cwd || !path.isAbsolute(cwd)) throw new RpcError(-32602, "cwd must be an absolute path");
     if (!fs.existsSync(cwd)) throw new RpcError(-32602, `cwd does not exist: ${cwd}`);
     const id = `sess_${Date.now().toString(36)}_${++sessionSeq}`;
-    const sess = await buildSession({ id, cwd, mode: DEFAULT_MODE });
+    const meta = (params && params._meta) || {};
+    const sess = await buildSession({
+      id, cwd, mode: DEFAULT_MODE,
+      model: meta.model, fallbackModels: meta.fallbackModels ?? meta.fallback_models,
+    });
     persist(sess);
     setTimeout(() => pushCommands(sess), 0); // after we've returned the sessionId
-    return { sessionId: id, modes: { currentModeId: sess.mode, availableModes: MODES } };
+    return {
+      sessionId: id,
+      modes: { currentModeId: sess.mode, availableModes: MODES },
+      configOptions: await configOptionsFor(sess),
+      _meta: sessionMeta(sess),
+    };
   },
 
   async "session/load"(params) {
@@ -408,7 +546,10 @@ const handlers = {
       let saved = null;
       try { saved = JSON.parse(fs.readFileSync(sessionFile(id), "utf8")); } catch {}
       if (!saved) throw new RpcError(-32602, `unknown session: ${id}`);
-      sess = await buildSession({ id, cwd: cwd || saved.cwd, mode: saved.mode, messages: saved.messages });
+      sess = await buildSession({
+        id, cwd: cwd || saved.cwd, mode: saved.mode, messages: saved.messages,
+        model: saved.model, fallbackModels: saved.fallbackModels, engineSession: saved.engineSession,
+      });
     }
     // ACP requires the whole conversation to be replayed as updates *before* we
     // answer the request.
@@ -428,7 +569,11 @@ const handlers = {
       });
     }
     pushCommands(sess);
-    return { modes: { currentModeId: sess.mode, availableModes: MODES } };
+    return {
+      modes: { currentModeId: sess.mode, availableModes: MODES },
+      configOptions: await configOptionsFor(sess),
+      _meta: sessionMeta(sess),
+    };
   },
 
   async "session/prompt"(params) {
@@ -449,6 +594,22 @@ const handlers = {
     sess.agent.approvalMode = modeId;
     persist(sess);
     notify("session/update", { sessionId: sess.id, update: { sessionUpdate: "current_mode_update", currentModeId: modeId } });
+    return {};
+  },
+
+  async "session/set_config_option"(params) {
+    const sess = sessions.get(params && params.sessionId);
+    if (!sess) throw new RpcError(-32602, `unknown session: ${params && params.sessionId}`);
+    const configId = params && params.configId;
+    if (configId !== "model") throw new RpcError(-32602, `unknown config option: ${configId}`);
+    return { configOptions: await setModel(sess, params.value) };
+  },
+
+  // The pre-config-option way to pick a model; some clients still speak it.
+  async "session/set_model"(params) {
+    const sess = sessions.get(params && params.sessionId);
+    if (!sess) throw new RpcError(-32602, `unknown session: ${params && params.sessionId}`);
+    await setModel(sess, params && params.modelId);
     return {};
   },
 };

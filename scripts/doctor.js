@@ -101,6 +101,15 @@ function checkEngine() {
   else warn("not bundled — the app will download it on first launch (lite mode)");
 }
 
+function checkOpenCode() {
+  console.log("\nopencode engine (free Zen models)");
+  let oc = null;
+  try { oc = require(path.join(ROOT, "electron", "opencode-engine.js")); } catch (e) { warn(`could not load electron/opencode-engine.js: ${e.message}`); return; }
+  const bin = oc.findBinary();
+  if (bin) ok(`opencode binary: ${bin}`);
+  else warn(`not present yet — ${oc.INSTALL_COMMAND} downloads OpenCode v${oc.pinnedVersion()} (~45 MB), or the app offers it on first use`);
+}
+
 function checkIcon() {
   console.log("\napp icon");
   const icon = path.join(ROOT, "assets", "icon.png");
@@ -122,6 +131,7 @@ console.log("OmniWork doctor");
 checkNode();
 checkElectron();
 checkEngine();
+  checkOpenCode();
 checkIcon();
 
 console.log(failures ? `\n${failures} problem(s) need attention.\n` : "\nAll good — run `npm start`.\n");

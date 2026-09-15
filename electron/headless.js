@@ -12,6 +12,9 @@ const path = require("node:path");
 const { Gateway, PORT } = require("./sidecar");
 const { ProjectManager } = require("./projects");
 const { BrowserManager } = require("./browser");
+const providers = require("./providers");
+const { Agent } = require("./agent");
+const opencode = require("./opencode-engine");
 
 const HOST = "127.0.0.1";
 
@@ -93,8 +96,105 @@ async function ensureGateway(log = () => {}) {
   finally { booting = null; }
 }
 
+// ── models ────────────────────────────────────────────────────────
+// Which model a headless agent runs on, and what to try if it fails. An
+// explicit choice (a delegate call's `model`, an ACP session's config) wins
+// over the env, which wins over `auto` — the gateway's free pool. The fallback
+// chain is what lets a harness pin a specific coding model and still get an
+// answer when that model is retired, out of quota, or behind a provider key it
+// doesn't have: "free first, paid if needed" is spelled as a chain that ends in
+// a paid model.
+function parseModelList(v) {
+  const raw = Array.isArray(v) ? v : String(v || "").split(",");
+  return raw.map((m) => String(m || "").trim()).filter(Boolean);
+}
+
+function resolveModels({ model, fallbackModels } = {}) {
+  const primary = String(model || process.env.OMNIWORK_MODEL || "auto").trim() || "auto";
+  const chain = parseModelList(fallbackModels != null ? fallbackModels : process.env.OMNIWORK_MODEL_FALLBACKS);
+  return { model: primary, fallbackModels: chain.filter((m) => m !== primary) };
+}
+
+// The gateway's catalog, cached briefly: an ACP client asks for it on every
+// session, and it only changes when someone adds a provider key.
+let modelCache = { at: 0, ids: [] };
+async function listModels(gw) {
+  if (Date.now() - modelCache.at < 30_000) return modelCache.ids;
+  let ids = modelCache.ids;
+  try {
+    const res = await fetch(`${gw.baseUrl}/models`, {
+      headers: { Authorization: `Bearer ${gw.apiKey}` },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      ids = (data.data || []).map((m) => m && m.id).filter((id) => typeof id === "string" && id);
+    }
+  } catch {}
+  modelCache = { at: Date.now(), ids };
+  return ids;
+}
+
+// The chain a headless agent falls back to when the caller named none: the
+// best model of every connected free provider, then any local server. Set
+// OMNIWORK_MODEL_FALLBACKS (even to empty) to take over the decision.
+let chainCache = { at: 0, chain: [] };
+async function defaultFallbacks(gw) {
+  if (Date.now() - chainCache.at < 30_000) return chainCache.chain;
+  const chain = providers.suggestChain(await listModels(gw));
+  chainCache = { at: Date.now(), chain };
+  return chain;
+}
+
+// Connecting a provider changes both caches; call this right after.
+function invalidateModels() { modelCache = { at: 0, ids: [] }; chainCache = { at: 0, chain: [] }; }
+
+async function resolveModelsLive(gw, opts = {}) {
+  const r = resolveModels(opts);
+  const decided = opts.fallbackModels != null || process.env.OMNIWORK_MODEL_FALLBACKS != null;
+  if (!decided) r.fallbackModels = (await defaultFallbacks(gw)).filter((m) => m !== r.model);
+  return r;
+}
+
+// What to tell a caller whose every model failed. The built-in free pool is
+// the usual culprit, and the fix is one connection away.
+function noModelHint() {
+  const oc = opencode.available()
+    ? "OpenCode is installed, so `opencode/…` models are available as an engine — pick one, or let the fallback switch to it."
+    : `Getting OpenCode (${opencode.INSTALL_COMMAND}, a ~45 MB download) adds its free Zen models as an engine that needs no account at all.`;
+  return "No model answered. The gateway's built-in free pool is unreliable (its keyless endpoints get shut off upstream) — connect a real free provider once: run `npm run providers` in the omniwork checkout (or `npx omniwork-providers`), use the free-models panel in the OmniWork app, or the OpenRouter auth method on ACP. " + oc;
+}
+
+// ── agents ────────────────────────────────────────────────────────
+// `opencode/<model>` runs on the OpenCode engine (OpenCode's own server and
+// tools, on Zen's free models); anything else on OmniWork's loop via the gateway.
+function makeAgent(opts) {
+  return opencode.isEngineModel(opts.model) ? new opencode.OpenCodeAgent(opts) : new Agent(opts);
+}
+
+// A turn that ended because no model answered — as opposed to a tool error,
+// a cancel, or a model that answered badly.
+// A rate limit (429) is deliberately not one: it clears by itself, and it
+// must not silently move a pinned paid model's conversation to a free tier.
+const isNoModelFailure = (msg) => /All models failed|Gateway (401|403|404|503)|No choices returned|empty response/.test(String(msg || ""));
+
+// The engine's best free model, when OpenCode is installed; null otherwise.
+async function engineFallbackModel() {
+  // OMNIWORK_ENGINE_FALLBACK=off keeps a failed turn failed rather than
+  // finishing it on OpenCode's free tier.
+  if (/^(0|off|false|no)$/i.test(String(process.env.OMNIWORK_ENGINE_FALLBACK || ""))) return null;
+  if (!opencode.available()) return null;
+  try {
+    const list = await opencode.getEngine().models();
+    return list.length ? list[0].id : `${opencode.PREFIX}nemotron-3.5-lightning-free`;
+  } catch { return null; }
+}
+
+
 module.exports = {
   DATA_DIR, SKILLS_DIR, GLOBAL_MEMORY_DIR,
   browser, projects, agentEnv,
   ensureGateway, prewarmGateway,
+  resolveModels, resolveModelsLive, listModels, defaultFallbacks, invalidateModels, noModelHint, providers,
+  makeAgent, isNoModelFailure, engineFallbackModel, opencode,
 };

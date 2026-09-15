@@ -51,6 +51,8 @@ guide, load the \`omniwork\` skill.
 - \`delegate_parallel(tasks[], cwd)\` — independent subtasks fanned out at once; prefer over N delegate calls
 - \`web_search(query)\` / \`browse_page(url)\` — search and read pages through OmniWork (no API key)
 - \`list_skills()\` / \`install_skills(source)\` — see or extend what delegated agents can do
+- \`list_models()\` — what the gateway can route; pass \`model\` + \`fallback_models\` to \`delegate*\` to pin a coder and say what to try if it fails
+- \`list_providers()\` / \`connect_provider(provider)\` — free providers that stay up; \`openrouter\` opens the user's browser (ask first), \`local\` registers Ollama & co. It takes no API key: keys go in the app or \`npm run providers connect <provider> <key>\`, never through you.
 
 Rules of thumb: always pass \`cwd\`; delegated agents start **cold** (self-contained prompts only);
 ~30 s overhead per call, so don't delegate tiny things; not a sandbox — it edits real files with
@@ -100,6 +102,14 @@ Treat the summary as a claim, not evidence: run the test, execute the file, read
 reporting the work as done. If the result is wrong, either fix it yourself (small gaps) or
 re-delegate with the failure pasted into a sharper prompt (systematic misses).
 
+## Picking a model
+Default is \`auto\` (the free pool). To pin one, call \`list_models()\` and pass \`model\` — plus
+\`fallback_models\`, tried in order if it fails (retired id, missing provider key, quota). A
+fallback that answers is used for the rest of that delegation and the result carries a
+\`[model: …]\` note. "All models failed" lists each model and why: pick again from \`list_models()\`
+rather than retrying blindly. End the chain with a paid model the user has keyed when the task
+must complete.
+
 ## Skills & memory (what delegated agents know)
 Delegated agents load OmniWork's installed skills (Claude Code-compatible SKILL.md format) and
 its saved memory (global + per-project) — they improve as the user teaches OmniWork.
@@ -122,6 +132,17 @@ its saved memory (global + per-project) — they improve as the user teaches Omn
   the user to run \`npm run doctor\` in the omniwork checkout.
 - Empty/garbled results → free-model routing varies; retry once, then narrow the task or do it
   yourself. Do not silently ship unverified delegated output.
+- \`Gateway 401 … Model X is not supported\` → the free catalog retired that id; call
+  \`list_models()\` and pass a live one, or a \`fallback_models\` chain.
+- "All models failed" / "No model answered" → nothing durable is connected. Call
+  \`list_providers()\`, then either \`connect_provider("openrouter")\` (tell the user it opens their
+  browser) or \`connect_provider("local")\`, or ask the user to run \`npm run providers\`. Do not
+  paste API keys into chat when the user can connect them in the app instead.
+- \`opencode/<model>\` ids in \`list_models()\` run on the OpenCode engine (OpenCode's own server
+  and tools, free, no account). Pass one as \`model\` when the gateway pool is dry; delegations fall
+  through to it automatically when OpenCode is present (a clone or installer brings it). If it
+  isn't, tell the user to run \`npm run providers connect opencode\` (a ~45 MB download) or click
+  Download in the app's free-models panel — never fetch it yourself.
 `;
 }
 

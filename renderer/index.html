@@ -26,6 +26,7 @@
 
         <div class="rail-foot">
           <button id="recipes-btn" class="rail-link">⚡ recipes</button>
+          <button id="free-models" class="rail-link">🆓 free models</button>
           <button id="dashboard" class="rail-link">router dashboard ↗</button>
         </div>
       </aside>
@@ -110,6 +111,21 @@
           <button id="mem-reveal" class="btn-ghost">Show in Finder</button>
           <button id="mem-cancel" class="btn-ghost">Close</button>
           <button id="mem-save" class="btn-accent">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Free providers modal -->
+    <div id="providers-modal" class="modal hidden">
+      <div class="modal-box">
+        <div class="modal-title">🆓 Free models that stay up</div>
+        <div class="modal-sub dim">The built-in keyless pool comes and goes. A free account on any of these gives every session a model that answers — and becomes the fallback when <code>auto</code> fails.</div>
+        <div id="prov-status" class="prov-status dim"></div>
+        <div id="prov-list" class="prov-list"></div>
+        <div class="modal-divider"><span>on this machine</span></div>
+        <div id="prov-local" class="prov-list"></div>
+        <div class="modal-actions">
+          <button id="prov-close" class="btn-ghost">Close</button>
         </div>
       </div>
     </div>

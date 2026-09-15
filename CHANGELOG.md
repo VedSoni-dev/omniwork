@@ -7,6 +7,21 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [Unreleased]
+
+### Added
+
+- **Token economy — finish the task on fewer tokens** ([`electron/tuning.js`](electron/tuning.js)). Everyone now draws from the same free tiers, so the edge is tokens per finished task, not access. Six levers, all opt-outable by env:
+  - **Gateway compression on by default.** The sidecar turns on OmniRoute's RTK compression when the gateway is healthy. It rewrites tool-result text — the bulk of an agent's context — with cheap heuristics, no model call, and keeps failed-command output verbatim. Measured **9,812 → 3,170 tokens (68%)** on a realistic grep result. `OMNIWORK_COMPRESSION=off` disables it.
+  - **Housekeeping off the main model.** Titles, memory capture and compaction summaries run on the fast free pool (`auto/best-fast`), never the session's chosen model. `OMNIWORK_UTILITY_MODEL` overrides.
+  - **Step-level tiers.** With `auto`, grunt work runs on the fast pool and escalates to the coding pool (`auto/best-coding`) only when the fast model stalls — two failed steps, or six steps without finishing. A pinned model never tiers. `OMNIWORK_MODEL_TIERS=off` disables.
+  - **Rate-limit round-robin.** A 429 cools that model for a minute and rotates to the next connected free provider for the step, without a permanent switch — so stacked free tiers share the load instead of one draining first. Hard failures still switch as before.
+  - **Cheap delegate verifier.** An MCP delegation ends with a PASS/FAIL grade from the utility model, so the orchestrator re-delegates only when the work fell short — the expensive path is the caller re-reading and re-issuing.
+  - **Prompt-cache affinity.** Every request in a session carries a stable `x-session-id`, so the gateway keeps the unchanged system+history prefix cached upstream.
+  - **First-run nudge.** On first launch with nothing connected, the desktop app opens the free-models panel once so the OpenRouter catalog is one click away.
+
+## [0.12.0] — 2026-09-15
+
 ### Added
 
 - **ACP server** — OmniWork now speaks the [Agent Client Protocol](https://agentclientprotocol.com)
@@ -25,6 +40,50 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   skills are published as slash commands, and `session/load` replays a transcript so a crashed
   harness resumes where it left off. Approval modes (`ask`, `edits`, `auto`, `plan`) are exposed as
   ACP session modes; `ask` is the default, because in ACP the client owns the permission boundary.
+- **OpenCode as an engine** — OpenCode Zen's free models (Nemotron 3 Ultra, Nemotron 3.5
+  Lightning, MiMo V2.5, Ling 3.0 Flash, Big Pickle) are real, keyless and tool-capable, and Zen
+  serves them only to OpenCode itself. So OmniWork runs OpenCode: `electron/opencode-engine.js`
+  starts `opencode serve` once per process and `OpenCodeAgent` wraps a session in the same
+  interface as the gateway agent — text deltas, tool calls, permission prompts and errors all map
+  onto OmniWork's events (reasoning on its own lane, so it never reads as the reply), and the
+  workspace rides on the official `x-opencode-directory` header — which also scopes the event
+  stream, one subscription per workspace. Nemotron 3.5 Lightning is the default because it answers
+  in seconds; Nemotron 3 Ultra stays available by name for when strength beats speed.
+  `opencode/<model>` is a model like any other in the desktop menu, ACP config options and
+  `delegate`; and when no gateway model answers, desktop sessions, ACP turns and MCP delegations
+  finish on the engine and say so. Getting OpenCode never involves npm -g or a PATH edit: a clone
+  brings it in as an optional dependency (`opencode-ai`, the platform binary), the installers stage
+  it per platform at build time next to the bundled Node runtime, and the free-models panel,
+  `npm run providers connect opencode`, or the ACP `opencode` auth method download the same npm
+  package (~45 MB) into OmniWork's data folder, verified against the sha512 pinned in
+  `package-lock.json` before it runs — always from a user gesture, never an agent tool call.
+  OmniWork launches it by absolute path wherever it landed; the server it starts is protected by a
+  per-process secret; a mid-session switch to the engine carries the conversation with it;
+  `OMNIWORK_ENGINE_FALLBACK=off` opts out of the automatic switch.
+- **Free models that stay up** — the gateway's built-in keyless pool turned out to be a set of
+  unofficial endpoints (a scraped hobby site, a restaurant's chat widget, a CLI shim) that
+  providers shut off without notice; on 2026-09-15 every one of them was dead and `auto` returned
+  503 after 29 attempts. OmniWork now makes the durable kind of free one click away: a
+  *🆓 free models* panel in the app, `npm run providers` (also `npx omniwork-providers`), MCP tools
+  `list_providers` / `connect_provider`, and ACP auth methods `openrouter` / `local`. OpenRouter
+  connects through its PKCE flow (browser sign-in, no key to paste); Ollama Cloud, Kilo, Groq,
+  Cerebras, NVIDIA, Gemini and Mistral take a pasted key that is exercised once before it is kept;
+  Ollama, LM Studio, llama.cpp and vLLM are auto-detected and registered. Whatever is connected
+  becomes the default fallback chain for the MCP and ACP servers and for every desktop session,
+  live — strongest coder first, local last — so a retired free model is a hop, not a dead turn.
+  All of it goes through OmniRoute's own management API on loopback; nothing new is stored.
+- **Pick the model, keep the answer** — headless agents no longer live and die by one model id.
+  ACP sessions expose the gateway catalog as a `model` config option (`session/set_config_option`,
+  the older `session/set_model`, or `_meta.model` on `session/new`), and the MCP `delegate` tools
+  take `model` / `fallback_models`, with a `list_models` tool to choose from. Behind both is a
+  fallback chain (`OMNIWORK_MODEL_FALLBACKS`): when the chosen model fails — a free catalog entry
+  retired upstream, a provider key you don't have, a quota — the same request goes to the next
+  model, the one that answers sticks for the rest of the session, and the switch is reported back
+  (`config_option_update` on ACP, a `[model: …]` note on MCP results). When every model fails the
+  error names each one and why, instead of a bare `Gateway 401`. A harness can now say "this free
+  coder, else this paid one" and stop babysitting the catalog. A dead gateway is still reported as
+  such — no model on the same socket would do better — and a provider that merely rejects
+  streaming still gets its non-streaming retry on the same model.
 - **Add to chat** — highlight any text in the transcript and a small pill offers to quote it
   into the composer, or press `⌘L` / `Ctrl+L`. The quote lands in the prompt as visible `> `
   lines you can read and edit before sending, dimmed by a highlight layer behind the

@@ -1,4 +1,4 @@
-// Smoke test: the MCP server speaks JSON-RPC over stdio, lists all six tools,
+// Smoke test: the MCP server speaks JSON-RPC over stdio, lists all nine tools,
 // and the electron-free tools (list_skills, static browse_page) work. No
 // gateway boot — delegation tools are only listed, not called.
 const { spawn } = require("child_process");
@@ -38,7 +38,14 @@ const rpc = (method, params) => new Promise((resolve, reject) => {
 
   const list = await rpc("tools/list", {});
   const names = list.result.tools.map((t) => t.name).sort();
-  check("all six tools listed", names.join(",") === "browse_page,delegate,delegate_parallel,install_skills,list_skills,web_search");
+  check("all nine tools listed", names.join(",") === "browse_page,connect_provider,delegate,delegate_parallel,install_skills,list_models,list_providers,list_skills,web_search");
+  const connectTool = list.result.tools.find((t) => t.name === "connect_provider");
+  check("connect_provider warns that openrouter opens the browser", /OPENS THE USER'S BROWSER/.test(connectTool.description));
+  check("connect_provider takes no API key — a model must never be able to plant one", !("api_key" in connectTool.inputSchema.properties) && /takes no API key/.test(connectTool.description));
+  const delegateSchema = list.result.tools.find((t) => t.name === "delegate").inputSchema.properties;
+  check("delegate takes a model and a fallback chain", delegateSchema.model.type === "string" && delegateSchema.fallback_models.type === "array");
+  const parallelSchema = list.result.tools.find((t) => t.name === "delegate_parallel").inputSchema.properties;
+  check("delegate_parallel takes them too", parallelSchema.model.type === "string" && parallelSchema.fallback_models.type === "array");
   check("delegate description teaches when NOT to use it", /DON'T use/.test(list.result.tools.find((t) => t.name === "delegate").description));
   check("browse_page discloses static fetch", /static fetch/.test(list.result.tools.find((t) => t.name === "browse_page").description));
   check("every tool has a when-to-use description", list.result.tools.every((t) => t.description.length > 80));

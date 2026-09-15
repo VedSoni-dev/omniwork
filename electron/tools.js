@@ -7,7 +7,7 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 
 const MAX_READ_BYTES = 400 * 1024; // don't blow up context on huge files
-const MAX_OUTPUT_CHARS = 30000;
+const MAX_OUTPUT_CHARS = 48000;
 
 function confine(workspace, target) {
   const abs = path.resolve(workspace, target);
@@ -113,9 +113,15 @@ const TOOL_SCHEMA = [
   },
 ];
 
+// Keep the head AND the tail. A head-only cut drops the end of a command's
+// output — which is exactly where the error message and the [exit code N]
+// marker live — so the model (and the escalation heuristic) lose the signal
+// that the command failed. The gateway's RTK pass then compresses what remains.
 function truncate(s) {
   if (s.length <= MAX_OUTPUT_CHARS) return s;
-  return s.slice(0, MAX_OUTPUT_CHARS) + `\n… [truncated ${s.length - MAX_OUTPUT_CHARS} chars]`;
+  const tail = Math.min(8000, Math.floor(MAX_OUTPUT_CHARS / 4)); // room for errors + exit code
+  const head = MAX_OUTPUT_CHARS - tail;
+  return s.slice(0, head) + `\n… [truncated ${s.length - MAX_OUTPUT_CHARS} chars]\n` + s.slice(-tail);
 }
 
 // Prefer the user's login shell so commands see the same aliases, PATH and

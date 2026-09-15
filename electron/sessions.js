@@ -9,6 +9,7 @@ const os = require("node:os");
 const fs = require("node:fs");
 const path = require("node:path");
 const { Agent } = require("./agent");
+const opencode = require("./opencode-engine");
 const { saveMemory, memoryFile } = require("./memory");
 
 let counter = 0;
@@ -34,6 +35,7 @@ class SessionManager {
     this.sessions = new Map();
     this.activeId = null;
     this.model = "auto";
+    this.fallbackModels = []; // tried in order when `model` fails — see providers.suggestChain
     this.approvalMode = "auto";        // "auto" | "ask"
     this.pendingApprovals = new Map();  // callId -> resolve
     this._saveTimer = null;
@@ -115,6 +117,7 @@ class SessionManager {
       baseUrl: this.gateway.baseUrl,
       apiKey: this.gateway.apiKey,
       model: this.model,
+      fallbackModels: this.fallbackModels,
       workspace: sess.workspace,
       mcp: this.mcp,
       memory: this.projects ? { globalDir: this.globalMemoryDir, projectDir: this.projects.memoryDir(sess.projectId), knowledgeDir: this.projects.knowledgeDir(sess.projectId), instructionsFile: this.projects.instructionsFile(sess.projectId) } : null,
@@ -131,6 +134,10 @@ class SessionManager {
         }),
       emit: (type, payload) => this.#onAgentEvent(id, type, payload),
     });
+    if (opencode.isEngineModel(this.model)) {
+      const base = sess.agent;
+      sess.agent = new opencode.OpenCodeAgent({ model: this.model, workspace: sess.workspace, approvalMode: base.approvalMode, approver: base.approver, emit: base.emit });
+    }
     if (this._ctxTokens) sess.agent.contextTokens = this._ctxTokens;
   }
 
@@ -185,9 +192,9 @@ class SessionManager {
   #onAgentEvent(id, type, payload) {
     const sess = this.sessions.get(id);
     if (!sess) return;
-    if (type === "error") sess.status = "error";
+    if (type === "error") { sess.status = "error"; sess.lastError = String(payload && payload.message || ""); }
     else if (type === "done" || type === "aborted") sess.status = "done";
-    if (type !== "assistant_delta" && type !== "tool_stream" && type !== "thinking" && type !== "approval_request" && type !== "context" && type !== "stats") {
+    if (type !== "assistant_delta" && type !== "reasoning_delta" && type !== "tool_stream" && type !== "thinking" && type !== "approval_request" && type !== "context" && type !== "stats") {
       sess.transcript.push({ type, ...payload });
       if (sess.transcript.length > 4000) sess.transcript.splice(0, 1000);
     }
@@ -253,6 +260,19 @@ class SessionManager {
     this.emit(id, "user", { content: shown, pastes: ev.pastes });
     try {
       await sess.agent.send(text, images);
+      // Nothing on the gateway answered, but OpenCode is installed: finish the
+      // turn on its engine rather than hand the user a dead prompt. The switch
+      // sticks for the session and is written into the transcript.
+      if (sess.status === "error" && !sess.agent.isEngine && opencode.available() && /All models failed|Gateway (401|403|404|429|503)|No choices returned/.test(sess.lastError || "")) {
+        let model = `${opencode.PREFIX}nemotron-3.5-lightning-free`;
+        try { const list = await opencode.getEngine().models(); if (list.length) model = list[0].id; } catch {}
+        const prev = sess.agent;
+        sess.agent = new opencode.OpenCodeAgent({ model, workspace: sess.workspace, approvalMode: prev.approvalMode, approver: prev.approver, emit: prev.emit, messages: prev.messages });
+        this.#onAgentEvent(id, "system", { content: `⇄ no gateway model answered — continuing on the OpenCode engine (${model})` });
+        sess.status = "running";
+        this.#pushList();
+        await sess.agent.send(text, images);
+      }
     } catch (e) {
       sess.status = "error";
       this.emit(id, "error", { message: e.message });
@@ -328,9 +348,28 @@ class SessionManager {
     this.save();
   }
 
+  // The chain applies to live agents too: connecting a provider mid-session
+  // should rescue the very next turn, not the next session.
+  setFallbacks(list) {
+    this.fallbackModels = Array.isArray(list) ? list.slice() : [];
+    for (const s of this.sessions.values()) {
+      if (s.agent) s.agent.fallbackModels = this.fallbackModels.filter((m) => m !== s.agent.model);
+    }
+  }
+
   setModel(model) {
     this.model = model;
-    for (const s of this.sessions.values()) if (s.agent) s.agent.model = model;
+    for (const s of this.sessions.values()) {
+      if (!s.agent) continue;
+      // Crossing between the gateway loop and the OpenCode engine is a new
+      // agent, not a field change; within one, it's just the model id.
+      if (Boolean(s.agent.isEngine) !== opencode.isEngineModel(model)) {
+        // Never leave a running agent behind: it would keep emitting into a
+        // session whose Stop now points at the new one.
+        if (s.status === "running") s.agent.abort();
+        this.#buildAgent(s);
+      } else s.agent.model = model;
+    }
     this.refreshContextLimit();
   }
 

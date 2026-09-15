@@ -37,26 +37,48 @@
     "!node_modules/@ngrok/**",
     "!node_modules/react-dom/**",
     "!node_modules/@modelcontextprotocol/**",
-    "!node_modules/jsdom/**"
+    "!node_modules/jsdom/**",
+    "!node_modules/opencode-ai/**",
+    "!node_modules/opencode-*/**"
   ],
   "extraResources": [
-    { "from": "build/runtime", "to": "runtime" }
+    {
+      "from": "build/runtime",
+      "to": "runtime"
+    }
   ],
   "directories": {
     "output": "dist",
     "buildResources": "assets"
   },
   "win": {
-    "target": [{ "target": "nsis", "arch": ["x64"] }],
+    "target": [
+      {
+        "target": "nsis",
+        "arch": [
+          "x64"
+        ]
+      }
+    ],
     "artifactName": "OmniWork-Lite-Setup-${version}.${ext}"
   },
   "mac": {
-    "target": [{ "target": "dmg", "arch": ["x64", "arm64"] }],
+    "target": [
+      {
+        "target": "dmg",
+        "arch": [
+          "x64",
+          "arm64"
+        ]
+      }
+    ],
     "artifactName": "OmniWork-Lite-${version}.${ext}",
     "category": "public.app-category.developer-tools"
   },
   "linux": {
-    "target": ["AppImage"],
+    "target": [
+      "AppImage"
+    ],
     "artifactName": "OmniWork-Lite-${version}.${ext}",
     "icon": "assets/icon.png",
     "category": "Development"

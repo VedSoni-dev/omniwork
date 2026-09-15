@@ -1,6 +1,6 @@
 {
   "name": "omniwork",
-  "version": "0.11.2",
+  "version": "0.12.0",
   "description": "Open-source Claude Code / Cowork-style desktop agent with OmniRoute baked in. Download, open, and code with free AI models — zero setup.",
   "author": "OmniWork contributors",
   "license": "MIT",
@@ -19,6 +19,7 @@
     "doctor": "node scripts/doctor.js",
     "setup": "node scripts/setup.js",
     "connect": "node scripts/connect.js",
+    "providers": "node scripts/providers.js",
     "test:boot": "node test/boot.js",
     "test:smoke": "node test/smoke.js",
     "test:cowork": "node test/cowork.js",
@@ -34,16 +35,21 @@
     "test:approvals": "node test/approvals.js",
     "test:selection": "node test/selection.js",
     "test:acp": "node test/acp.js",
+    "test:fallback": "node test/fallback.js",
+    "test:providers": "node test/providers.js",
+    "test:opencode": "node test/opencode.js",
+    "test:tuning": "node test/tuning.js",
     "test:sidecar": "node test/sidecar.js",
     "mcp": "node electron/mcp-server.js",
     "acp": "node electron/acp-server.js"
   },
   "bin": {
     "omniwork-mcp": "electron/mcp-server.js",
-    "omniwork-acp": "electron/acp-server.js"
+    "omniwork-acp": "electron/acp-server.js",
+    "omniwork-providers": "scripts/providers.js"
   },
   "dependencies": {
-    "omniroute": "^3.8.48",
+    "omniroute": "^3.8.50",
     "tar": "^7.5.22"
   },
   "build": {
@@ -65,7 +71,9 @@
       "!node_modules/omniroute/dist/node_modules/typescript/**",
       "!node_modules/omniroute/dist/node_modules/playwright-core/**",
       "!node_modules/omniroute/dist/node_modules/@img/**",
-      "!node_modules/omniroute/dist/node_modules/@ngrok/**"
+      "!node_modules/omniroute/dist/node_modules/@ngrok/**",
+      "!node_modules/opencode-ai/**",
+      "!node_modules/opencode-*/**"
     ],
     "extraResources": [
       {
@@ -118,5 +126,8 @@
     "cross-env": "^7.0.3",
     "electron": "^33.4.11",
     "electron-builder": "^25.1.8"
+  },
+  "optionalDependencies": {
+    "opencode-ai": "1.18.31"
   }
 }
