@@ -259,18 +259,17 @@ class Gateway {
 
   #spawnServer(serverEntry, omniDir, env) {
     this._exited = false;
-    // Never pipe to us: the gateway is meant to outlive this process (see
-    // #adoptRunning), and a detached child writing to a pipe whose reader has
-    // exited takes EPIPE and dies. /dev/null by default; in DEV, append to a
-    // log file instead so the output is still there to read.
-    let stdio = ["ignore", "ignore", "ignore"];
-    let logFd = null;
-    if (process.env.OMNIWORK_DEV) {
-      try {
-        logFd = fs.openSync(path.join(this.dataDir, "omniroute-sidecar.log"), "a");
-        stdio = ["ignore", logFd, logFd];
-      } catch { /* keep ignore */ }
-    }
+    // Never pipe to us in normal runs: the gateway is meant to outlive this
+    // process (see #adoptRunning), and a detached child writing to a pipe whose
+    // reader has exited takes EPIPE and dies. So /dev/null by default.
+    //
+    // In DEV we still want the output. We used to inherit a raw fd into the
+    // child's stdio and fs.closeSync it right after spawn — but on Windows that
+    // double-owned handle aborts the whole process with a libuv assertion
+    // (UV_HANDLE_CLOSING, async.c). Pipe to an append stream instead: Node owns
+    // the handles, nothing is force-closed, and errors on the pipe are swallowed.
+    const dev = !!process.env.OMNIWORK_DEV;
+    const stdio = dev ? ["ignore", "pipe", "pipe"] : ["ignore", "ignore", "ignore"];
 
     // detached: gives the child its own process group so stop() can take down
     // any workers Next.js spawned, not just the parent.
@@ -281,8 +280,16 @@ class Gateway {
       detached: process.platform !== "win32",
     });
 
-    // The child dup'd the fd; ours would otherwise leak on every watchdog respawn.
-    if (logFd !== null) { try { fs.closeSync(logFd); } catch {} }
+    if (dev && this.proc.stdout) {
+      try {
+        const ws = fs.createWriteStream(path.join(this.dataDir, "omniroute-sidecar.log"), { flags: "a" });
+        ws.on("error", () => {});
+        this.proc.stdout.on("error", () => {});
+        this.proc.stderr.on("error", () => {});
+        this.proc.stdout.pipe(ws);
+        this.proc.stderr.pipe(ws);
+      } catch { /* logging is best-effort */ }
+    }
 
     this.proc.on("exit", (code) => {
       this.ready = false;
