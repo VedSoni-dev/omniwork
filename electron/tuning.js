@@ -29,6 +29,16 @@ const compressionOn = () => !off(process.env.OMNIWORK_COMPRESSION);
 const COMPRESSION_RICH = {
   enabled: true, defaultMode: "rtk",
   engines: { rtk: { enabled: true, level: "standard" } },
+  rtkConfig: {
+    intensity: "standard",
+    applyToToolResults: true,   // tool output is the bulk of an agent's context
+    applyToCodeBlocks: true,
+    rawOutputRetention: "failures", // keep failed-command output verbatim for debugging
+    deduplicateThreshold: 3,    // collapse blocks that repeat 3+ times
+    enableGrouping: true,       // fold near-identical lines (grep/log spew)
+    stripCodeComments: true,    // comments rarely change the model's decision
+    preserveDocstrings: true,   // …but docstrings often carry the contract
+  },
   preserveSystemPromptMode: "whenNoCache", mcpDescriptionCompressionEnabled: true,
 };
 const COMPRESSION_MIN = { enabled: true, defaultMode: "rtk", preserveSystemPromptMode: "whenNoCache" };
@@ -68,11 +78,23 @@ function tiersFor(primary, opt) {
 // A tool result that means the step failed — the signal to escalate.
 function toolFailed(result) {
   const s = String(result || "");
-  return /^(Error in |Failed to |Failed to start|Search failed|Browse failed|Install failed|❌|⏸)/.test(s)
-    || /\[exit code (?!0\])\d+\]/.test(s)
-    || /\bENOENT\b|command not found|No such file/.test(s);
+  if (/^(Error in |Failed to |Failed to start|Search failed|Browse failed|Install failed|❌|⏸)/.test(s)) return true;
+  // A non-zero exit code, wherever it lands (head+tail truncation keeps the tail).
+  if (/\[exit code ([1-9]\d*)\]/.test(s)) return true;
+  // Shell error lines, anchored so the words don't false-positive inside output.
+  // A real shell error ends with the phrase; prose that merely mentions it keeps going.
+  return /(^|\n)[^\n]*: (No such file or directory|command not found|Permission denied)(\n|$)/.test(s)
+    || /\bENOENT\b/.test(s);
+}
+
+// Verifying a delegation costs a (cheap) model call, so only spend it when the
+// task actually changed something or its wording implies it should have. A
+// read-only research delegation is self-evident from its summary.
+function shouldVerify(task, changed) {
+  if (changed) return true;
+  return /\b(create|write|edit|modify|fix|add|implement|refactor|rename|delete|remove|update|install|generate|build|migrat)/i.test(String(task || ""));
 }
 
 const newSessionId = () => crypto.randomUUID();
 
-module.exports = { AUTO, FAST, STRONG, compressionOn, enableCompression, utilityModel, tiersFor, toolFailed, newSessionId };
+module.exports = { AUTO, FAST, STRONG, compressionOn, enableCompression, utilityModel, tiersFor, toolFailed, shouldVerify, newSessionId };

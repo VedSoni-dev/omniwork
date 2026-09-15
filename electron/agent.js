@@ -554,9 +554,11 @@ class Agent {
         if (note) this.emit("system", { content: "⛁ " + note });
       } catch {}
       this.#emitContext();
-      // A fast model that is still going many steps in is usually stuck, not
-      // thorough — hand the rest to the coding tier before it wastes the budget.
-      if (step === 6) this.#escalate("6 steps without finishing");
+      // Escalate when the fast tier shows trouble late in the turn, or as a hard
+      // backstop deep in — not on raw step count, so a fast model steadily
+      // editing many files stays cheap instead of jumping to the coding tier.
+      if (step >= 8 && this._tierFails > 0) this.#escalate("stalling on the fast tier");
+      else if (step >= Math.floor(MAX_STEPS / 2)) this.#escalate("halfway through the step budget");
       this.emit("thinking", { step });
 
       let msg;

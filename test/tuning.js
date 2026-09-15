@@ -49,7 +49,10 @@ function gateway(route) {
   check("utilityModel redirects the auto pools to the fast pool", tuning.utilityModel("auto") === "auto/best-fast" && tuning.utilityModel("auto/best-coding") === "auto/best-fast");
   check("utilityModel respects a pinned model", tuning.utilityModel("groq/llama-3.3-70b") === "groq/llama-3.3-70b");
   check("tiers are on for auto, off for a pinned model", tuning.tiersFor("auto") && tuning.tiersFor("auto").fast === "auto/best-fast" && tuning.tiersFor("groq/x") === null);
-  check("toolFailed recognises the failure shapes", tuning.toolFailed("Error in run_command: x") && tuning.toolFailed("boom\n\n[exit code 1]") && tuning.toolFailed("ls: No such file") && !tuning.toolFailed("done\n\n[exit code 0]"));
+  check("toolFailed recognises real failure shapes", tuning.toolFailed("Error in run_command: x") && tuning.toolFailed("boom\n\n[exit code 1]") && tuning.toolFailed("ls: /x: No such file or directory") && tuning.toolFailed("bash: foo: command not found"));
+  check("toolFailed finds a non-zero exit code even after truncation keeps only the tail", tuning.toolFailed("first line\n… [truncated 90000 chars]\nlast line\n\n[exit code 5]"));
+  check("toolFailed does NOT fire on success or on the phrase inside normal output", !tuning.toolFailed("done\n\n[exit code 0]") && !tuning.toolFailed("grepping for: No such file or directory as a string") && !tuning.toolFailed("all good"));
+  check("shouldVerify gates on real changes or write-intent wording", tuning.shouldVerify("summarize the readme", false) === false && tuning.shouldVerify("summarize the readme", true) === true && tuning.shouldVerify("implement a login form", false) === true && tuning.shouldVerify("refactor the parser", false) === true);
 
   // ── 1: compression enable, with the minimal fallback ──
   {

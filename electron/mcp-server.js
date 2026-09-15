@@ -17,6 +17,7 @@ const fs = require("node:fs");
 const { ensureShellPath } = require("./shell-path");
 const { agentEnv, browser, ensureGateway, prewarmGateway, resolveModelsLive, listModels, invalidateModels, noModelHint, providers, makeAgent, isNoModelFailure, engineFallbackModel, opencode, SKILLS_DIR } = require("./headless");
 const skillsApi = require("./skills");
+const tuning = require("./tuning");
 
 ensureShellPath(); // MCP clients can launch us with a minimal environment too
 
@@ -84,7 +85,7 @@ async function runDelegate({ task, cwd, model, fallbackModels, progress }) {
   // A cheap PASS/FAIL gate on the utility model, so the orchestrator re-delegates
   // only when the work actually fell short — the expensive path is the caller
   // re-reading and re-issuing, and this cuts it when the task already succeeded.
-  const verifyNote = timedOut ? "" : await verifyDelegate(agent, task, summary, changeLog).catch(() => "");
+  const verifyNote = (timedOut || !tuning.shouldVerify(task, changes.length > 0)) ? "" : await verifyDelegate(agent, task, summary, changeLog).catch(() => "");
   return `${summary}${changeLog}${modelNote(agent)}${engineNote}${verifyNote}${note}`;
 }
 
