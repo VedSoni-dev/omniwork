@@ -5,6 +5,8 @@
 // OMNIWORK_BASE_URL points the agent at a dead port so no gateway boots: session
 // setup still works, and session/prompt fails fast, which is exactly how we
 // check that a broken turn surfaces as a JSON-RPC error instead of hanging.
+// The model env is blanked so a developer's own OMNIWORK_MODEL(_FALLBACKS)
+// can't change what the defaults look like here.
 const { spawn } = require("child_process");
 const path = require("path");
 
@@ -13,7 +15,7 @@ const check = (name, ok) => { console.log((ok ? "✓" : "✗"), name); if (!ok) 
 
 const proc = spawn(process.execPath, [path.join(__dirname, "..", "electron", "acp-server.js")], {
   stdio: ["pipe", "pipe", "pipe"],
-  env: { ...process.env, OMNIWORK_NO_PREWARM: "1", OMNIWORK_BASE_URL: "http://127.0.0.1:9/v1" },
+  env: { ...process.env, OMNIWORK_NO_PREWARM: "1", OMNIWORK_BASE_URL: "http://127.0.0.1:9/v1", OMNIWORK_MODEL: "", OMNIWORK_MODEL_FALLBACKS: "" },
 });
 
 const pending = new Map();
@@ -52,6 +54,12 @@ const updates = (type) => notes.filter((n) => n.method === "session/update" && n
   check("initialize identifies the agent", init.result.agentInfo.name === "omniwork");
   check("advertises loadSession", init.result.agentCapabilities.loadSession === true);
   check("advertises image prompts", init.result.agentCapabilities.promptCapabilities.image === true);
+  check("offers openrouter, local and opencode as auth methods", init.result.authMethods.map((m) => m.id).join(",") === "openrouter,local,opencode");
+
+  const badAuth = await rpc("authenticate", { methodId: "telepathy" });
+  check("authenticate rejects an unknown method", badAuth.error && badAuth.error.code === -32602);
+  const noAuth = await rpc("authenticate", {});
+  check("authenticate with no method is a no-op", !noAuth.error);
 
   // ── session/new ──
   const made = await rpc("session/new", { cwd: repo, mcpServers: [] });
@@ -60,11 +68,23 @@ const updates = (type) => notes.filter((n) => n.method === "session/update" && n
   check("session/new advertises four modes", made.result.modes.availableModes.length === 4);
   check("session/new defaults to ask mode", made.result.modes.currentModeId === "ask");
 
+  const modelOpt = (made.result.configOptions || []).find((o) => o.id === "model");
+  check("session/new advertises a model config option", Boolean(modelOpt) && modelOpt.category === "model" && modelOpt.type === "select");
+  check("the model defaults to auto", Boolean(modelOpt) && modelOpt.currentValue === "auto" && modelOpt.options.some((o) => o.value === "auto"));
+  check("_meta reports the model and its chain", made.result._meta && made.result._meta.omniwork.model === "auto" && Array.isArray(made.result._meta.omniwork.fallbackModels));
+
   const relative = await rpc("session/new", { cwd: "not/absolute", mcpServers: [] });
   check("session/new rejects a relative cwd", relative.error && relative.error.code === -32602);
 
   await settle();
   check("skills are pushed as available commands", updates("available_commands_update").length === 1);
+
+  // ── a pinned model via _meta ──
+  const pinned = await rpc("session/new", { cwd: repo, mcpServers: [], _meta: { model: "oc/some-coder", fallbackModels: ["auto", "oc/some-coder"] } });
+  const pinnedOpt = pinned.result.configOptions.find((o) => o.id === "model");
+  check("_meta.model pins the session's model", pinnedOpt.currentValue === "oc/some-coder");
+  check("_meta.fallbackModels sets the chain, minus the primary", JSON.stringify(pinned.result._meta.omniwork.fallbackModels) === JSON.stringify(["auto"]));
+  check("fallbacks are listed as options", pinnedOpt.options.some((o) => o.value === "auto" && /fallback/i.test(o.description || "")));
 
   // ── modes ──
   const mode = await rpc("session/set_mode", { sessionId: sid, modeId: "plan" });
@@ -76,9 +96,23 @@ const updates = (type) => notes.filter((n) => n.method === "session/update" && n
   const badMode = await rpc("session/set_mode", { sessionId: sid, modeId: "nonsense" });
   check("session/set_mode rejects an unknown mode", badMode.error && badMode.error.code === -32602);
 
+  // ── model ──
+  const setOpt = await rpc("session/set_config_option", { sessionId: sid, configId: "model", value: "tllm/some-coder" });
+  check("session/set_config_option switches the model", !setOpt.error && setOpt.result.configOptions.find((o) => o.id === "model").currentValue === "tllm/some-coder");
+  await settle();
+  const cfgNotes = updates("config_option_update");
+  check("set_config_option notifies config_option_update", cfgNotes.length === 1 && cfgNotes[0].params.update.configOptions[0].currentValue === "tllm/some-coder");
+  const badCfg = await rpc("session/set_config_option", { sessionId: sid, configId: "temperature", value: "1" });
+  check("unknown config options are rejected", badCfg.error && badCfg.error.code === -32602);
+  const legacy = await rpc("session/set_model", { sessionId: sid, modelId: "auto" });
+  check("session/set_model (pre-config-option clients) still works", !legacy.error);
+  const noModel = await rpc("session/set_model", { sessionId: sid, modelId: "" });
+  check("an empty model id is rejected", noModel.error && noModel.error.code === -32602);
+
   // ── load ──
   const loaded = await rpc("session/load", { sessionId: sid, cwd: repo, mcpServers: [] });
   check("session/load restores a live session", !loaded.error && loaded.result.modes.currentModeId === "plan");
+  check("session/load reports the current model", loaded.result.configOptions.find((o) => o.id === "model").currentValue === "auto");
   const missing = await rpc("session/load", { sessionId: "sess_nope", cwd: repo, mcpServers: [] });
   check("session/load rejects an unknown session", missing.error && missing.error.code === -32602);
 
