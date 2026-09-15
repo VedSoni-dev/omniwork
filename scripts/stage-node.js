@@ -82,6 +82,50 @@ async function downloadOfficialNode(version, platform, arch, cacheDir) {
   return binInside;
 }
 
+// OpenCode, the engine behind `opencode/…` models, staged the same way: the
+// official release archive for the TARGET platform/arch, so a cross-arch build
+// ships the right binary and the user never touches npm or their PATH.
+// Version: whatever package.json pins for opencode-ai. A failed fetch is not
+// fatal — the app downloads the same archive on first use.
+async function stageOpenCode(projectDir, platform, arch) {
+  const t = { platform: platform === "win32" ? "windows" : platform, arch: arch === "arm64" ? "arm64" : "x64" };
+  const pkg = JSON.parse(fs.readFileSync(path.join(projectDir, "package.json"), "utf8"));
+  const version = ((pkg.optionalDependencies || {})["opencode-ai"] || "").replace(/^[^0-9]*/, "");
+  if (!version) { console.warn("[stage-opencode] no opencode-ai version pinned — skipping"); return; }
+  const asset = t.platform === "linux" ? `opencode-linux-${t.arch}.tar.gz` : `opencode-${t.platform}-${t.arch}.zip`;
+  const url = `https://github.com/anomalyco/opencode/releases/download/v${version}/${asset}`;
+  const exe = t.platform === "windows" ? "opencode.exe" : "opencode";
+  const outDir = path.join(projectDir, "build", "runtime", "opencode");
+  const cacheDir = path.join(projectDir, "build", ".opencode-cache", `v${version}-${t.platform}-${t.arch}`);
+  fs.mkdirSync(outDir, { recursive: true });
+  fs.mkdirSync(cacheDir, { recursive: true });
+  const cached = path.join(cacheDir, exe);
+  try {
+    if (!fs.existsSync(cached)) {
+      const archive = path.join(cacheDir, asset);
+      console.log(`[stage-opencode] downloading ${url}`);
+      const res = await fetch(url);
+      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+      await pipeline(Readable.fromWeb(res.body), fs.createWriteStream(archive + ".part"));
+      fs.renameSync(archive + ".part", archive);
+      if (process.platform === "win32" && asset.endsWith(".zip")) {
+        execFileSync("powershell.exe", ["-NoProfile", "-Command", `Expand-Archive -LiteralPath '${archive}' -DestinationPath '${cacheDir}' -Force`], { stdio: "inherit" });
+      } else {
+        execFileSync("tar", ["-xf", archive, "-C", cacheDir], { stdio: "inherit" }); // bsdtar reads zip too
+      }
+      fs.rmSync(archive, { force: true });
+      if (!fs.existsSync(cached)) throw new Error(`archive had no ${exe}`);
+    }
+    const dest = path.join(outDir, exe);
+    fs.copyFileSync(cached, dest);
+    if (t.platform !== "windows") fs.chmodSync(dest, 0o755);
+    console.log(`[stage-opencode] bundled OpenCode v${version} (${t.platform}-${t.arch}) -> ${dest}`);
+  } catch (err) {
+    console.warn(`[stage-opencode] could not stage OpenCode (${err.message}) — the app will download it on first use`);
+    fs.rmSync(outDir, { recursive: true, force: true });
+  }
+}
+
 module.exports = async function stageNode(context) {
   const projectDir = context.packager.projectDir || process.cwd();
   const platform = nodePlatform(context);
@@ -132,4 +176,7 @@ module.exports = async function stageNode(context) {
   }
 
   console.log(`[stage-node] bundled Node v${version} (${platform}-${arch}): ${src} -> ${dest}`);
+
+  await stageOpenCode(projectDir, platform, arch);
 };
+module.exports.stageOpenCode = stageOpenCode;
