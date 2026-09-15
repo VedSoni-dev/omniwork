@@ -153,6 +153,16 @@ matters — free models drift on instruction details.
 Treat the returned summary as a **claim, not evidence**, and verify before calling the work done.
 `npm run connect` installs this guidance so your agent applies it automatically.
 
+## Fewer tokens per task 🗜️
+
+Free tiers are the same for everyone now, so OmniWork competes on how little it spends finishing a task. The gateway compresses tool output by default (a real grep result: **9,812 → 3,170 tokens**), housekeeping and mechanical steps run on the fast free pool while real reasoning escalates to the coding pool, a rate-limited provider rotates instead of draining, and every session reuses one id so the gateway caches its prefix. All on by default, all opt-outable:
+
+| Env | Default | Effect |
+|-----|---------|--------|
+| `OMNIWORK_COMPRESSION` | on | `off` disables gateway-side tool-output compression |
+| `OMNIWORK_MODEL_TIERS` | on | `off` runs `auto` on one tier instead of fast-then-escalate |
+| `OMNIWORK_UTILITY_MODEL` | `auto/best-fast` | model for titles, memory, compaction summaries |
+
 ## Free models that stay up 🆓
 
 The gateway's built-in keyless pool is a set of unofficial endpoints that providers shut off

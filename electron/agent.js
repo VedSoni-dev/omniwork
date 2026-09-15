@@ -119,9 +119,10 @@ const isModelFailure = (err) => {
   return (s === 400 || s === 422) && MODEL_WORDS.test(String(err.message || ""));
 };
 const failureSignature = (err) => `${err.status || 0}:${String(err.message || "").replace(/^[^:]*: /, "").slice(0, 160)}`;
+const tuning = require("./tuning");
 
 class Agent {
-  constructor({ baseUrl, apiKey, model, fallbackModels = [], workspace, emit, mcp, memory = null, skillsDir = null, browser = null, canSpawn = true, depth = 0, approvalMode = "auto", approver = null, streaming = true }) {
+  constructor({ baseUrl, apiKey, model, fallbackModels = [], workspace, emit, mcp, memory = null, skillsDir = null, browser = null, canSpawn = true, depth = 0, approvalMode = "auto", approver = null, streaming = true, utilityModel, tiers, sessionId } = {}) {
     this.baseUrl = baseUrl.replace(/\/$/, "");
     this.apiKey = apiKey;
     this.model = model || "auto";
@@ -130,6 +131,13 @@ class Agent {
     // per step — and the switch is announced through `model_switch`.
     this.fallbackModels = normalizeFallbacks(fallbackModels, this.model);
     this.modelSwitches = []; // [{ from, to, reason }] — what callers report back
+    // Token economy (see electron/tuning.js). The session id is stable so the
+    // gateway keeps prompt-cache affinity; the utility model runs housekeeping;
+    // tiers run grunt work on the fast pool and escalate to the coding pool.
+    this.sessionId = sessionId || tuning.newSessionId();
+    this.utilityModel = utilityModel || tuning.utilityModel(this.model);
+    this.tiers = tiers !== undefined ? tiers : tuning.tiersFor(this.model);
+    this.cooling = new Map(); // model -> ms timestamp it is rate-limited until
     this.workspace = workspace;
     this.emit = emit; // (event, payload) => void
     this.mcp = mcp || null;
@@ -242,18 +250,24 @@ class Agent {
 
   // One-off model call outside the session's message history (summaries,
   // titles, memory capture).
-  async oneShot(prompt) {
-    const res = await fetch(`${this.baseUrl}/chat/completions`, {
-      method: "POST",
-      signal: AbortSignal.timeout(60_000),
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}` },
-      body: JSON.stringify({ model: this.model, messages: [{ role: "user", content: prompt }], temperature: 0.2 }),
-    });
-    if (!res.ok) throw new Error(`Gateway ${res.status}`);
-    const data = await res.json();
-    const content = data.choices?.[0]?.message?.content || "";
-    this.#addUsage(data.usage, content.length); // counts only while a turn is active
-    return content;
+  async oneShot(prompt, { model = this.utilityModel } = {}) {
+    const call = async (m) => {
+      const res = await fetch(`${this.baseUrl}/chat/completions`, {
+        method: "POST",
+        signal: AbortSignal.timeout(60_000),
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}`, "x-session-id": this.sessionId },
+        body: JSON.stringify({ model: m, messages: [{ role: "user", content: prompt }], temperature: 0.2 }),
+      });
+      if (!res.ok) { const e = new Error(`Gateway ${res.status}`); e.status = res.status; throw e; }
+      const data = await res.json();
+      const content = data.choices?.[0]?.message?.content || "";
+      this.#addUsage(data.usage, content.length); // counts only while a turn is active
+      return content;
+    };
+    // Housekeeping runs on the cheap utility model; if the gateway doesn't know
+    // that id (e.g. a raw OpenAI base URL), fall back to the session's model once.
+    try { return await call(model); }
+    catch (e) { if (model !== this.model && (e.status === 400 || e.status === 404)) return await call(this.model); throw e; }
   }
 
   #emitContext() {
@@ -278,10 +292,15 @@ class Agent {
   // the error names each one and why, which is what a driving harness needs to
   // fix its configuration.
   async callModel() {
-    const chain = [this.model, ...this.fallbackModels.filter((m) => m !== this.model)];
+    const now = Date.now();
+    const full = [this.model, ...this.fallbackModels.filter((m) => m !== this.model)];
+    // Skip models still cooling from a recent 429, unless that leaves nothing.
+    let chain = full.filter((m) => !(this.cooling.get(m) > now));
+    if (!chain.length) chain = full;
     const failures = [];
     let lastErr = null;
     let lastSig = null;
+    let transientPrimary = false; // primary only hit 429 — keep it, don't switch
     for (let i = 0; i < chain.length; i++) {
       const model = chain[i];
       const last = i === chain.length - 1;
@@ -290,6 +309,14 @@ class Agent {
       catch (err) {
         if (this.aborted || !isModelFailure(err)) throw err;
         failures.push(`${model}: ${err.message}`);
+        // A 429 is transient load, not a dead model: cool it for a minute and
+        // rotate to the next provider, but keep the primary for later steps so
+        // connected free tiers share the load instead of one draining first.
+        if (err.status === 429) {
+          this.cooling.set(model, Date.now() + 60_000);
+          if (model === this.model) transientPrimary = true;
+          lastErr = err; continue;
+        }
         // Two models failing identically is the gateway talking, not the
         // models; walking further would only replay the conversation again.
         const sig = failureSignature(err);
@@ -306,7 +333,9 @@ class Agent {
         lastErr = new Error(`${model}: empty response`); lastErr.modelFailure = true;
         break;
       }
-      if (model !== this.model) this.#switchModel(model, failures.join("; "));
+      // Rotating past a rate-limited primary is temporary — don't make the
+      // switch permanent, so the primary is retried once its cooldown passes.
+      if (model !== this.model && !transientPrimary) this.#switchModel(model, failures.join("; "));
       return msg;
     }
     // One model, no chain: the gateway's own error, exactly as before.
@@ -314,6 +343,16 @@ class Agent {
     const err = new Error(`All models failed:\n- ${failures.join("\n- ")}`);
     err.modelFailure = true;
     throw err;
+  }
+
+  // Tiering: grunt work runs on the fast pool; when it stalls we bring in the
+  // coding pool for the rest of the turn. Both are free `auto` routing, so this
+  // trades a little latency for quality only when the cheap model is struggling.
+  #escalate(reason) {
+    if (!this.tiers || this.model !== this.tiers.fast) return;
+    this.model = this.tiers.strong;
+    this._tierFails = 0;
+    this.emit("system", { content: `⇱ escalating to the coding tier (${reason})` });
   }
 
   #switchModel(to, reason) {
@@ -351,7 +390,7 @@ class Agent {
     const res = await fetch(`${this.baseUrl}/chat/completions`, {
       method: "POST",
       signal: this.abortCtl?.signal,
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}` },
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}`, "x-session-id": this.sessionId },
       body: JSON.stringify({
         model,
         messages: this.messages,
@@ -457,6 +496,7 @@ class Agent {
         this.emit("subagent", { groupId, subId, title, kind: "start" });
         const child = new Agent({
           baseUrl: this.baseUrl, apiKey: this.apiKey, model: this.model, fallbackModels: this.fallbackModels,
+          utilityModel: this.utilityModel, tiers: this.tiers,
           workspace: this.workspace, mcp: this.mcp, browser: this.browser, canSpawn: false, depth: this.depth + 1,
           // Nobody reads a subagent's token-by-token output — only its tool
           // labels and final summary. Skipping the stream attempt halves the
@@ -486,6 +526,10 @@ class Agent {
     this.turnUndo = new Map();
     this.undoAvailable = false;
     this.turnStats = { startedAt: Date.now(), inTokens: 0, outTokens: 0, estimated: false };
+    // Start each turn on the fast tier (grunt work is cheap); escalation below
+    // brings in the coding tier if the fast model stalls.
+    if (this.tiers && [tuning.AUTO, this.tiers.fast, this.tiers.strong].includes(this.model)) this.model = this.tiers.fast;
+    this._tierFails = 0;
     // Refresh the system prompt with current project instructions (AGENTS.md, etc.).
     const mem = this.loadProjectMemory();
     this.messages[0] = {
@@ -510,6 +554,9 @@ class Agent {
         if (note) this.emit("system", { content: "⛁ " + note });
       } catch {}
       this.#emitContext();
+      // A fast model that is still going many steps in is usually stuck, not
+      // thorough — hand the rest to the coding tier before it wastes the budget.
+      if (step === 6) this.#escalate("6 steps without finishing");
       this.emit("thinking", { step });
 
       let msg;
@@ -602,6 +649,8 @@ class Agent {
 
         this.emit("tool_result", { id: call.id, name, result });
         this.messages.push({ role: "tool", tool_call_id: call.id, content: result });
+        if (tuning.toolFailed(result)) { if (++this._tierFails >= 2) this.#escalate("two failed steps in a row"); }
+        else this._tierFails = 0;
       }
     }
     this.emit("error", { message: `Reached max steps (${MAX_STEPS}) without finishing.` });

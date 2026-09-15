@@ -7,6 +7,19 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [Unreleased]
+
+### Added
+
+- **Token economy — finish the task on fewer tokens** ([`electron/tuning.js`](electron/tuning.js)). Everyone now draws from the same free tiers, so the edge is tokens per finished task, not access. Six levers, all opt-outable by env:
+  - **Gateway compression on by default.** The sidecar turns on OmniRoute's RTK compression when the gateway is healthy. It rewrites tool-result text — the bulk of an agent's context — with cheap heuristics, no model call, and keeps failed-command output verbatim. Measured **9,812 → 3,170 tokens (68%)** on a realistic grep result. `OMNIWORK_COMPRESSION=off` disables it.
+  - **Housekeeping off the main model.** Titles, memory capture and compaction summaries run on the fast free pool (`auto/best-fast`), never the session's chosen model. `OMNIWORK_UTILITY_MODEL` overrides.
+  - **Step-level tiers.** With `auto`, grunt work runs on the fast pool and escalates to the coding pool (`auto/best-coding`) only when the fast model stalls — two failed steps, or six steps without finishing. A pinned model never tiers. `OMNIWORK_MODEL_TIERS=off` disables.
+  - **Rate-limit round-robin.** A 429 cools that model for a minute and rotates to the next connected free provider for the step, without a permanent switch — so stacked free tiers share the load instead of one draining first. Hard failures still switch as before.
+  - **Cheap delegate verifier.** An MCP delegation ends with a PASS/FAIL grade from the utility model, so the orchestrator re-delegates only when the work fell short — the expensive path is the caller re-reading and re-issuing.
+  - **Prompt-cache affinity.** Every request in a session carries a stable `x-session-id`, so the gateway keeps the unchanged system+history prefix cached upstream.
+  - **First-run nudge.** On first launch with nothing connected, the desktop app opens the free-models panel once so the OpenRouter catalog is one click away.
+
 ## [0.12.0] — 2026-09-15
 
 ### Added

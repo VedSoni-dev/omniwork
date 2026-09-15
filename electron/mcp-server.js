@@ -81,7 +81,24 @@ async function runDelegate({ task, cwd, model, fallbackModels, progress }) {
   const summary = agent.lastText || "(no summary)";
   const changeLog = changes.length ? `\n\nChanges:\n- ${changes.join("\n- ")}` : "";
   const note = timedOut ? `\n\n[stopped after ${Math.round(DELEGATE_TIMEOUT_MS / 1000)}s — this is partial work]` : "";
-  return `${summary}${changeLog}${modelNote(agent)}${engineNote}${note}`;
+  // A cheap PASS/FAIL gate on the utility model, so the orchestrator re-delegates
+  // only when the work actually fell short — the expensive path is the caller
+  // re-reading and re-issuing, and this cuts it when the task already succeeded.
+  const verifyNote = timedOut ? "" : await verifyDelegate(agent, task, summary, changeLog).catch(() => "");
+  return `${summary}${changeLog}${modelNote(agent)}${engineNote}${verifyNote}${note}`;
+}
+
+async function verifyDelegate(agent, task, summary, changeLog) {
+  if (!agent || typeof agent.oneShot !== "function" || !summary || summary === "(no summary)") return "";
+  const prompt =
+    "You are grading whether a coding agent completed a task. Reply with exactly PASS or FAIL, then a dash and one short reason.\n\n" +
+    `TASK:\n${String(task).slice(0, 1500)}\n\nAGENT SUMMARY:\n${String(summary).slice(0, 1500)}${changeLog.slice(0, 600)}`;
+  let out = "";
+  try { out = String(await agent.oneShot(prompt)).trim(); } catch { return ""; }
+  const m = /^(PASS|FAIL)\b[\s-]*(.*)$/i.exec(out.split("\n")[0] || "");
+  if (!m) return "";
+  const verdict = m[1].toUpperCase();
+  return `\n\n[verify: ${verdict}${m[2] ? " — " + m[2].slice(0, 140) : ""}]`;
 }
 
 // The caller asked for a model; if it got a different one, it should know.

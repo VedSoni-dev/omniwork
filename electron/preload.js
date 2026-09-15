@@ -60,7 +60,7 @@ contextBridge.exposeInMainWorld("omniwork", {
   setCopyOnSelect: (on) => ipcRenderer.invoke("app:setCopyOnSelect", on),
 
   on: (channel, cb) => {
-    const allowed = new Set(["session:event", "sessions:list", "gateway:status", "mcp:list", "skills:list"]);
+    const allowed = new Set(["session:event", "sessions:list", "gateway:status", "mcp:list", "skills:list", "providers:suggest"]);
     if (!allowed.has(channel)) return () => {};
     const listener = (_e, payload) => cb(payload);
     ipcRenderer.on(channel, listener);

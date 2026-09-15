@@ -38,6 +38,7 @@
     "test:fallback": "node test/fallback.js",
     "test:providers": "node test/providers.js",
     "test:opencode": "node test/opencode.js",
+    "test:tuning": "node test/tuning.js",
     "test:sidecar": "node test/sidecar.js",
     "mcp": "node electron/mcp-server.js",
     "acp": "node electron/acp-server.js"
@@ -48,7 +49,7 @@
     "omniwork-providers": "scripts/providers.js"
   },
   "dependencies": {
-    "omniroute": "^3.8.48",
+    "omniroute": "^3.8.50",
     "tar": "^7.5.22"
   },
   "build": {

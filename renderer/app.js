@@ -433,6 +433,7 @@ api.on("sessions:list", (p) => {
 });
 api.on("mcp:list", (p) => renderMcp(p.servers));
 api.on("skills:list", (p) => { skillsCache = p.skills || []; });
+api.on("providers:suggest", () => { const m = $("providers-modal"); if (m && m.classList.contains("hidden")) { m.classList.remove("hidden"); renderProviders(); addSystem("🆓 Connect a free provider for far more models — OpenRouter signs you in with one click."); } });
 api.on("gateway:status", (s) => {
   const d = $("gw-dot");
   d.className = "s-dot " + (s.state === "ready" ? "ok" : s.state === "error" ? "err" : "boot");

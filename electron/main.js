@@ -24,7 +24,7 @@ let projects = null;
 let browser = null;
 let scheduler = null;
 
-const state = { model: "auto", approval: "auto", copyOnSelect: true, lastWorkspace: null, gateway: { state: "boot" } };
+const state = { model: "auto", approval: "auto", copyOnSelect: true, sawProviders: false, lastWorkspace: null, gateway: { state: "boot" } };
 
 function prefsPath() { return path.join(app.getPath("userData"), "prefs.json"); }
 function loadPrefs() {
@@ -32,7 +32,7 @@ function loadPrefs() {
   return {};
 }
 function savePrefs() {
-  try { fs.writeFileSync(prefsPath(), JSON.stringify({ workspace: state.lastWorkspace, model: state.model, approval: state.approval, copyOnSelect: state.copyOnSelect }, null, 2)); } catch {}
+  try { fs.writeFileSync(prefsPath(), JSON.stringify({ workspace: state.lastWorkspace, model: state.model, approval: state.approval, sawProviders: state.sawProviders, copyOnSelect: state.copyOnSelect }, null, 2)); } catch {}
 }
 function send(channel, payload) { if (win && !win.isDestroyed()) win.webContents.send(channel, payload); }
 function activeWorkspace() {
@@ -74,6 +74,7 @@ async function boot() {
   state.model = prefs.model || "auto";
   state.approval = ["auto", "ask", "edits", "plan"].includes(prefs.approval) ? prefs.approval : "auto";
   state.copyOnSelect = prefs.copyOnSelect !== false;
+  state.sawProviders = prefs.sawProviders === true;
 
   createWindow();
 
@@ -98,7 +99,17 @@ async function boot() {
     });
     sessions.setModel(state.model);
     sessions.setApprovalMode(state.approval);
-    applyFallbacks();
+    applyFallbacks().then(async () => {
+      // First launch, nothing connected: open the free-models panel once so the
+      // giant OpenRouter catalog is one click away instead of buried in the rail.
+      if (state.sawProviders) return;
+      try {
+        const st = await providers.status(gateway, { detectLocal: false });
+        if (!st || st.error || st.anyConnected) { state.sawProviders = true; savePrefs(); return; }
+        setTimeout(() => send("providers:suggest", {}), 1500);
+      } catch {}
+      state.sawProviders = true; savePrefs();
+    });
     // Restore saved sessions; start a fresh one only if none were persisted.
     const restored = sessions.restore();
     if (!restored) sessions.create({ workspace: state.lastWorkspace, title: "Main" });
