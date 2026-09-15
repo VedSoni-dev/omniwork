@@ -33,8 +33,11 @@ const PROVIDERS = { all: [
   } },
 ], default: {}, connected: ["opencode"] };
 
+const AUTH = process.env.OPENCODE_SERVER_PASSWORD ? "Basic " + Buffer.from(`${process.env.OPENCODE_SERVER_USERNAME || "opencode"}:${process.env.OPENCODE_SERVER_PASSWORD}`).toString("base64") : null;
 const server = http.createServer(async (req, res) => {
   const u = new URL(req.url, "http://x");
+  // Like the real server: with a password set, every request must carry it.
+  if (AUTH && req.headers.authorization !== AUTH) return json(res, 401, { error: { type: "Unauthorized", message: "basic auth required" } });
   const dir = req.headers["x-opencode-directory"] ? decodeURIComponent(req.headers["x-opencode-directory"]) : null;
   if (u.pathname === "/global/health") return json(res, 200, { healthy: true, version: "0.0.0-test" });
   if (u.pathname === "/provider") return json(res, 200, PROVIDERS);

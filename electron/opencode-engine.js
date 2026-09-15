@@ -16,6 +16,7 @@
 // `opencode/<model>` without knowing the difference.
 
 const { spawn, execFileSync } = require("node:child_process");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -63,7 +64,7 @@ function candidates() {
     path.join(os.homedir(), ".npm-global", "bin", exe),
     path.join(os.homedir(), ".npm", "bin", exe),
     ...(npmPrefix ? [path.join(npmPrefix, "bin", exe)] : []),
-    ...(process.platform === "win32" ? [path.join(process.env.APPDATA || "", "npm", "opencode.cmd")] : []),
+    ...(process.platform === "win32" ? [path.join(process.env.APPDATA || "", "npm", "node_modules", "opencode-ai", "bin", "opencode.exe")] : []),
   );
   for (const dir of String(process.env.PATH || "").split(path.delimiter)) if (dir) list.push(path.join(dir, exe));
   return list;
@@ -84,7 +85,19 @@ function pinnedVersion() {
     return v.replace(/^[^0-9]*/, "") || "1.18.31";
   } catch { return "1.18.31"; }
 }
-function assetName(t = target()) { return t.platform === "linux" ? `opencode-linux-${t.arch}.tar.gz` : `opencode-${t.platform}-${t.arch}.zip`; }
+function platformPackage(t = target()) { return `opencode-${t.platform}-${t.arch}`; }
+const exeFor = (pkg) => (pkg.includes("windows") ? "opencode.exe" : "opencode");
+
+// The download is verified against the sha512 npm recorded for that package in
+// package-lock.json — a hash that ships with the repo, pinned with the version.
+// OpenCode's GitHub releases publish no checksums; the npm registry tarball of
+// the same binary comes with one. This is the only download path.
+function lockEntry(pkg) {
+  const lock = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, "package-lock.json"), "utf8"));
+  const e = lock.packages && lock.packages[`node_modules/${pkg}`];
+  if (!e || !e.integrity || !e.resolved) throw new Error(`package-lock.json has no pinned integrity for ${pkg} — run npm install to refresh it`);
+  return { integrity: e.integrity, resolved: e.resolved, version: e.version };
+}
 const INSTALL_COMMAND = "npm run providers connect opencode";
 const INSTALL_SCRIPT = "curl -fsSL https://opencode.ai/install | bash";
 
@@ -95,47 +108,63 @@ function version() {
   catch { return "installed"; }
 }
 
-// Fetch OpenCode's official release archive for this machine (~45 MB) into the
-// data dir and unpack it. The same archive the `opencode.ai/install` script
-// uses; no npm, no PATH, no shell profile. Only ever run from an explicit user
-// gesture — a click, a typed command, an ACP auth method — never a tool call.
-async function download({ version: ver = pinnedVersion(), baseUrl = RELEASES, dir = DOWNLOAD_DIR, onProgress = () => {} } = {}) {
+// Fetch the platform package (~45 MB) into `dir`, verify its hash, unpack just
+// the binary. Only ever run from an explicit user gesture — a click, a typed
+// command, an ACP auth method — never a tool call.
+async function download({ pkg = platformPackage(), dir = DOWNLOAD_DIR, entry = null, onProgress = () => {} } = {}) {
   const { Readable, Transform } = require("node:stream");
   const { pipeline } = require("node:stream/promises");
-  const asset = assetName();
-  const url = `${baseUrl}/v${ver}/${asset}`;
+  const tar = require("tar");
+  const { integrity, resolved: url, version: ver } = entry || lockEntry(pkg);
+  const [algo, expected] = String(integrity).split("-", 2);
+  if (!/^sha(256|384|512)$/.test(algo) || !expected) throw new Error(`unusable integrity string for ${pkg}`);
+  const exe = exeFor(pkg);
   fs.mkdirSync(dir, { recursive: true });
-  const archive = path.join(dir, asset);
-  onProgress({ phase: "download", detail: `Downloading OpenCode v${ver} (${asset})…`, url });
+  const archive = path.join(dir, `${pkg}.tgz`);
+  onProgress({ phase: "download", detail: `Downloading OpenCode v${ver} (${pkg})…`, url });
   const res = await fetch(url);
   if (!res.ok || !res.body) throw new Error(`OpenCode download failed: HTTP ${res.status} for ${url}`);
   const total = Number(res.headers.get("content-length")) || 0;
   let received = 0;
-  const meter = new Transform({ transform(chunk, _enc, cb) { received += chunk.length; onProgress({ phase: "download", received, total }); cb(null, chunk); } });
-  await pipeline(Readable.fromWeb(res.body), meter, fs.createWriteStream(archive + ".part"));
-  fs.renameSync(archive + ".part", archive);
-  onProgress({ phase: "extract", detail: "Unpacking…" });
-  // bsdtar (macOS, Windows 10+) reads zip as well as tar; GNU tar handles the Linux tarball.
-  execFileSync("tar", ["-xf", archive, "-C", dir], { stdio: "ignore" });
-  fs.rmSync(archive, { force: true });
-  const bin = path.join(dir, exeName());
-  if (!fs.existsSync(bin)) throw new Error(`OpenCode archive unpacked but ${bin} is missing`);
+  const hash = crypto.createHash(algo);
+  const meter = new Transform({ transform(chunk, _enc, cb) { received += chunk.length; hash.update(chunk); onProgress({ phase: "download", received, total }); cb(null, chunk); } });
+  try {
+    await pipeline(Readable.fromWeb(res.body), meter, fs.createWriteStream(archive + ".part"));
+    const digest = hash.digest("base64");
+    if (digest !== expected) throw new Error(`OpenCode download failed integrity check (${algo} mismatch for ${pkg}) — not installed`);
+    fs.renameSync(archive + ".part", archive);
+    onProgress({ phase: "extract", detail: "Verified. Unpacking…" });
+    const want = new RegExp(`^package/bin/${exe.replace(".", "\\.")}$`);
+    await tar.x({ file: archive, cwd: dir, strip: 2, filter: (p) => want.test(p) });
+  } finally {
+    fs.rmSync(archive + ".part", { force: true });
+    fs.rmSync(archive, { force: true });
+  }
+  const bin = path.join(dir, exe);
+  if (!fs.existsSync(bin)) throw new Error(`OpenCode package unpacked but ${bin} is missing`);
   if (process.platform !== "win32") fs.chmodSync(bin, 0o755);
-  const v = execFileSync(bin, ["--version"], { encoding: "utf8", timeout: 20_000 }).trim().split("\n").pop();
-  onProgress({ phase: "done", detail: `OpenCode ${v} ready` });
+  if (pkg === platformPackage()) {
+    const v = execFileSync(bin, ["--version"], { encoding: "utf8", timeout: 20_000 }).trim().split("\n").pop();
+    onProgress({ phase: "done", detail: `OpenCode ${v} ready` });
+  } else {
+    onProgress({ phase: "done", detail: `OpenCode ${ver} (${pkg}) staged` });
+  }
   return bin;
 }
 
-// Kept as the one entry point every surface calls: get a binary by whatever
-// means is left. Today that is the release download.
+// One entry point every surface calls; concurrent callers share one download.
+let installing = null;
 async function install({ log = () => {} } = {}) {
   const found = findBinary();
   if (found) return found;
+  if (installing) return installing;
   let lastPct = -1;
-  return await download({ onProgress: (p) => {
+  installing = download({ onProgress: (p) => {
     if (p.detail) log(p.detail);
     else if (p.total) { const pct = Math.floor((p.received / p.total) * 100); if (pct !== lastPct && pct % 10 === 0) { lastPct = pct; log(`${pct}%`); } }
   } });
+  try { return await installing; }
+  finally { installing = null; }
 }
 
 // ── the server ────────────────────────────────────────────────────
@@ -147,8 +176,12 @@ class Engine {
     this.baseUrl = null;
     this.starting = null;
     this.listeners = new Map(); // sessionID -> Set<fn(event)>
-    this.pumps = new Map();      // directory -> promise that resolves once its event stream is connected
+    this.pumps = new Map();      // directory -> { ctl, refs, ready } for its event stream
     this.modelsCache = { at: 0, list: [] };
+    // Loopback is not an authorization boundary: the server only answers
+    // requests carrying this per-process secret (OpenCode's own basic auth).
+    this.username = "omniwork";
+    this.password = crypto.randomBytes(24).toString("hex");
   }
 
   async start() {
@@ -170,13 +203,15 @@ class Engine {
         OPENCODE_DISABLE_PRUNE: "1",
         OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: "1",
         OPENCODE_CONFIG_CONTENT: JSON.stringify(extra),
+        OPENCODE_SERVER_USERNAME: this.username,
+        OPENCODE_SERVER_PASSWORD: this.password,
       };
       // A neutral cwd: the workspace comes per request, never from where we
       // happened to start.
       const proc = spawn(this.bin, ["serve", "--port", "0", "--hostname", "127.0.0.1"], { cwd: os.tmpdir(), env, stdio: ["ignore", "pipe", "pipe"] });
       this.proc = proc;
       let buf = "";
-      const timer = setTimeout(() => reject(new Error("opencode serve did not report a port within 60s")), 60_000);
+      const timer = setTimeout(() => { try { proc.kill(); } catch {} reject(new Error("opencode serve did not report a port within 60s")); }, 60_000);
       const onLine = (line) => {
         const m = /listening on (http:\/\/[^\s]+)/.exec(line);
         if (m && !this.baseUrl) {
@@ -191,8 +226,11 @@ class Engine {
       proc.on("error", (e) => { clearTimeout(timer); reject(e); });
       proc.on("exit", (code) => {
         clearTimeout(timer);
+        if (this.proc !== proc) return; // a server we already replaced
         const was = this.baseUrl;
-        this.baseUrl = null; this.proc = null; this.starting = null; this.pumps.clear();
+        this.baseUrl = null; this.proc = null; this.starting = null;
+        for (const p of this.pumps.values()) p.ctl.abort();
+        this.pumps.clear();
         if (!was) reject(new Error(`opencode serve exited with ${code} before listening`));
         else this.log("[opencode] server exited", code);
       });
@@ -204,11 +242,15 @@ class Engine {
   stop() {
     if (this.proc) { try { this.proc.kill(); } catch {} }
     this.proc = null; this.baseUrl = null;
+    for (const p of this.pumps.values()) p.ctl.abort();
+    this.pumps.clear();
   }
+
+  #auth() { return "Basic " + Buffer.from(`${this.username}:${this.password}`).toString("base64"); }
 
   async #req(method, p, { body, directory, timeoutMs = 30_000, signal } = {}) {
     const base = await this.start();
-    const headers = { "Content-Type": "application/json" };
+    const headers = { "Content-Type": "application/json", Authorization: this.#auth() };
     if (directory) headers["x-opencode-directory"] = encodeURIComponent(directory);
     const res = await fetch(base + p, {
       method, headers,
@@ -225,11 +267,11 @@ class Engine {
   // OpenCode's event stream is scoped to a directory — without the header it
   // carries only server heartbeats — so there is one subscription per
   // workspace, fanned out per session, kept alive for the life of the server.
-  async #pump(directory, onConnected) {
+  async #pump(directory, ctl, onConnected) {
     const base = this.baseUrl;
-    while (this.baseUrl === base) {
+    while (this.baseUrl === base && !ctl.signal.aborted) {
       try {
-        const res = await fetch(`${base}/event`, { headers: { Accept: "text/event-stream", "x-opencode-directory": encodeURIComponent(directory) } });
+        const res = await fetch(`${base}/event`, { signal: ctl.signal, headers: { Accept: "text/event-stream", Authorization: this.#auth(), "x-opencode-directory": encodeURIComponent(directory) } });
         if (onConnected) { onConnected(); onConnected = null; }
         const reader = res.body.getReader();
         const dec = new TextDecoder();
@@ -251,23 +293,34 @@ class Engine {
           }
         }
       } catch {}
-      if (this.baseUrl === base) await new Promise((r) => setTimeout(r, 500));
+      if (this.baseUrl === base && !ctl.signal.aborted) await new Promise((r) => setTimeout(r, 500));
     }
   }
 
   // Make sure the workspace's event stream is connected before a prompt goes
   // out — the first tool part can arrive within milliseconds.
+  // Streams are ref-counted per workspace: the last subscriber leaving closes
+  // the connection, so a long-lived server that has touched many workspaces
+  // holds no idle sockets.
   ensurePump(directory) {
     if (!this.pumps.has(directory)) {
-      this.pumps.set(directory, new Promise((resolve) => { this.#pump(directory, resolve); setTimeout(resolve, 3000); }));
+      const ctl = new AbortController();
+      const ready = new Promise((resolve) => { this.#pump(directory, ctl, resolve); setTimeout(resolve, 3000); });
+      this.pumps.set(directory, { ctl, refs: 0, ready });
     }
-    return this.pumps.get(directory);
+    return this.pumps.get(directory).ready;
   }
 
-  subscribe(sessionID, fn) {
+  subscribe(sessionID, fn, directory) {
     if (!this.listeners.has(sessionID)) this.listeners.set(sessionID, new Set());
     this.listeners.get(sessionID).add(fn);
-    return () => { const s = this.listeners.get(sessionID); if (s) { s.delete(fn); if (!s.size) this.listeners.delete(sessionID); } };
+    const pump = directory ? this.pumps.get(directory) : null;
+    if (pump) pump.refs++;
+    return () => {
+      const s = this.listeners.get(sessionID);
+      if (s) { s.delete(fn); if (!s.size) this.listeners.delete(sessionID); }
+      if (pump && --pump.refs <= 0 && this.pumps.get(directory) === pump) { pump.ctl.abort(); this.pumps.delete(directory); }
+    };
   }
 
   async health() { return await this.#req("GET", "/global/health", { timeoutMs: 5000 }); }
@@ -325,8 +378,14 @@ function getEngine(opts) {
   if (!shared) {
     shared = new Engine(opts);
     process.on("exit", () => shared && shared.stop());
-    for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"]) {
-      if (process.listenerCount(sig) === 0) process.on(sig, () => { if (shared) shared.stop(); process.exit(0); });
+    // Electron's app.quit path runs "exit" itself; a raw signal handler there
+    // would skip its cleanup. Headless servers get one that exits the way the
+    // shell expects (128 + signal number).
+    if (!process.versions.electron) {
+      const codes = { SIGHUP: 129, SIGINT: 130, SIGTERM: 143 };
+      for (const sig of Object.keys(codes)) {
+        if (process.listenerCount(sig) === 0) process.on(sig, () => { if (shared) shared.stop(); process.exit(codes[sig]); });
+      }
     }
   }
   return shared;
@@ -339,7 +398,7 @@ function getEngine(opts) {
 // → error. What OmniWork can't offer here is its own skills and memory —
 // OpenCode runs its own tools — which is the honest price of the free tier.
 class OpenCodeAgent {
-  constructor({ model, workspace, emit, approvalMode = "auto", approver = null, engine = getEngine(), fallbackModels = [] }) {
+  constructor({ model, workspace, emit, approvalMode = "auto", approver = null, engine = getEngine(), fallbackModels = [], messages = null, sessionID = null }) {
     this.engine = engine;
     this.model = model || `${PREFIX}nemotron-3.5-lightning-free`;
     this.fallbackModels = fallbackModels; // accepted for interface parity; the engine picks its own
@@ -347,12 +406,15 @@ class OpenCodeAgent {
     this.emit = emit;
     this.approvalMode = approvalMode;
     this.approver = approver;
-    this.messages = [{ role: "system", content: "(OpenCode engine session)" }];
+    // A conversation handed over from another agent is carried into the first
+    // prompt, so a mid-session switch does not forget what was said.
+    this.messages = Array.isArray(messages) && messages.length ? messages.slice() : [{ role: "system", content: "(OpenCode engine session)" }];
+    this.carryOver = !sessionID && this.messages.some((m) => m.role === "user");
     this.lastText = "";
     this.modelSwitches = [];
     this.contextTokens = 200_000;
     this.memory = null;
-    this.sessionID = null;
+    this.sessionID = sessionID || null; // OpenCode's own id — persisted by callers that resume sessions
     this.aborted = false;
     this.undoAvailable = false;
     this.turnStats = null;
@@ -390,10 +452,13 @@ class OpenCodeAgent {
   async send(userText, images) {
     this.aborted = false;
     this.turnStats = { startedAt: Date.now(), inTokens: 0, outTokens: 0, estimated: true };
-    const text = images && images.length ? `${userText}\n\n(${images.length} image(s) attached — not forwarded to the OpenCode engine)` : userText;
-    this.messages.push({ role: "user", content: text });
+    let text = images && images.length ? `${userText}\n\n(${images.length} image(s) attached — not forwarded to the OpenCode engine)` : userText;
+    if (this.carryOver) { text = carriedContext(this.messages) + text; this.carryOver = false; }
+    this.messages.push({ role: "user", content: userText });
     this.emit("thinking", { step: 0 });
 
+    // The model's provider (Zen vs Go) comes from the catalog; make sure it is loaded.
+    if (!this.engine.modelsCache.list.length) { try { await this.engine.models(); } catch {} }
     const { providerID, modelID } = this.#target();
     let unsubscribe = () => {};
     let streamedText = "";
@@ -450,7 +515,7 @@ class OpenCodeAgent {
             this.emit("system", { content: `OpenCode: ${(p.error && (p.error.data && p.error.data.message || p.error.name)) || "error"}` });
             break;
         }
-      });
+      }, this.workspace);
 
       const res = await this.engine.prompt(sid, { directory: this.workspace, providerID, modelID, text });
       if (this.aborted) { this.emit("aborted", this.#stats()); return; }
@@ -496,6 +561,23 @@ class OpenCodeAgent {
   loadProjectMemory() { return ""; }
 }
 
+// The last turns of a conversation another model handled, as a preface for
+// the engine's first prompt. Bounded so a long session does not become the
+// whole prompt.
+function carriedContext(messages, { turns = 20, perMessage = 600, total = 8000 } = {}) {
+  const recent = messages.filter((m) => m.role === "user" || m.role === "assistant").slice(-turns);
+  const lines = [];
+  let size = 0;
+  for (const m of recent) {
+    const body = typeof m.content === "string" ? m.content : Array.isArray(m.content) ? m.content.filter((c) => c && c.type === "text").map((c) => c.text).join("\n") : "";
+    const line = `${m.role === "user" ? "User" : "Assistant"}: ${String(body).replace(/\s+/g, " ").trim().slice(0, perMessage)}`;
+    if (size + line.length > total) break;
+    lines.push(line); size += line.length;
+  }
+  if (!lines.length) return "";
+  return `Context — this conversation was handled by another model until now. Recent turns:\n${lines.join("\n")}\n\nContinue from here. New message:\n`;
+}
+
 function textOf(res) {
   const parts = (res && res.parts) || [];
   return parts.filter((p) => p && p.type === "text" && !p.synthetic).map((p) => p.text || "").join("").trim();
@@ -503,4 +585,4 @@ function textOf(res) {
 
 const isEngineModel = (id) => typeof id === "string" && id.startsWith(PREFIX);
 
-module.exports = { PREFIX, findBinary, candidates, available, version, install, download, pinnedVersion, assetName, target, DOWNLOAD_DIR, INSTALL_COMMAND, INSTALL_SCRIPT, Engine, getEngine, OpenCodeAgent, isEngineModel };
+module.exports = { PREFIX, findBinary, candidates, available, version, install, download, lockEntry, platformPackage, pinnedVersion, target, DOWNLOAD_DIR, INSTALL_COMMAND, INSTALL_SCRIPT, Engine, getEngine, OpenCodeAgent, isEngineModel };

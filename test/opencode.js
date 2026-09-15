@@ -10,6 +10,7 @@ const path = require("node:path");
 const fs = require("node:fs");
 const os = require("node:os");
 const { spawn } = require("node:child_process");
+const crypto = require("node:crypto");
 
 const FAKE = path.join(__dirname, "fixtures", "fake-opencode.js");
 process.env.OMNIWORK_OPENCODE_BIN = FAKE;
@@ -86,25 +87,32 @@ function rpcClient(file, env) {
   // ── getting the binary: discovery order and the release download ──
   check("the env override is the first candidate", opencode.candidates()[0] === FAKE);
   check("a clone's node_modules binary and the data-dir download are looked for by absolute path", opencode.candidates().some((c) => /node_modules\/opencode-(darwin|linux|windows)-(arm64|x64)\/bin\/opencode/.test(c)) && opencode.candidates().includes(path.join(opencode.DOWNLOAD_DIR, process.platform === "win32" ? "opencode.exe" : "opencode")));
-  check("the download asset matches this platform and the pinned version", /^opencode-(darwin|windows)-(arm64|x64)\.zip$|^opencode-linux-(arm64|x64)\.tar\.gz$/.test(opencode.assetName()) && /^\d+\.\d+\.\d+$/.test(opencode.pinnedVersion()));
+  check("the platform package and its lockfile integrity are pinned", /^opencode-(darwin|linux|windows)-(arm64|x64)$/.test(opencode.platformPackage()) && /^sha512-/.test(opencode.lockEntry(opencode.platformPackage()).integrity) && /^\d+\.\d+\.\d+$/.test(opencode.pinnedVersion()));
   {
-    // A fake GitHub release: a tar.gz holding an `opencode` script that answers --version.
+    // A fake npm registry: a .tgz laid out like the real platform package
+    // (package/bin/opencode) whose sha512 we know — and one we lie about.
     const relDir = fs.mkdtempSync(path.join(os.tmpdir(), "oc-release-"));
-    const stage = path.join(relDir, "stage"); fs.mkdirSync(stage);
+    const stage = path.join(relDir, "package", "bin"); fs.mkdirSync(stage, { recursive: true });
     fs.writeFileSync(path.join(stage, "opencode"), "#!/bin/sh\necho fake-release 9.9.9\n"); fs.chmodSync(path.join(stage, "opencode"), 0o755);
     const { execFileSync } = require("node:child_process");
-    const asset = opencode.assetName();
-    execFileSync("tar", process.platform === "linux" || !asset.endsWith(".zip") ? ["-czf", path.join(relDir, asset), "-C", stage, "opencode"] : ["-caf", path.join(relDir, asset), "-C", stage, "opencode"]);
+    await require("tar").c({ gzip: true, file: path.join(relDir, "pkg.tgz"), cwd: relDir }, ["package"]);
+    const digest = crypto.createHash("sha512").update(fs.readFileSync(path.join(relDir, "pkg.tgz"))).digest("base64");
     const rel = http.createServer((req, res) => { const p = path.join(relDir, path.basename(req.url)); if (fs.existsSync(p)) { res.writeHead(200, { "Content-Length": fs.statSync(p).size }); fs.createReadStream(p).pipe(res); } else { res.writeHead(404); res.end(); } });
     await new Promise((r) => rel.listen(0, "127.0.0.1", r));
+    const resolved = `http://127.0.0.1:${rel.address().port}/pkg.tgz`;
     const dest = fs.mkdtempSync(path.join(os.tmpdir(), "oc-dl-"));
     const phases = [];
-    const bin = await opencode.download({ baseUrl: `http://127.0.0.1:${rel.address().port}`, dir: dest, onProgress: (p) => phases.push(p.phase) });
-    check("download() fetches the release archive, unpacks it, and returns an executable", bin === path.join(dest, "opencode") && fs.statSync(bin).mode & 0o111 && execFileSync(bin, ["--version"], { encoding: "utf8" }).includes("9.9.9"));
+    const bin = await opencode.download({ pkg: "opencode-fake-x64", dir: dest, entry: { integrity: `sha512-${digest}`, resolved, version: "9.9.9" }, onProgress: (p) => phases.push(p.phase) });
+    check("download() fetches the package, verifies its sha512, unpacks the binary, and returns it", bin === path.join(dest, "opencode") && fs.statSync(bin).mode & 0o111 && execFileSync(bin, ["--version"], { encoding: "utf8" }).includes("9.9.9"));
     check("…reporting download, extract and done", phases.includes("download") && phases.includes("extract") && phases[phases.length - 1] === "done");
-    check("…and leaves no archive behind", !fs.existsSync(path.join(dest, asset)));
+    check("…and leaves no archive behind", !fs.readdirSync(dest).some((n) => /\.tgz|\.part$/.test(n)));
+    const bad = fs.mkdtempSync(path.join(os.tmpdir(), "oc-dl-bad-"));
+    let refused = null;
+    try { await opencode.download({ pkg: "opencode-fake-x64", dir: bad, entry: { integrity: "sha512-" + "A".repeat(86) + "==", resolved, version: "9.9.9" } }); } catch (e) { refused = e.message; }
+    check("a hash mismatch refuses the download and installs nothing", refused && /integrity/.test(refused) && !fs.existsSync(path.join(bad, "opencode")) && !fs.readdirSync(bad).length);
     rel.close();
   }
+  check("the event stream for a workspace is closed once its last subscriber leaves", engine.pumps.size === 0);
 
   const pickled = await run("say READY", { model: "opencode/big-pickle" });
   check("a pinned engine model is honoured", /opencode\/big-pickle/.test(pickled.agent.lastText));

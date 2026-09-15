@@ -163,12 +163,11 @@ const TOOLS = [
   {
     name: "connect_provider",
     description:
-      "Connect a free model provider to OmniWork's gateway so delegations always have a model. provider='openrouter' with no api_key OPENS THE USER'S BROWSER for a one-click sign-in (PKCE, no key to paste) — tell the user before calling. provider='local' registers any Ollama / LM Studio / llama.cpp / vLLM server running on this machine. Other providers (ollama-cloud, kilo-gateway, groq, cerebras, nvidia, gemini, mistral) take an api_key the user creates at the URL list_providers shows; prefer letting the user paste it in the OmniWork app or run 'npm run providers' rather than routing a secret through chat. The key is verified with one request before it is kept.",
+      "Connect a free model provider to OmniWork's gateway so delegations always have a model. provider='openrouter' OPENS THE USER'S BROWSER for a one-click sign-in (PKCE; the user completes it, no key passes through here) — tell the user before calling. provider='local' registers any Ollama / LM Studio / llama.cpp / vLLM server running on this machine. provider='opencode' reports the OpenCode engine. Key-based providers (ollama-cloud, kilo-gateway, groq, cerebras, nvidia, gemini, mistral) cannot be connected from this tool: this tool takes no API key, on purpose — a key pasted by a model would route the user's code through whoever supplied it. Tell the user to paste it in the OmniWork app's free-models panel or run 'npm run providers connect <provider> <key>'.",
     inputSchema: {
       type: "object",
       properties: {
-        provider: { type: "string", description: "openrouter | local | ollama-cloud | kilo-gateway | groq | cerebras | nvidia | gemini | mistral" },
-        api_key: { type: "string", description: "API key for key-based providers. Omit for openrouter (browser flow) and local." },
+        provider: { type: "string", description: "openrouter | local | opencode" },
       },
       required: ["provider"],
     },
@@ -218,9 +217,14 @@ async function callTool(name, args, progress = () => {}) {
       }
       return `OpenCode is not present yet. It is a ~45 MB download, so it needs the user's own gesture (not a tool call): ${opencode.INSTALL_COMMAND} in the omniwork checkout, or the Download button in the app's free-models panel. Afterwards its free Zen models appear as opencode/… in list_models and become the automatic fallback.`;
     }
+    if (!["openrouter", "local"].includes(args.provider)) {
+      const p = providers.CATALOG.find((c) => c.id === args.provider);
+      return p
+        ? `${p.name} needs an API key, and this tool takes none — a key supplied by a model would route the user's code through whoever supplied it. Ask the user to create one at ${p.keyUrl} and paste it in the OmniWork app's free-models panel, or run: npm run providers connect ${p.id} <key>`
+        : `unknown provider: ${args.provider} (this tool connects openrouter, local, or opencode)`;
+    }
     let url = null;
     const result = await providers.connect(gw, args.provider, {
-      apiKey: args.api_key,
       onUrl: (u) => { url = u; progress(0, "waiting for the OpenRouter sign-in in the browser…"); },
     });
     invalidateModels();
@@ -248,6 +252,20 @@ async function callTool(name, args, progress = () => {}) {
         else if (p.kind === "model") { switched.push(`${p.from} → ${p.to}`); progress(done, `${p.title || "subagent"}: model ${p.from} failed, continuing on ${p.to}`, tasks.length); }
       },
     });
+    if (agent.isEngine) {
+      // The engine has no in-loop subagents; each task gets its own session.
+      const results = await Promise.all(tasks.map(async (t) => {
+        const one = makeAgent({
+          baseUrl: gw.baseUrl, apiKey: gw.apiKey, model: agent.model, fallbackModels: [],
+          workspace, canSpawn: false, ...agentEnv(workspace), streaming: false,
+          emit: (type, p) => { if (type === "tool_call") progress(done, `${t.title}: ${p.name}`, tasks.length); },
+        });
+        await one.send(t.prompt);
+        progress(++done, `${done}/${tasks.length} engine sessions finished`, tasks.length);
+        return `## ${t.title}\n${one.lastText || "(no summary returned)"}`;
+      }));
+      return results.join("\n\n---\n\n");
+    }
     const out = await agent.runSubagents(tasks);
     return switched.length ? `${out}\n\n[model: some subagents fell back — ${[...new Set(switched)].join(", ")}]` : out;
   }

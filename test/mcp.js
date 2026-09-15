@@ -39,7 +39,9 @@ const rpc = (method, params) => new Promise((resolve, reject) => {
   const list = await rpc("tools/list", {});
   const names = list.result.tools.map((t) => t.name).sort();
   check("all nine tools listed", names.join(",") === "browse_page,connect_provider,delegate,delegate_parallel,install_skills,list_models,list_providers,list_skills,web_search");
-  check("connect_provider warns that openrouter opens the browser", /OPENS THE USER'S BROWSER/.test(list.result.tools.find((t) => t.name === "connect_provider").description));
+  const connectTool = list.result.tools.find((t) => t.name === "connect_provider");
+  check("connect_provider warns that openrouter opens the browser", /OPENS THE USER'S BROWSER/.test(connectTool.description));
+  check("connect_provider takes no API key — a model must never be able to plant one", !("api_key" in connectTool.inputSchema.properties) && /takes no API key/.test(connectTool.description));
   const delegateSchema = list.result.tools.find((t) => t.name === "delegate").inputSchema.properties;
   check("delegate takes a model and a fallback chain", delegateSchema.model.type === "string" && delegateSchema.fallback_models.type === "array");
   const parallelSchema = list.result.tools.find((t) => t.name === "delegate_parallel").inputSchema.properties;

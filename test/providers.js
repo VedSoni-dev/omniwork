@@ -42,6 +42,12 @@ function fakeGateway() {
       conns.push(c);
       return json(res, 200, { connection: { ...c, apiKey: undefined } });
     }
+    if (req.method === "PATCH" && u.pathname.startsWith("/api/providers/")) {
+      const id = u.pathname.split("/").pop(); const c = conns.find((x) => x.id === id); const b = await readBody(req);
+      if (!c) return json(res, 404, { error: { message: "not found" } });
+      if (typeof b.isActive === "boolean") c.isActive = b.isActive;
+      return json(res, 200, { connection: { ...c, apiKey: undefined } });
+    }
     if (req.method === "DELETE" && u.pathname.startsWith("/api/providers/")) {
       const id = u.pathname.split("/").pop(); const i = conns.findIndex((c) => c.id === id);
       if (i < 0) return json(res, 404, { error: { message: "not found" } });
@@ -49,14 +55,14 @@ function fakeGateway() {
     }
     if (u.pathname === "/v1/models") {
       const ids = ["auto", "auto/best-coding"];
-      for (const c of conns) for (const m of EXPOSES[c.provider] || []) ids.push(`${ALIAS[c.provider]}/${m}`);
+      for (const c of conns) if (c.isActive !== false) for (const m of EXPOSES[c.provider] || []) ids.push(`${ALIAS[c.provider]}/${m}`);
       return json(res, 200, { data: ids.map((id) => ({ id })) });
     }
     if (u.pathname === "/v1/chat/completions") {
       const b = await readBody(req);
       chats.push(b.model);
       const alias = b.model.split("/")[0];
-      const c = conns.find((x) => ALIAS[x.provider] === alias);
+      const c = conns.find((x) => ALIAS[x.provider] === alias && x.isActive !== false);
       if (!c) return json(res, 404, { error: { message: "no such model" } });
       if (c.apiKey === "bad-key") return json(res, 401, { error: { message: "invalid api key" } });
       return json(res, 200, { choices: [{ message: { role: "assistant", content: "READY" } }] });
@@ -127,6 +133,11 @@ function fakeLocal() {
   await providers.connectWithKey(g.gw, "groq", "gsk-better");
   check("re-connecting a provider replaces the old connection", g.conns.filter((c) => c.provider === "groq").length === 1 && g.conns.find((c) => c.provider === "groq").apiKey === "gsk-better");
 
+  // ── a bad re-paste keeps the working connection ──
+  let badAgain = null;
+  try { await providers.connectWithKey(g.gw, "groq", "bad-key"); } catch (e) { badAgain = e.message; }
+  check("a rejected replacement key leaves the previous working key in place, active", badAgain && /Nothing was changed/.test(badAgain) && g.conns.filter((c) => c.provider === "groq").length === 1 && g.conns.find((c) => c.provider === "groq").apiKey === "gsk-better" && g.conns.find((c) => c.provider === "groq").isActive !== false);
+
   // ── unknown provider / empty key ──
   let bad = null; try { await providers.connectWithKey(g.gw, "nope", "x"); } catch (e) { bad = e.message; }
   check("unknown providers are refused with the known list", bad && /unknown provider/.test(bad) && /openrouter/.test(bad));
@@ -137,7 +148,7 @@ function fakeLocal() {
   let seenUrl = null;
   // "Opening the browser" here means hitting the fake /auth page, which plays the signed-in user and calls our loopback back.
   const orRes = await providers.connectOpenRouter(g.gw, { authBase: or.base, open: (u) => { fetch(u).catch(() => {}); }, onUrl: (u) => { seenUrl = u; } });
-  check("PKCE opens an /auth URL with a loopback callback and an S256 challenge", seenUrl && /\/auth\?callback_url=http%3A%2F%2F127\.0\.0\.1%3A\d+%2Fcallback&code_challenge=[A-Za-z0-9_-]{40,}&code_challenge_method=S256/.test(seenUrl));
+  check("PKCE opens an /auth URL with a nonce-bearing loopback callback and an S256 challenge", seenUrl && /\/auth\?callback_url=http%3A%2F%2F127\.0\.0\.1%3A\d+%2Fcallback%2F[A-Za-z0-9_-]{16,}&code_challenge=[A-Za-z0-9_-]{40,}&code_challenge_method=S256/.test(seenUrl));
   check("…exchanges the code for a key and stores it", g.conns.some((c) => c.provider === "openrouter" && c.apiKey === "sk-or-v1-from-pkce"));
   check("…and reports OpenRouter's models", orRes.provider === "openrouter" && orRes.models === 4);
 

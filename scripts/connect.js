@@ -52,7 +52,7 @@ guide, load the \`omniwork\` skill.
 - \`web_search(query)\` / \`browse_page(url)\` — search and read pages through OmniWork (no API key)
 - \`list_skills()\` / \`install_skills(source)\` — see or extend what delegated agents can do
 - \`list_models()\` — what the gateway can route; pass \`model\` + \`fallback_models\` to \`delegate*\` to pin a coder and say what to try if it fails
-- \`list_providers()\` / \`connect_provider(provider, api_key?)\` — free providers that stay up; \`openrouter\` opens the user's browser (ask first), \`local\` registers Ollama & co.
+- \`list_providers()\` / \`connect_provider(provider)\` — free providers that stay up; \`openrouter\` opens the user's browser (ask first), \`local\` registers Ollama & co. It takes no API key: keys go in the app or \`npm run providers connect <provider> <key>\`, never through you.
 
 Rules of thumb: always pass \`cwd\`; delegated agents start **cold** (self-contained prompts only);
 ~30 s overhead per call, so don't delegate tiny things; not a sandbox — it edits real files with

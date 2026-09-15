@@ -174,10 +174,15 @@ function makeAgent(opts) {
 
 // A turn that ended because no model answered — as opposed to a tool error,
 // a cancel, or a model that answered badly.
-const isNoModelFailure = (msg) => /All models failed|Gateway (401|403|404|429|503)|No choices returned|empty response/.test(String(msg || ""));
+// A rate limit (429) is deliberately not one: it clears by itself, and it
+// must not silently move a pinned paid model's conversation to a free tier.
+const isNoModelFailure = (msg) => /All models failed|Gateway (401|403|404|503)|No choices returned|empty response/.test(String(msg || ""));
 
 // The engine's best free model, when OpenCode is installed; null otherwise.
 async function engineFallbackModel() {
+  // OMNIWORK_ENGINE_FALLBACK=off keeps a failed turn failed rather than
+  // finishing it on OpenCode's free tier.
+  if (/^(0|off|false|no)$/i.test(String(process.env.OMNIWORK_ENGINE_FALLBACK || ""))) return null;
   if (!opencode.available()) return null;
   try {
     const list = await opencode.getEngine().models();

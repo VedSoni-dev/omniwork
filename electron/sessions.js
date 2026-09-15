@@ -267,7 +267,7 @@ class SessionManager {
         let model = `${opencode.PREFIX}nemotron-3.5-lightning-free`;
         try { const list = await opencode.getEngine().models(); if (list.length) model = list[0].id; } catch {}
         const prev = sess.agent;
-        sess.agent = new opencode.OpenCodeAgent({ model, workspace: sess.workspace, approvalMode: prev.approvalMode, approver: prev.approver, emit: prev.emit });
+        sess.agent = new opencode.OpenCodeAgent({ model, workspace: sess.workspace, approvalMode: prev.approvalMode, approver: prev.approver, emit: prev.emit, messages: prev.messages });
         this.#onAgentEvent(id, "system", { content: `⇄ no gateway model answered — continuing on the OpenCode engine (${model})` });
         sess.status = "running";
         this.#pushList();
@@ -363,8 +363,12 @@ class SessionManager {
       if (!s.agent) continue;
       // Crossing between the gateway loop and the OpenCode engine is a new
       // agent, not a field change; within one, it's just the model id.
-      if (Boolean(s.agent.isEngine) !== opencode.isEngineModel(model)) this.#buildAgent(s);
-      else s.agent.model = model;
+      if (Boolean(s.agent.isEngine) !== opencode.isEngineModel(model)) {
+        // Never leave a running agent behind: it would keep emitting into a
+        // session whose Stop now points at the new one.
+        if (s.status === "running") s.agent.abort();
+        this.#buildAgent(s);
+      } else s.agent.model = model;
     }
     this.refreshContextLimit();
   }

@@ -149,12 +149,13 @@ function persist(sess) {
     fs.writeFileSync(sessionFile(sess.id), JSON.stringify({
       id: sess.id, cwd: sess.cwd, mode: sess.mode,
       model: sess.agent.model, fallbackModels: sess.agent.fallbackModels,
+      engineSession: sess.agent.isEngine ? sess.agent.sessionID : null,
       messages: sess.agent.messages.slice(-200),
     }));
   } catch (e) { log("persist failed:", e.message); }
 }
 
-async function buildSession({ id, cwd, mode, messages, model, fallbackModels }) {
+async function buildSession({ id, cwd, mode, messages, model, fallbackModels, engineSession }) {
   const gw = await ensureGateway(log);
   const models = await resolveModelsLive(gw, { model, fallbackModels });
   const sess = {
@@ -165,21 +166,22 @@ async function buildSession({ id, cwd, mode, messages, model, fallbackModels }) 
     agent: null,
   };
   sess.gw = gw;
-  attachAgent(sess, models.model, models.fallbackModels);
-  if (Array.isArray(messages) && messages.length) sess.agent.messages = messages;
+  attachAgent(sess, models.model, models.fallbackModels, { messages: Array.isArray(messages) && messages.length ? messages : null, sessionID: engineSession || null });
   sessions.set(id, sess);
   return sess;
 }
 
 // The session's agent: OmniWork's loop on the gateway, or the OpenCode engine
 // for `opencode/…` models. Rebuilt when a model change crosses that line.
-function attachAgent(sess, model, fallbackModels) {
+function attachAgent(sess, model, fallbackModels, { messages = null, sessionID = null } = {}) {
   const gw = sess.gw;
   sess.agent = makeAgent({
     baseUrl: gw.baseUrl,
     apiKey: gw.apiKey,
     model,
     fallbackModels,
+    messages,   // the engine carries these into its first prompt; the gateway agent restores them below
+    sessionID,  // an OpenCode session to resume
     workspace: sess.cwd,
     canSpawn: true,
     approvalMode: sess.mode,
@@ -187,6 +189,7 @@ function attachAgent(sess, model, fallbackModels) {
     emit: (type, payload) => sess.sink(type, payload),
     ...agentEnv(sess.cwd),
   });
+  if (!sess.agent.isEngine && Array.isArray(messages) && messages.length) sess.agent.messages = messages;
   return sess.agent;
 }
 
@@ -260,9 +263,7 @@ async function setModel(sess, modelId) {
   // Not an error: passthrough providers accept ids the catalog doesn't list.
   if (catalog.length && !catalog.includes(id)) log(`model ${id} is not in the gateway catalog — passing it through`);
   if (Boolean(sess.agent.isEngine) !== opencode.isEngineModel(id)) {
-    const keep = sess.agent.messages;
-    attachAgent(sess, id, sess.agent.fallbackModels.filter((m) => m !== id));
-    if (!sess.agent.isEngine && Array.isArray(keep) && keep.length) sess.agent.messages = keep;
+    attachAgent(sess, id, sess.agent.fallbackModels.filter((m) => m !== id), { messages: sess.agent.messages });
   } else {
     sess.agent.model = id;
     sess.agent.fallbackModels = sess.agent.fallbackModels.filter((m) => m !== id);
@@ -460,7 +461,7 @@ async function runTurn(sess, blocks) {
       if (model) {
         const prevFailure = failure;
         failure = null;
-        attachAgent(sess, model, []);
+        attachAgent(sess, model, [], { messages: sess.agent.messages });
         up({ sessionUpdate: "agent_message_chunk", messageId: `sys${Date.now().toString(36)}`, content: { type: "text", text: `⇄ no gateway model answered (${prevFailure.split("\n")[0].slice(0, 120)}) — continuing on the OpenCode engine (${model})\n` } });
         configOptionsFor(sess).then((configOptions) => up({ sessionUpdate: "config_option_update", configOptions })).catch(() => {});
         await sess.agent.send(text, images);
@@ -547,7 +548,7 @@ const handlers = {
       if (!saved) throw new RpcError(-32602, `unknown session: ${id}`);
       sess = await buildSession({
         id, cwd: cwd || saved.cwd, mode: saved.mode, messages: saved.messages,
-        model: saved.model, fallbackModels: saved.fallbackModels,
+        model: saved.model, fallbackModels: saved.fallbackModels, engineSession: saved.engineSession,
       });
     }
     // ACP requires the whole conversation to be replayed as updates *before* we

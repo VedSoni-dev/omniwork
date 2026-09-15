@@ -102,12 +102,23 @@ function normalizeFallbacks(list, primary) {
   return out;
 }
 
-// Which failures are worth trying another model for. Anything the gateway
-// answered with an HTTP status is model-specific — a retired id, a provider
-// the user has no key for, a quota, a provider 5xx — and the gateway itself is
-// fine. A dead socket is not: no model on the same gateway will do better, so
-// that propagates untouched.
-const isModelFailure = (err) => Boolean(err && (err.modelFailure || Number.isFinite(err.status)));
+// Which failures are worth trying another model for: auth, quota, a retired
+// id, a provider 5xx — the gateway is fine, that model is not. A 400 counts
+// only when it names the model (OmniRoute maps upstream "unsupported model"
+// to 400); a malformed request or an oversized context (413) would fail the
+// same way on every model, and replaying the whole conversation to each of
+// them helps nobody. A dead socket propagates untouched for the same reason.
+const MODEL_STATUS = new Set([401, 403, 404, 429, 500, 502, 503, 504]);
+const MODEL_WORDS = /\bmodel\b|unsupported|unavailable|not (found|supported)|no such|retired|combo/i;
+const isModelFailure = (err) => {
+  if (!err) return false;
+  if (err.modelFailure) return true;
+  const s = err.status;
+  if (!Number.isFinite(s)) return false;
+  if (MODEL_STATUS.has(s)) return true;
+  return (s === 400 || s === 422) && MODEL_WORDS.test(String(err.message || ""));
+};
+const failureSignature = (err) => `${err.status || 0}:${String(err.message || "").replace(/^[^:]*: /, "").slice(0, 160)}`;
 
 class Agent {
   constructor({ baseUrl, apiKey, model, fallbackModels = [], workspace, emit, mcp, memory = null, skillsDir = null, browser = null, canSpawn = true, depth = 0, approvalMode = "auto", approver = null, streaming = true }) {
@@ -270,6 +281,7 @@ class Agent {
     const chain = [this.model, ...this.fallbackModels.filter((m) => m !== this.model)];
     const failures = [];
     let lastErr = null;
+    let lastSig = null;
     for (let i = 0; i < chain.length; i++) {
       const model = chain[i];
       const last = i === chain.length - 1;
@@ -277,14 +289,23 @@ class Agent {
       try { msg = await this.#callOnce(model); }
       catch (err) {
         if (this.aborted || !isModelFailure(err)) throw err;
-        lastErr = err;
         failures.push(`${model}: ${err.message}`);
+        // Two models failing identically is the gateway talking, not the
+        // models; walking further would only replay the conversation again.
+        const sig = failureSignature(err);
+        if (lastSig !== null && sig === lastSig) { lastErr = err; failures.push("(stopped: the next model failed the same way — this is the gateway, not the model)"); break; }
+        lastSig = sig; lastErr = err;
         continue;
       }
-      // An empty reply is the other way a free provider "fails". Worth another
-      // model while one is queued; otherwise returned as before, so the turn
-      // ends visibly instead of erroring on a reply that merely had no text.
-      if (!last && !hasContent(msg)) { failures.push(`${model}: empty response`); continue; }
+      // An empty reply is the other way a free provider "fails": another
+      // model while one is queued, otherwise an error — a blank "done" would
+      // hide it, and the caller may have an engine to fall back to.
+      if (!hasContent(msg)) {
+        failures.push(`${model}: empty response`);
+        if (!last) continue;
+        lastErr = new Error(`${model}: empty response`); lastErr.modelFailure = true;
+        break;
+      }
       if (model !== this.model) this.#switchModel(model, failures.join("; "));
       return msg;
     }

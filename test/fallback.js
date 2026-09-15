@@ -118,6 +118,34 @@ const errorOf = (events) => (events.find((e) => e.type === "error") || {}).messa
     check("…without walking the chain", agent.modelSwitches.length === 0);
   }
 
+  // ── what is NOT a model failure: a malformed request fails the same on every model ──
+  {
+    const gw = await gateway((b) => ({ status: 400, json: { error: { message: "messages[0].content must be a string" } } }));
+    const { agent, events } = await turn(gw, { model: "a/one", fallbackModels: ["b/two"] });
+    check("a 400 that is not about the model does not walk the chain", /^Gateway 400/.test(errorOf(events)) && gw.calls.length === 1 && agent.modelSwitches.length === 0);
+    gw.close();
+  }
+  {
+    const gw = await gateway((b) => (b.model === "a/one" ? { status: 400, json: { error: { message: "[400]: Unsupported model one" } } } : reply("ok")));
+    const { agent } = await turn(gw, { model: "a/one", fallbackModels: ["b/two"] });
+    check("a 400 that names the model does", agent.model === "b/two" && agent.lastText === "ok");
+    gw.close();
+  }
+  // ── two identical failures mean the gateway, not the models: stop walking ──
+  {
+    const gw = await gateway(() => ({ status: 503, json: { error: { message: "Maximum combo retry limit reached" } } }));
+    const { events } = await turn(gw, { model: "a/one", fallbackModels: ["b/two", "c/three", "d/four"] });
+    check("identical consecutive failures short-circuit the chain", gw.calls.length === 2 && /stopped: the next model failed the same way/.test(errorOf(events)));
+    gw.close();
+  }
+  // ── an empty reply with nothing left to try is an error, not a blank done ──
+  {
+    const gw = await gateway(() => reply(""));
+    const { events } = await turn(gw, { model: "a/one" });
+    check("an empty reply from the only model is reported as an error", /empty response/.test(errorOf(events)) && !events.some((e) => e.type === "done"));
+    gw.close();
+  }
+
   // ── chain normalisation ──
   {
     const a = new Agent({ baseUrl: "http://x", apiKey: "k", workspace, model: "p", fallbackModels: " a, b,,a ,p", emit: () => {} });

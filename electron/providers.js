@@ -119,15 +119,27 @@ async function modelIds(gw) {
   return ((data && data.data) || []).map((m) => m && m.id).filter((id) => typeof id === "string" && id);
 }
 
-// One connection per provider+name: adding again replaces, so a re-pasted key
-// never leaves a dead twin behind that the pool keeps trying.
 async function addConnection(gw, { provider, name, apiKey, baseUrl }) {
-  const existing = (await connections(gw)).filter((c) => c.provider === provider && c.name === name);
-  for (const c of existing) await call(gw, "DELETE", `/api/providers/${c.id}`).catch(() => {});
   const body = { provider, authType: "apikey", name, apiKey };
   if (baseUrl) body.providerSpecificData = { baseUrl };
   const data = await call(gw, "POST", "/api/providers", body);
   return data && data.connection;
+}
+
+// The connections a provider had before a new one was added. While the new
+// key is being proven they are paused (the gateway would otherwise route the
+// proof request to whichever connection it likes); on success they are
+// removed, on failure they come back. A bad paste never leaves the user with
+// less than they had. The new connection's own id is never in this list.
+async function twinsOf(gw, provider, keepId) {
+  return (await connections(gw)).filter((c) => c.provider === provider && c.id !== keepId);
+}
+async function setActive(gw, conns, isActive) {
+  for (const c of conns) await call(gw, "PATCH", `/api/providers/${c.id}`, { isActive }).catch(() => {});
+}
+async function retire(gw, conns) {
+  for (const c of conns) await call(gw, "DELETE", `/api/providers/${c.id}`).catch(() => {});
+  return conns.length;
 }
 
 // The gateway discovers a passthrough provider's models asynchronously after
@@ -234,21 +246,32 @@ async function connectWithKey(gw, providerId, apiKey, { verify = true } = {}) {
   if (!p) throw new Error(`unknown provider: ${providerId} (known: ${CATALOG.map((c) => c.id).join(", ")})`);
   const key = String(apiKey || "").trim();
   if (!key) throw new Error(`${p.name} needs an API key — create one at ${p.keyUrl}`);
+  // Add first, prove it, then retire what it replaces — the working
+  // connection the user already had is never the casualty of a bad paste.
   const conn = await addConnection(gw, { provider: p.id, name: p.name, apiKey: key });
+  const newId = conn && conn.id;
+  const twins = await twinsOf(gw, p.id, newId);
+  await setActive(gw, twins, false);
+  const undo = async () => { await setActive(gw, twins, true); if (newId) await call(gw, "DELETE", `/api/providers/${newId}`).catch(() => {}); };
   const ids = await waitForModels(gw, p.alias);
   const have = modelsFor(p, ids);
   const model = (p.prefer || []).find((m) => have.includes(m)) || (p.preferPattern ? have.find((m) => p.preferPattern.test(m)) : null) || have[0];
-  if (verify && model) {
+  if (!model) {
+    await undo();
+    throw new Error(`${p.name} accepted the key but listed no models within 12 s — nothing was changed. Check the key at ${p.keyUrl} and try again.`);
+  }
+  if (verify) {
     try { await verifyModel(gw, `${p.alias}/${model}`); }
     catch (e) {
       // 401/403 is the key itself; anything else (quota, a flaky model) is
       // not a reason to throw the key away.
       if (e.status === 401 || e.status === 403) {
-        if (conn && conn.id) await call(gw, "DELETE", `/api/providers/${conn.id}`).catch(() => {});
-        throw new Error(`${p.name} rejected that key (${e.message}). Check it at ${p.keyUrl}.`);
+        await undo();
+        throw new Error(`${p.name} rejected that key (${e.message}). Nothing was changed — check it at ${p.keyUrl}.`);
       }
     }
   }
+  await retire(gw, twins);
   return { provider: p.id, name: p.name, models: have.length, chain: suggestChain(ids) };
 }
 
@@ -259,7 +282,8 @@ async function connectLocal(gw, { candidates = LOCAL, only = null } = {}) {
     if (only && l.id !== only) continue;
     const running = await probeLocal(l.url);
     if (!running) { skipped.push({ id: l.id, name: l.name, reason: "not running" }); continue; }
-    await addConnection(gw, { provider: l.id, name: l.name, apiKey: "local", baseUrl: l.url });
+    const conn = await addConnection(gw, { provider: l.id, name: l.name, apiKey: "local", baseUrl: l.url });
+    await retire(gw, await twinsOf(gw, l.id, conn && conn.id));
     added.push({ id: l.id, name: l.name, url: l.url, models: running });
   }
   const ids = added.length ? await waitForModels(gw, added[added.length - 1].alias || entry(added[added.length - 1].id).alias) : await modelIds(gw);
@@ -275,8 +299,12 @@ function defaultOpen(url) {
   const cmd = process.platform === "darwin" ? ["open", [url]]
     : process.platform === "win32" ? ["cmd", ["/c", "start", "", url.replace(/&/g, "^&")]]
     : ["xdg-open", [url]];
-  try { spawn(cmd[0], cmd[1], { stdio: "ignore", detached: true }).unref(); return true; }
-  catch { return false; }
+  try {
+    const child = spawn(cmd[0], cmd[1], { stdio: "ignore", detached: true });
+    child.on("error", () => {}); // no opener on this box: the URL is printed by the caller anyway
+    child.unref();
+    return true;
+  } catch { return false; }
 }
 
 const DONE_PAGE = (ok) => `<!doctype html><meta charset="utf-8"><title>OmniWork</title>
@@ -291,39 +319,56 @@ async function connectOpenRouter(gw, { open = defaultOpen, onUrl = () => {}, aut
   const server = http.createServer();
   await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
   const port = server.address().port;
-  const callback = `http://127.0.0.1:${port}/callback`;
+  // A nonce in the callback path: OpenRouter redirects to the callback URL
+  // verbatim, so a stray request to the port (a web page probing localhost)
+  // cannot end or hijack the sign-in — only the real redirect has the path.
+  const nonce = b64url(crypto.randomBytes(16));
+  const callbackPath = `/callback/${nonce}`;
+  const callback = `http://127.0.0.1:${port}${callbackPath}`;
   const url = `${authBase}/auth?callback_url=${encodeURIComponent(callback)}&code_challenge=${challenge}&code_challenge_method=S256&key_label=${encodeURIComponent(label)}`;
 
-  let code;
+  const exchange = async (code) => {
+    const res = await fetch(`${authBase}/api/v1/auth/keys`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code, code_verifier: verifier, code_challenge_method: "S256" }),
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!res.ok) throw new Error(`OpenRouter key exchange failed: HTTP ${res.status} ${(await res.text().catch(() => "")).slice(0, 200)}`);
+    const data = await res.json();
+    if (!data || !data.key) throw new Error("OpenRouter key exchange returned no key");
+    return data.key;
+  };
+
+  let key;
   try {
-    code = await new Promise((resolve, reject) => {
+    key = await new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error("timed out waiting for the OpenRouter sign-in (5 min)")), timeoutMs);
-      server.on("request", (req, res) => {
+      let settled = false;
+      server.on("request", async (req, res) => {
         const u = new URL(req.url, "http://127.0.0.1");
-        if (u.pathname !== "/callback") { res.writeHead(404); res.end(); return; }
+        if (u.pathname !== callbackPath || settled) { res.writeHead(404); res.end(); return; }
         const c = u.searchParams.get("code");
-        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-        res.end(DONE_PAGE(Boolean(c)));
+        if (!c) { res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" }); res.end(DONE_PAGE(false)); return; }
+        settled = true;
         clearTimeout(timer);
-        if (c) resolve(c); else reject(new Error("OpenRouter returned no code"));
+        // The browser sees "connected" only once the key really exists.
+        try {
+          const k = await exchange(c);
+          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }); res.end(DONE_PAGE(true));
+          resolve(k);
+        } catch (e) {
+          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }); res.end(DONE_PAGE(false));
+          reject(e);
+        }
       });
       onUrl(url);
-      open(url);
+      Promise.resolve().then(() => open(url)).catch((e) => { clearTimeout(timer); reject(new Error(`could not open the browser: ${e.message}. Open this URL yourself: ${url}`)); });
     });
   } finally {
     server.close();
   }
-
-  const res = await fetch(`${authBase}/api/v1/auth/keys`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ code, code_verifier: verifier, code_challenge_method: "S256" }),
-    signal: AbortSignal.timeout(30_000),
-  });
-  if (!res.ok) throw new Error(`OpenRouter key exchange failed: HTTP ${res.status} ${(await res.text().catch(() => "")).slice(0, 200)}`);
-  const data = await res.json();
-  if (!data || !data.key) throw new Error("OpenRouter key exchange returned no key");
-  return await connectWithKey(gw, "openrouter", data.key, { verify: false });
+  return await connectWithKey(gw, "openrouter", key, { verify: false });
 }
 
 // One entry point for every surface (CLI, MCP tool, ACP auth method, desktop).
