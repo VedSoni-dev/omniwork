@@ -37,7 +37,7 @@ delegate** *inside* Claude Code or Codex.
 
 | | |
 |---|---|
-| 🆓 **Free & keyless** | Free models via `auto` routing, out of the box. Never rate-limited (auto-fallback across providers). |
+| 🆓 **Free models** | `auto` routes the gateway's free pool out of the box, and one click connects a free provider that *stays* up (OpenRouter, Ollama Cloud, Groq, Gemini…) — see [Free models that stay up](#free-models-that-stay-up). |
 | 🖥️ **Claude Code UI** | A clean terminal: `⏺`/`⎿` tool calls, `✻` thinking, `>` prompt, `@`-file mentions, per-turn time + token counts. |
 | 📁 **Projects & memory** | Sessions live under projects. Durable `MEMORY.md` per project plus a global scope — it remembers what you teach it. |
 | 🎓 **Skills** | Claude Code–compatible `SKILL.md` packs, loaded on demand. Ships with Anthropic's public set; the agent can write and install more. |
@@ -93,10 +93,12 @@ xattr -dr com.apple.quarantine /Applications/OmniWork.app
 ## Use OmniWork *inside* Claude Code / Codex — token saver 🪙
 
 Don't want to fully switch? Keep your premium agent as the orchestrator and let it **delegate the
-token-heavy grunt work to OmniWork's free models.** OmniWork ships an MCP server exposing two tools:
+token-heavy grunt work to OmniWork's free models.** OmniWork ships an MCP server exposing these tools:
 
-- `delegate(task, cwd?)` — OmniWork does the subtask autonomously on free models and returns a summary + changes
-- `delegate_parallel(tasks[], cwd?)` — fan a batch out to parallel free-model subagents
+- `delegate(task, cwd?, model?, fallback_models?)` — OmniWork does the subtask autonomously (free models by default) and returns a summary + changes
+- `delegate_parallel(tasks[], cwd?, model?, fallback_models?)` — fan a batch out to parallel subagents
+- `list_models()` — what the gateway can route right now, so you can pin a model and name what to try if it fails
+- `list_providers()` / `connect_provider(provider)` — see which free providers are connected and connect one (OpenRouter opens the browser; `local` registers Ollama & co.). It takes no API key on purpose: keys are pasted in the app or the terminal, never by a model.
 
 Your expensive model spends tokens on the hard reasoning; OmniWork burns **free** tokens on the
 mechanical work, in the same project folder.
@@ -151,6 +153,48 @@ matters — free models drift on instruction details.
 Treat the returned summary as a **claim, not evidence**, and verify before calling the work done.
 `npm run connect` installs this guidance so your agent applies it automatically.
 
+## Free models that stay up 🆓
+
+The gateway's built-in keyless pool is a set of unofficial endpoints that providers shut off
+without notice — on a bad day every one of them is gone and `auto` returns 503. So OmniWork
+makes the durable kind of free easy: real free tiers behind a free account, no card.
+
+| Provider | Free tier | Connect |
+|---|---|---|
+| **OpenRouter** | 20 free models, 18 with tool calling · 20 req/min, 50 req/day (1,000/day after a one-time $10 top-up) | one click — browser sign-in, no key to paste |
+| **Ollama Cloud** | DeepSeek V4, Kimi K2.6, GLM 5.1, Gemma 4 on a "light usage" tier | paste a key |
+| **Kilo Gateway** | `kilo-auto/free` router + Nemotron / MiniMax `:free` | paste a key |
+| **Groq** | gpt-oss-120b at 30 req/min, 1,000 req/day; Qwen 3 32B | paste a key |
+| **Cerebras**, **NVIDIA NIM**, **Gemini**, **Mistral** | free developer tiers | paste a key |
+| **OpenCode engine** | Zen's free models with **no account**: Nemotron 3.5 Lightning (default, answers in seconds), MiMo V2.5, Big Pickle, Ling 3.0 Flash, Nemotron 3 Ultra (strongest, ~100 s a step) | ships with a clone and with the desktop app; otherwise one click downloads it (~45 MB) |
+| **Ollama / LM Studio / llama.cpp / vLLM** | whatever runs on your machine | auto-detected |
+
+Three ways in, all the same code path:
+
+- **App** — *🆓 free models* in the sidebar. Connected providers become every session's fallback chain on the spot.
+- **Terminal** — `npm run providers` shows status; `npm run providers connect openrouter` opens the browser; `npm run providers connect groq <key>`; `npm run providers connect local`; `npm run providers connect opencode` downloads the engine if a clone or installer didn't bring it. Also `npx omniwork-providers`.
+- **From a harness** — the MCP server has `list_providers` / `connect_provider`; the ACP server offers `openrouter` and `local` as auth methods.
+
+A pasted key is exercised once before it is kept, so a bad key never lands in the pool. What is
+connected becomes the default fallback chain for the MCP and ACP servers (unless you set
+`OMNIWORK_MODEL_FALLBACKS` yourself), ordered strongest coder first, local last.
+
+**The OpenCode engine is the floor.** OpenCode Zen only serves its free tier to OpenCode itself, so
+OmniWork doesn't pretend to be OpenCode — it runs it. And nobody has to install anything or touch
+their PATH: `npm install` brings OpenCode in as an optional dependency (`opencode-ai`, the binary
+for your platform), the desktop installers stage it per platform at build time, and if it is
+missing anyway one click fetches the same npm package (~45 MB) into OmniWork's data folder —
+verified against the sha512 pinned in `package-lock.json` before a byte of it runs. OmniWork
+always launches it by absolute path, and the server it starts answers only requests carrying a
+per-process secret. Set `OMNIWORK_ENGINE_FALLBACK=off` if a failed turn should stay failed rather
+than finish on the engine. With OpenCode installed, `opencode/<model>`
+runs a session on OpenCode's own headless server (`opencode serve`, the same thing Zed and acpx
+drive) and its own tools, scoped to your workspace, streamed back as OmniWork events — text as
+text, the model's reasoning on its own lane, tool calls as tool calls. Pick one in the model
+menu, pass `model: "opencode/nemotron-3.5-lightning-free"` to `delegate`, or do nothing: when no
+gateway model answers, the turn finishes on the engine and says so. What you give up there is
+OmniWork's own skills and memory — OpenCode runs its tools, not ours.
+
 ## Drive OmniWork from OpenClaw, Zed, or any ACP harness 🔌
 
 The MCP server makes OmniWork a *tool* your agent calls. The **ACP server** makes it a full
@@ -183,14 +227,33 @@ What the harness gets:
 | **The Agent Deck** | `spawn_subagents` shows up as *N* live parallel tool calls, not one opaque block |
 | **Skills as slash commands** | Installed skills are published via `available_commands_update` |
 | **Modes** | `ask` (default), `edits`, `auto`, `plan` — switch with `acpx omniwork set-mode plan` |
+| **Model selection** | The gateway catalog as a `model` config option — `session/set_config_option`, the older `session/set_model`, or `_meta.model` on `session/new` — with a fallback chain if the pick fails |
+| **Auth methods** | `authenticate({ methodId: "openrouter" })` opens the browser for a free OpenRouter key; `"local"` registers a running Ollama / LM Studio / llama.cpp / vLLM; `"opencode"` installs OpenCode for its free Zen models |
 | **Resumable sessions** | `session/load` replays the transcript, so a crashed harness picks up where it left off |
 
 Modes default to **ask** because ACP's whole point is that the client owns the permission
 boundary. Set `OMNIWORK_ACP_MODE=auto` if you'd rather it run unattended.
 
-By default OmniWork runs on its own bundled OmniRoute gateway (free models). To spend a different
-provider's budget instead, point it elsewhere — `OMNIWORK_BASE_URL`, `OMNIWORK_API_KEY`, and
-`OMNIWORK_MODEL` apply to both the ACP and MCP servers.
+By default OmniWork runs on its own bundled OmniRoute gateway on `auto` (the free pool). To
+pin a model — a specific coder, or a paid one you've keyed in the router dashboard — pick it per
+session (ACP: the `model` config option, `session/set_model`, or `_meta.model` on
+`session/new`; MCP: the `model` parameter on `delegate`) or set `OMNIWORK_MODEL`.
+
+Free catalogs go stale — a pinned model can 401 as "not supported" the day its provider retires
+it — so a fallback chain is always in play. By default it is built from whatever free providers
+are [connected](#free-models-that-stay-up), strongest coder first, local server last;
+`OMNIWORK_MODEL_FALLBACKS` (or `fallback_models` / `_meta.fallbackModels`) replaces it with your
+own list, in order. The same request goes to the next model, the one that answers becomes the
+session's model, and the switch is reported (a `config_option_update` on ACP, a `[model: …]`
+note on MCP results). If every model fails, the error names each one and why. End the chain with
+a paid model when the work must complete:
+
+```bash
+OMNIWORK_MODEL=oc/some-free-coder OMNIWORK_MODEL_FALLBACKS=auto,anthropic/claude-sonnet-5 npx omniwork-acp
+```
+
+To spend a different provider's budget entirely, point the servers elsewhere — `OMNIWORK_BASE_URL`
+and `OMNIWORK_API_KEY` apply to both.
 
 ## Build from source
 
@@ -262,14 +325,17 @@ Locally built `.app`s are unsigned — same right-click → Open dance as above.
 
 ## Configuration
 
-Works with zero config. To go beyond the free tier, click **router dashboard** in the app to add
-provider keys (stored encrypted, locally), or pick a specific model in the status bar.
+Works with zero config. To get a free tier that stays up, use **🆓 free models** in the app (or
+`npm run providers`); to add any other provider key, click **router dashboard** (keys are stored
+encrypted, locally). Pick a specific model in the status bar.
 
 | Env | Default | Purpose |
 |-----|---------|---------|
 | `OMNIWORK_GATEWAY_PORT` | `20128` | Gateway port |
 | `OMNIWORK_WORKSPACE` | — | Open a folder on launch |
 | `OMNIWORK_MODEL` | `auto` | Pin a model (MCP + ACP servers) |
+| `OMNIWORK_MODEL_FALLBACKS` | connected providers | Comma-separated models to try, in order, when the model fails (MCP + ACP servers). Unset: built from connected free providers; set empty to disable |
+| `OMNIWORK_ENGINE_FALLBACK` | on | `off` keeps a turn that no gateway model could serve as an error instead of finishing it on the OpenCode engine |
 | `OMNIWORK_BASE_URL` | — | Run headless servers against another OpenAI-compatible endpoint |
 | `OMNIWORK_API_KEY` | `omniwork` | Key for `OMNIWORK_BASE_URL` |
 | `OMNIWORK_ACP_MODE` | `ask` | Starting approval mode for ACP sessions |
