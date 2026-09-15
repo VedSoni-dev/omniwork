@@ -14,6 +14,7 @@ const stub = {
   listDir: async () => ({ root: null, entries: [] }), readFile: async () => ({ content: "" }),
   getState: async () => ({ model: "auto", sessions: [], activeId: null, mcp: [] }),
   setModel: async () => {}, openDashboard: async () => {}, on: () => () => {},
+  providersStatus: async () => null, providersConnect: async () => ({}), providersRemove: async () => 0, openUrl: async () => false,
   copyText: async () => {}, setCopyOnSelect: async () => {},
 };
 const api = window.omniwork || stub;
@@ -1015,6 +1016,73 @@ async function addFromForm() {
   await api.addMcp(name, conf);
 }
 $("add-mcp").addEventListener("click", openModal);
+
+// ── Free providers ───────────────────────────────────────────────
+async function renderProviders() {
+  const st = await api.providersStatus();
+  const list = $("prov-list"); const local = $("prov-local"); const status = $("prov-status");
+  list.innerHTML = ""; local.innerHTML = "";
+  if (!st || st.error) { status.textContent = st && st.error ? "Gateway error: " + st.error : "Gateway still starting — try again in a moment."; return; }
+  const on = st.providers.filter((p) => p.connected);
+  status.textContent = on.length
+    ? `Connected: ${on.map((p) => p.name).join(", ")} · fallback chain: ${st.chain.join(" → ") || "(empty)"}`
+    : "Nothing connected yet — pick one below (all free, no card).";
+  st.providers.forEach((p) => {
+    const row = document.createElement("div"); row.className = "prow";
+    const act = p.connected
+      ? `<span class="dim">${p.models} models</span> <button class="prow-link" data-remove="${p.id}">remove</button>`
+      : p.connect === "pkce"
+        ? `<button class="btn-accent" data-connect="${p.id}">Connect in browser ↗</button>`
+        : `<input type="password" placeholder="paste API key" data-key="${p.id}" /><button class="btn-accent" data-connect="${p.id}">Connect</button><button class="prow-link" data-url="${esc(p.keyUrl)}">get key ↗</button>`;
+    row.innerHTML = `<div><div class="prow-name">${p.connected ? '<span class="ok">✓</span>' : ""}${esc(p.name)}</div><div class="prow-free">${esc(p.free)}</div></div><div class="prow-act">${act}</div>`;
+    list.appendChild(row);
+  });
+  if (st.opencode) {
+    const oc = st.opencode;
+    const row = document.createElement("div"); row.className = "prow";
+    const act = oc.installed
+      ? `<span class="dim">${oc.models.length} free models · engine</span>`
+      : `<button class="btn-accent" data-connect="opencode" title="Downloads OpenCode's official release into OmniWork's data folder — no npm, no PATH">Download (~45 MB)</button>`;
+    row.innerHTML = `<div><div class="prow-name">${oc.installed ? '<span class="ok">✓</span>' : ""}OpenCode engine</div><div class="prow-free">${oc.installed ? esc(oc.models.join(", ") || "no free models listed") : "Zen's free models with no account: Nemotron 3 Ultra, Nemotron 3.5 Lightning, MiMo V2.5, Ling 3.0 Flash, Big Pickle. Runs OpenCode's own server as an engine."}</div></div><div class="prow-act">${act}</div>`;
+    local.appendChild(row);
+  }
+  const running = st.local.filter((l) => l.running);
+  if (!running.length) {
+    local.insertAdjacentHTML("beforeend", '<div class="prow-free">No local model server running. Ollama (:11434), LM Studio (:1234), llama.cpp (:8080) and vLLM (:8000) are detected automatically.</div>');
+  }
+  running.forEach((l) => {
+    const row = document.createElement("div"); row.className = "prow";
+    row.innerHTML = `<div><div class="prow-name">${l.connected ? '<span class="ok">✓</span>' : ""}${esc(l.name)}</div><div class="prow-free">${esc(l.runningModels.slice(0, 4).join(", "))}${l.runningModels.length > 4 ? " …" : ""}</div></div><div class="prow-act">${l.connected ? '<span class="dim">connected</span>' : `<button class="btn-accent" data-connect="${l.id}">Add</button>`}</div>`;
+    local.appendChild(row);
+  });
+}
+async function connectProvider(id, key) {
+  const modal = $("providers-modal"); modal.classList.add("prow-busy");
+  try {
+    const r = await api.providersConnect(id, key);
+    addSystem(r.engine ? `🆓 OpenCode engine ready (${r.version || "installed"}) — ${r.models} free models: ${(r.modelIds || []).join(", ")}`
+      : r.added ? `🆓 local model server${r.added.length ? "s registered: " + r.added.map((a) => a.name).join(", ") : ": none running"}`
+      : `🆓 ${r.name} connected — ${r.models} models · fallback chain: ${(r.chain || []).join(" → ") || "(empty)"}`);
+    await populateModels();
+  } catch (e) { addSystem("🆓 " + (e.message || String(e)).replace(/^Error invoking remote method '[^']+': Error: /, "")); }
+  modal.classList.remove("prow-busy");
+  renderProviders();
+}
+$("free-models").addEventListener("click", () => { $("providers-modal").classList.remove("hidden"); renderProviders(); });
+$("prov-close").addEventListener("click", () => $("providers-modal").classList.add("hidden"));
+$("providers-modal").addEventListener("click", async (e) => {
+  if (e.target.id === "providers-modal") { $("providers-modal").classList.add("hidden"); return; }
+  const t = e.target;
+  if (t.dataset.url) { api.openUrl(t.dataset.url); return; }
+  if (t.dataset.remove) { await api.providersRemove(t.dataset.remove); await populateModels(); renderProviders(); return; }
+  if (t.dataset.connect) {
+    const input = $("providers-modal").querySelector(`input[data-key="${t.dataset.connect}"]`);
+    connectProvider(t.dataset.connect, input ? input.value.trim() : undefined);
+  }
+});
+$("providers-modal").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && e.target.dataset && e.target.dataset.key) connectProvider(e.target.dataset.key, e.target.value.trim());
+});
 $("m-cancel").addEventListener("click", closeModal);
 $("modal").addEventListener("click", (e) => { if (e.target.id === "modal") closeModal(); });
 $("m-add").addEventListener("click", addFromForm);

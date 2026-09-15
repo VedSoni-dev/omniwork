@@ -52,6 +52,10 @@ contextBridge.exposeInMainWorld("omniwork", {
   listModels: () => ipcRenderer.invoke("models:list"),
   setModel: (model) => ipcRenderer.invoke("app:setModel", model),
   openDashboard: () => ipcRenderer.invoke("gateway:openDashboard"),
+  providersStatus: () => ipcRenderer.invoke("providers:status"),
+  providersConnect: (provider, apiKey) => ipcRenderer.invoke("providers:connect", { provider, apiKey }),
+  providersRemove: (provider) => ipcRenderer.invoke("providers:remove", provider),
+  openUrl: (url) => ipcRenderer.invoke("app:openUrl", url),
   copyText: (text) => ipcRenderer.invoke("app:copy", text),
   setCopyOnSelect: (on) => ipcRenderer.invoke("app:setCopyOnSelect", on),
 

@@ -98,6 +98,7 @@ async function boot() {
     });
     sessions.setModel(state.model);
     sessions.setApprovalMode(state.approval);
+    applyFallbacks();
     // Restore saved sessions; start a fresh one only if none were persisted.
     const restored = sessions.restore();
     if (!restored) sessions.create({ workspace: state.lastWorkspace, title: "Main" });
@@ -126,13 +127,56 @@ ipcMain.handle("app:setModel", (_e, model) => { state.model = model; if (session
 ipcMain.handle("app:copy", (_e, text) => { const t = String(text || ""); if (t) clipboard.writeText(t); return true; });
 ipcMain.handle("app:setCopyOnSelect", (_e, on) => { state.copyOnSelect = !!on; savePrefs(); return state.copyOnSelect; });
 ipcMain.handle("gateway:openDashboard", () => { if (gateway) shell.openExternal(gateway.dashboardUrl()); return true; });
+
+// ── IPC: free providers ─────────────────────────────────────────────
+// The built-in keyless pool comes and goes; a connected free provider stays.
+// Whatever is connected becomes every session's fallback chain, live.
+const providers = require("./providers");
+const opencodeEngine = require("./opencode-engine");
+async function applyFallbacks() {
+  if (!gateway || !sessions) return [];
+  try {
+    const res = await fetch(`${gateway.baseUrl}/models`, { signal: AbortSignal.timeout(6000) });
+    const ids = ((await res.json()).data || []).map((m) => m.id).filter(Boolean);
+    const chain = providers.suggestChain(ids);
+    sessions.setFallbacks(chain);
+    return chain;
+  } catch { return []; }
+}
+ipcMain.handle("providers:status", async () => {
+  if (!gateway || !gateway.ready) return null;
+  try { return await providers.status(gateway); } catch (e) { return { error: e.message }; }
+});
+ipcMain.handle("providers:connect", async (_e, { provider, apiKey }) => {
+  if (!gateway) throw new Error("gateway not ready");
+  // `install: true`: the click in the panel is the user's explicit gesture for the ~140 MB OpenCode download.
+  const result = await providers.connect(gateway, provider, { apiKey, install: true, open: (url) => shell.openExternal(url) });
+  const chain = await applyFallbacks();
+  return { ...result, chain };
+});
+ipcMain.handle("providers:remove", async (_e, provider) => {
+  if (!gateway) return 0;
+  const n = await providers.removeProvider(gateway, provider);
+  await applyFallbacks();
+  return n;
+});
+// Only the catalog's own "get a key" pages — never an arbitrary URL from the renderer.
+ipcMain.handle("app:openUrl", (_e, url) => {
+  const allowed = providers.CATALOG.some((p) => p.keyUrl === url);
+  if (allowed) shell.openExternal(url);
+  return allowed;
+});
 ipcMain.handle("models:list", async () => {
   if (!gateway) return [];
+  let ids = [];
   try {
     const res = await fetch(`${gateway.baseUrl}/models`, { signal: AbortSignal.timeout(4000) });
     const data = await res.json();
-    return (data.data || []).map((m) => m.id).filter(Boolean);
-  } catch { return []; }
+    ids = (data.data || []).map((m) => m.id).filter(Boolean);
+  } catch {}
+  // OpenCode's free models, when it is installed — run on its own engine.
+  try { if (opencodeEngine.available()) ids.push(...(await opencodeEngine.getEngine().models()).map((m) => m.id)); } catch {}
+  return ids;
 });
 
 // ── IPC: sessions (Cowork) ──────────────────────────────────────────
