@@ -7,7 +7,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [Unreleased]
+## [0.12.0] — 2026-09-17
 
 ### Added
 
@@ -19,10 +19,6 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   - **Cheap delegate verifier.** An MCP delegation ends with a PASS/FAIL grade from the utility model, so the orchestrator re-delegates only when the work fell short — the expensive path is the caller re-reading and re-issuing.
   - **Prompt-cache affinity.** Every request in a session carries a stable `x-session-id`, so the gateway keeps the unchanged system+history prefix cached upstream.
   - **First-run nudge.** On first launch with nothing connected, the desktop app opens the free-models panel once so the OpenRouter catalog is one click away.
-
-## [0.12.0] — 2026-09-15
-
-### Added
 
 - **ACP server** — OmniWork now speaks the [Agent Client Protocol](https://agentclientprotocol.com)
   (v1) over stdio, so any ACP harness can drive it as a full coding agent: OpenClaw, acpx, Zed,
