@@ -10,7 +10,8 @@ function dataDir() {
   return process.platform === "darwin" ? path.join(home, "Library", "Application Support", "omniwork") : process.platform === "win32" ? path.join(process.env.APPDATA || path.join(home, "AppData", "Roaming"), "omniwork") : path.join(process.env.XDG_CONFIG_HOME || path.join(home, ".config"), "omniwork");
 }
 function configId() {
-  return crypto.createHash("sha256").update(JSON.stringify([process.env.OMNIWORK_BASE_URL || "", process.env.OMNIWORK_API_KEY || "", process.env.OMNIWORK_OPENCODE_BIN || "", process.env.OPENCODE_CONFIG_CONTENT || ""])).digest("hex");
+  // Capability epoch: older daemons would silently ignore verification reserves.
+  return crypto.createHash("sha256").update(JSON.stringify([2, process.env.OMNIWORK_BASE_URL || "", process.env.OMNIWORK_API_KEY || "", process.env.OMNIWORK_OPENCODE_BIN || "", process.env.OPENCODE_CONFIG_CONTENT || ""])).digest("hex");
 }
 function location() { return path.join(dataDir(), "jobs"); }
 function descriptor() { try { return JSON.parse(fs.readFileSync(path.join(location(), "service.json"), "utf8")); } catch { return null; } }

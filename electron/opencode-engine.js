@@ -364,6 +364,12 @@ class Engine {
     });
   }
   async abort(sessionID, directory) { return await this.#req("POST", `/session/${sessionID}/abort`, { directory, timeoutMs: 5000 }).catch(() => false); }
+  async isIdle(sessionID, directory) {
+    const statuses = await this.#req("GET", "/session/status", { directory, timeoutMs: 5000 });
+    if (!statuses || typeof statuses !== "object" || Array.isArray(statuses)) return false;
+    if (!Object.values(statuses).every(s => s && ["idle", "busy", "retry"].includes(s.type))) return false;
+    return !Object.hasOwn(statuses, sessionID) || statuses[sessionID]?.type === "idle";
+  }
   async replyPermission(sessionID, permissionID, response, directory) {
     return await this.#req("POST", `/session/${sessionID}/permissions/${permissionID}`, { body: { response }, directory, timeoutMs: 5000 });
   }
@@ -431,6 +437,19 @@ class OpenCodeAgent {
   get isEngine() { return true; }
   setWorkspace(dir) { this.workspace = dir; this.sessionID = null; }
   abort() { this.aborted = true; this.abortCtl?.abort(); if (this.sessionID) this.engine.abort(this.sessionID, this.workspace); }
+  pauseForVerification() {
+    if (!this.sessionID || this.aborted) return Promise.resolve(false);
+    if (!this.pausePromise) {
+      this.pausing = true;
+      // Keep the prompt response alive: closing its HTTP transport alone does
+      // not establish that the engine and its tools have stopped.
+      this.pausePromise = (async () => {
+        if (await this.engine.abort(this.sessionID, this.workspace) !== true) return false;
+        return await this.engine.isIdle(this.sessionID, this.workspace);
+      })().catch(() => false);
+    }
+    return this.pausePromise;
+  }
   setModel(model) { this.model = model; this.contextTokens = this.engine.modelsCache.list.find(m => m.id === model)?.context || 200_000; }
   async compactNow() { return null; }
   async oneShot(prompt) {
@@ -463,6 +482,7 @@ class OpenCodeAgent {
 
   async send(userText, images) {
     this.aborted = false;
+    this.pausing = false; this.pausePromise = null;
     this.lastText = "";
     this.abortCtl = new AbortController();
     this.turnStats = { startedAt: Date.now(), inTokens: 0, outTokens: 0, estimated: true };
@@ -480,8 +500,9 @@ class OpenCodeAgent {
     const held = new Map();      // partID -> delta text that arrived before the part's type
     const seen = new Map();      // callID -> "called" | "done"
     const usageByMessage = new Map();
-    const recordUsage = (id, tokens) => {
+    const recordUsage = (id, tokens, usageReported = false) => {
       if (!id || !Number.isFinite(tokens?.input) || !Number.isFinite(tokens?.output)) return;
+      this.emit("request", { id, model: `${providerID}/${modelID}`, tokens, usageReported });
       usageByMessage.set(id, tokens);
       let input = 0, output = 0, uncached = 0, cacheRead = 0, cacheWrite = 0, reasoning = 0;
       for (const t of usageByMessage.values()) {
@@ -504,7 +525,10 @@ class OpenCodeAgent {
         const p = ev.properties || {};
         switch (ev.type) {
           case "message.updated":
-            if (p.info?.role === "assistant") recordUsage(p.info.id, p.info.tokens);
+            if (p.info?.role === "assistant") {
+              this.emit("request", { id: p.info.id, model: `${p.info.providerID || providerID}/${p.info.modelID || modelID}`, startedAt: p.info.time?.created, completedAt: p.info.time?.completed, failed: Boolean(p.info.error) });
+              recordUsage(p.info.id, p.info.tokens);
+            }
             break;
           // A delta only names its part; the part's type came (or comes) with a
           // message.part.updated. Reasoning streams on field "text" too, so a
@@ -518,7 +542,7 @@ class OpenCodeAgent {
           }
           case "message.part.updated": {
             const part = p.part || {};
-            if (part.type === "step-finish") recordUsage(part.messageID, part.tokens);
+            if (part.type === "step-finish") recordUsage(part.messageID, part.tokens, true);
             if (part.id && part.type && !partType.has(part.id)) {
               partType.set(part.id, part.type);
               if (held.has(part.id)) { flush(part.id, part.type, held.get(part.id)); held.delete(part.id); }
@@ -531,11 +555,11 @@ class OpenCodeAgent {
             const hasInput = st.input && Object.keys(st.input).length > 0;
             if (!seen.has(id) && (hasInput || st.status === "completed" || st.status === "error")) {
               seen.set(id, "called");
-              this.emit("tool_call", { id, name: part.tool, args: st.input || {} });
+              this.emit("tool_call", { id, name: part.tool, args: st.input || {}, requestId: part.messageID, startedAt: st.time?.start });
             }
             if (seen.get(id) === "called" && (st.status === "completed" || st.status === "error")) {
               seen.set(id, "done");
-              this.emit("tool_result", { id, name: part.tool, ok: st.status === "completed", result: st.status === "error" ? `Error in ${part.tool}: ${st.error || "failed"}` : String(st.output ?? st.title ?? "") });
+              this.emit("tool_result", { id, name: part.tool, ok: st.status === "completed", completedAt: st.time?.end, outputBytes: Buffer.byteLength(String(st.output ?? st.error ?? "")), result: st.status === "error" ? `Error in ${part.tool}: ${st.error || "failed"}` : String(st.output ?? st.title ?? "") });
             }
             break;
           }
@@ -549,9 +573,11 @@ class OpenCodeAgent {
       }, this.workspace);
 
       const res = await this.engine.prompt(sid, { directory: this.workspace, providerID, modelID, text, signal: this.abortCtl.signal, agent: this.engineProfile === "scoped" ? workerProfile.SCOPED_NAME : this.engineProfile === "focused" ? workerProfile.NAME : undefined });
+      this.emit("request", { id: res?.info?.id, model: `${providerID}/${modelID}`, startedAt: res?.info?.time?.created, completedAt: res?.info?.time?.completed, failed: Boolean(res?.info?.error) });
       recordUsage(res?.info?.id, res?.info?.tokens);
       if (this.aborted) { this.emit("aborted", this.#stats()); return; }
       const err = res && res.info && res.info.error;
+      if (this.pausing && (!err || err.name === "MessageAbortedError")) { this.emit("stats", this.#stats()); return; }
       if (err) {
         const msg = (err.data && err.data.message) || err.name || "OpenCode session error";
         this.emit("error", { message: `OpenCode (${modelID}): ${msg}` });

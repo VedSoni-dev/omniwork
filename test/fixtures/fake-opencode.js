@@ -47,6 +47,7 @@ const server = http.createServer(async (req, res) => {
   const dir = req.headers["x-opencode-directory"] ? decodeURIComponent(req.headers["x-opencode-directory"]) : null;
   if (u.pathname === "/global/health") return json(res, 200, { healthy: true, version: "0.0.0-test" });
   if (u.pathname === "/provider") return json(res, 200, PROVIDERS);
+  if (u.pathname === "/session/status") return json(res, 200, Object.fromEntries([...sessions].filter(([,s]) => s.busy || s.forceBusy).map(([id]) => [id, { type: "busy" }])));
   if (u.pathname === "/event") {
     res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
     res.write(":ok\n\n"); clients.add(res); req.on("close", () => clients.delete(res)); return;
@@ -59,7 +60,7 @@ const server = http.createServer(async (req, res) => {
   const m = /^\/session\/([^/]+)\/(message|abort|permissions\/([^/]+)|diff)$/.exec(u.pathname);
   if (m) {
     const s = sessions.get(m[1]); if (!s) return json(res, 404, { error: { type: "NotFound", message: "no session" } });
-    if (m[2] === "abort") { s.aborted = true; return json(res, 200, true); }
+    if (m[2] === "abort") { s.aborted = true; while (s.busy) await sleep(5); return json(res, 200, true); }
     if (m[2] === "diff") return json(res, 200, []);
     if (m[2].startsWith("permissions/")) { const b = await read(req); const r = pending.get(m[3]); if (r) { r(b.response); pending.delete(m[3]); } return json(res, 200, true); }
     // message
@@ -69,13 +70,16 @@ const server = http.createServer(async (req, res) => {
       if (!configured || configured.steps !== 24 || configured.permission?.skill === "allow" || configured.permission?.["*"] !== "deny" || !s.permission.some(p=>p.permission === "*" && p.action === "deny")) return json(res, 400, { error: { message: "Worker profile missing or unbounded" } });
     }
     const text = (b.parts || []).map((p) => p.text || "").join("\n");
+    s.forceBusy = text.includes("BUSY_AFTER_ABORT");
     const messageID = nid("msg_");
+    const created = Date.now(); s.busy = true;
     s.aborted = false;
     const partID = nid("prt_");
     if (/PERMISSION/.test(text)) {
       const pid = nid("per_");
       const response = await new Promise((resolve) => { pending.set(pid, resolve); send({ type: "permission.asked", properties: { id: pid, sessionID: s.id, permission: "bash", patterns: ["rm -rf build"], metadata: { command: "rm -rf build" }, always: [], tool: { messageID, callID: "call_perm" } } }); });
       if (response === "reject") {
+        s.busy = false;
         return json(res, 200, { info: { id: messageID, sessionID: s.id, role: "assistant", time: { created: Date.now(), completed: Date.now() }, modelID: b.model.modelID, providerID: b.model.providerID }, parts: [{ id: partID, sessionID: s.id, messageID, type: "text", text: "permission was rejected" }] });
       }
     }
@@ -89,8 +93,9 @@ const server = http.createServer(async (req, res) => {
       await sleep(30);
       send({ type: "message.part.updated", properties: { sessionID: s.id, time: Date.now(), part: { id: nid("prt_"), sessionID: s.id, messageID, type: "tool", callID, tool: "bash", state: { status: "completed", input: { command: "echo hi" }, output: "hi\n", title: "echo hi", metadata: {}, time: { start: Date.now(), end: Date.now() } } } } });
     }
-    if (/SLOW/.test(text)) { for (let i = 0; i < 20 && !s.aborted; i++) await sleep(100); if (s.aborted) return json(res, 200, { info: { id: messageID, sessionID: s.id, role: "assistant", time: { created: Date.now() }, error: { name: "MessageAbortedError", data: { message: "aborted" } } }, parts: [] }); }
+    if (/SLOW/.test(text)) { for (let i = 0; i < 20 && !s.aborted; i++) await sleep(100); if (s.aborted) { s.busy = false; return json(res, 200, { info: { id: messageID, sessionID: s.id, role: "assistant", time: { created }, error: { name: "MessageAbortedError", data: { message: "aborted" } } }, parts: [] }); } }
     if (/FAIL/.test(text)) {
+      s.busy = false;
       send({ type: "session.error", properties: { sessionID: s.id, error: { name: "APIError", data: { message: "upstream exploded" } } } });
       return json(res, 200, { info: { id: messageID, sessionID: s.id, role: "assistant", time: { created: Date.now() }, error: { name: "APIError", data: { message: "upstream exploded" } } }, parts: [] });
     }
@@ -105,9 +110,10 @@ const server = http.createServer(async (req, res) => {
     await sleep(5);
     send({ type: "message.part.delta", properties: { sessionID: s.id, messageID, partID, field: "text", delta: answer.slice(5) } });
     send({ type: "session.idle", properties: { sessionID: s.id } });
+    s.busy = false;
     const tokens = { input: 50, output: 5, reasoning: 0, cache: { read: 0, write: 0 } };
     send({ type: "message.part.updated", properties: { part: { id: nid("prt_"), sessionID: s.id, messageID, type: "step-finish", tokens } } });
-    return json(res, 200, { info: { id: messageID, sessionID: s.id, role: "assistant", tokens, time: { created: Date.now(), completed: Date.now() }, modelID: b.model.modelID, providerID: b.model.providerID }, parts: [{ id: partID, sessionID: s.id, messageID, type: "text", text: answer }] });
+    return json(res, 200, { info: { id: messageID, sessionID: s.id, role: "assistant", tokens, time: { created, completed: Date.now() }, modelID: b.model.modelID, providerID: b.model.providerID }, parts: [{ id: partID, sessionID: s.id, messageID, type: "text", text: answer }] });
   }
   json(res, 404, { error: { type: "NotFound", message: u.pathname } });
 });

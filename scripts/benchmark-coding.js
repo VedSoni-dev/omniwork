@@ -127,7 +127,12 @@ async function evaluate(plan, detail) {
     fs.mkdirSync(output + ".patches", { recursive: true });
     fs.copyFileSync(detail.artifact.patch, path.join(output + ".patches", `${plan.case}-r${plan.round}-${plan.profile}.patch`));
   }
+  if (detail.trace) {
+    fs.mkdirSync(output + ".traces", { recursive: true });
+    fs.copyFileSync(path.join(root, "data", "jobs", "tasks", plan.id, "trace.json"), path.join(output + ".traces", `${plan.case}-r${plan.round}-${plan.profile}.json`));
+  }
   return { id: plan.id, case: plan.case, round: plan.round, profile: plan.profile, status: detail.status,
+    trace: detail.trace?.summary || null, timings: detail.timings || null,
     reason: detail.reason, result: detail.result, files: detail.artifact?.files, heldout: hidden, integration, accepted: Boolean(final.passed) };
 }
 (async () => {

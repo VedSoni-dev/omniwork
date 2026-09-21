@@ -58,6 +58,8 @@ function rpcClient() {
   const repeated = await b.call("jobs_submit", make("client-one", [1,2]));
   check("reconnecting clients can retry a submission without duplicated execution", () => assert.deepEqual(repeated.jobs.map(j=>j.id),one.jobs.map(j=>j.id)));
   const read = await b.call("jobs_read", { id: ids[0], artifact: "patch" });
+  const trace = JSON.parse((await b.call("jobs_read", { id: ids[0], artifact: "trace" })).text);
+  check("durable traces survive client exit and omit tool arguments and output", () => { assert.equal(trace.summary.tools, 1); assert(!JSON.stringify(trace).includes("READY")); assert(!JSON.stringify(trace).includes("file1.txt")); });
   check("MCP returns isolated artifacts while source remains unchanged", () => { assert(read.text.includes("file1.txt")); assert(!fs.existsSync(path.join(repo,"file1.txt"))); });
   const applied = await b.call("jobs_apply", { id: ids[0] });
   check("MCP verified application reaches the original working directory", () => { assert(applied.applied); assert.equal(fs.readFileSync(path.join(repo,"file1.txt"),"utf8"),"READY"); });
