@@ -1,0 +1,23 @@
+diff --git a/electron/model-catalog.js b/electron/model-catalog.js
+index 87343d5..c2831e4 100644
+--- a/electron/model-catalog.js
++++ b/electron/model-catalog.js
+@@ -9,7 +9,8 @@ function gatewayModel(m) {
+   const price = m.pricing || m.cost;
+   const input = price?.prompt ?? price?.input;
+   const output = price?.completion ?? price?.output;
+-  const zero = Number(input || 0) === 0 || Number(output || 0) === 0;
++  const isZero = v => v !== undefined && v !== null && String(v).trim() !== "" && Number(v) === 0;
++  const zero = isZero(input) && isZero(output);
+   const local = LOCAL.some(p => p.alias === provider);
+   const free = local || zero || /:free$|\/free$|-free$/.test(id);
+   return {
+@@ -87,7 +88,7 @@ async function probe(gw, id, { timeoutMs = 20_000 } = {}) {
+ 
+ function filterModels(models, { query = "", free_only = false, tools_only = false } = {}) {
+   const q = String(query).toLowerCase();
+-  return models.filter(m => (!free_only || m.free) && (!tools_only || m.tools !== false) && `${m.id} ${m.name} ${m.provider}`.toLowerCase().includes(q));
++  return models.filter(m => (!free_only || m.free) && (!tools_only || m.tools === true) && `${m.id} ${m.name} ${m.provider}`.toLowerCase().includes(q));
+ }
+ 
+ module.exports = { catalog, gatewayModel, filterModels, probe };

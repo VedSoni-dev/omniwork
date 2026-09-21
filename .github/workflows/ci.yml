@@ -31,6 +31,20 @@ jobs:
             node -e "JSON.parse(require('fs').readFileSync('$f','utf8'))" || exit 1
           done
 
+  regression:
+    name: deterministic regressions
+    needs: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --legacy-peer-deps
+      - run: npm run test:regression
+
   # The gateway is the part that breaks per-platform: it runs on a real Node
   # binary outside Electron, spawns child processes, and binds a port. Every
   # macOS bug fixed in 0.9.1 would have been caught by running this on macOS.

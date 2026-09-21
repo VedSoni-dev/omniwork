@@ -18,6 +18,15 @@ const log = (...a) => process.stderr.write(a.join(" ") + "\n");
 
 async function main(argv) {
   const [cmd, provider, key] = argv;
+  if (cmd === "login") {
+    const engine = require("../electron/opencode-engine");
+    const bin = engine.findBinary();
+    if (!bin) throw new Error("Install the engine first: npm run providers -- connect opencode");
+    return new Promise((resolve, reject) => {
+      const child = require("node:child_process").spawn(bin, ["auth", "login"], { stdio: "inherit" });
+      child.on("error", reject); child.on("exit", code => resolve(code ?? 1));
+    });
+  }
   const gw = await ensureGateway((...a) => log("[gateway]", ...a));
 
   if (!cmd || cmd === "status") {

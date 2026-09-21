@@ -1,0 +1,30 @@
+diff --git a/electron/job-workspace.js b/electron/job-workspace.js
+index 34a2701..c8b6d88 100644
+--- a/electron/job-workspace.js
++++ b/electron/job-workspace.js
+@@ -10,7 +10,9 @@ async function git(cwd, args, options = {}) {
+   return stdout;
+ }
+ function relativeFile(file) {
+-  if (typeof file !== "string" || !file || path.isAbsolute(file) || file.split(/[\\/]/).some(p => p === ".git") || file.includes("\0")) throw new Error("File paths must be relative and cannot traverse directories or target .git");
++  if (typeof file !== "string" || !file || file.includes("\0") || path.isAbsolute(file) || /^[A-Za-z]:[\\/]/.test(file)) throw new Error("File paths must be relative and cannot traverse directories or target .git");
++  const parts = file.split(/[\\/]/);
++  if (!parts[0] || parts.some(p => p === ".." || p === ".git")) throw new Error("File paths must be relative and cannot traverse directories or target .git");
+   return file.replace(/\\/g, "/").replace(/^\.\//, "");
+ }
+ 
+@@ -46,8 +48,12 @@ async function collect(workspace, dir, allowedPaths = []) {
+   const patch = await git(workspace.tree, ["diff", "--cached", "--no-renames", "--binary", workspace.baseTree]);
+   const patchPath = path.join(dir, "changes.patch");
+   await fs.writeFile(patchPath, patch, { mode: 0o600 });
+-  const allowed = allowedPaths.map(p => path.posix.join(workspace.relativeCwd.replace(/\\/g, "/"), p));
+-  const outsideScope = allowed.length ? files.filter(f => !allowed.some(p => f === p.replace(/\/$/, "") || (p.endsWith("/") && f.startsWith(p.replace(/\/$/, ""))))) : [];
++  const allowed = allowedPaths.map(p => {
++    const norm = relativeFile(p);
++    const joined = path.posix.join(workspace.relativeCwd.replace(/\\/g, "/"), norm).replace(/\/+$/, "");
++    return norm.endsWith("/") ? joined + "/" : joined || ".";
++  });
++  const outsideScope = allowed.length ? files.filter(f => !allowed.some(p => p.endsWith("/") ? f === p.slice(0, -1) || f.startsWith(p) : f === p)) : [];
+   return { isolated: true, files, patch: patchPath, bytes: Buffer.byteLength(patch), outsideScope };
+ }
+ async function context(spec, workspace) {

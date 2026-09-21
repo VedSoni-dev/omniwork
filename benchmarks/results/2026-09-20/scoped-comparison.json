@@ -1,0 +1,954 @@
+{
+  "testedAt": "2026-09-21T01:46:28.195Z",
+  "startedAt": 1789955188196,
+  "complete": true,
+  "sourceHash": "19345c7ad1f9f8ada5dc3ad60ce1775dc347d09b3fbcdb371e685c11450f0220",
+  "engineVersion": "1.18.31",
+  "model": "opencode/big-pickle",
+  "repeats": 1,
+  "profiles": [
+    "standard",
+    "scoped"
+  ],
+  "scope": "Controlled regressions in actual OmniWork modules, alternating profile order, withheld evaluator tests. Not SWE-bench or an unbiased sample of organic issues.",
+  "timeoutMs": 300000,
+  "preflight": [
+    {
+      "id": "output-paging",
+      "goldPassed": true,
+      "mutantRejected": true
+    },
+    {
+      "id": "catalog-policy",
+      "goldPassed": true,
+      "mutantRejected": true
+    },
+    {
+      "id": "compaction-continuity",
+      "goldPassed": true,
+      "mutantRejected": true
+    },
+    {
+      "id": "repair-accounting",
+      "goldPassed": true,
+      "mutantRejected": true
+    },
+    {
+      "id": "workspace-boundaries",
+      "goldPassed": true,
+      "mutantRejected": true
+    },
+    {
+      "id": "durable-admission",
+      "goldPassed": true,
+      "mutantRejected": true
+    }
+  ],
+  "rows": [
+    {
+      "id": "9a2b3f5e-d1a4-488d-a048-148d2a39573f",
+      "case": "output-paging",
+      "round": 0,
+      "profile": "standard",
+      "status": "completed",
+      "reason": null,
+      "result": {
+        "status": "completed",
+        "reason": null,
+        "summary": "All checks pass. Fixed `electron/tool-output.js`:\n\n- **Store the full original** (`this.entries.set(id, text)`) instead of `text.slice(0, limit)` so later offsets retrieve every character; eviction accounting now matches the stored lengths (`bytes` stays the true sum).\n- **Removed the off-by-one** in `read` (`slice(start, start + count)`), so pages align exactly with the advertised offsets and `next offset` \u2014 no skipped or duplicated characters (verified segment 0\u2013500 and 500\u20131000 match `raw.slice` exactly).\n- Kept bounded previews, default/clamped page sizes, short-output passthrough, task-local UUID references, eviction cap, and the expired/missing-id error. `node public.cjs .` passes.",
+        "changes": [
+          {
+            "tool": "edit",
+            "path": "<benchmark-workspace>/data/jobs/tasks/9a2b3f5e-d1a4-488d-a048-148d2a39573f/worktree/electron/tool-output.js"
+          },
+          {
+            "tool": "edit",
+            "path": "<benchmark-workspace>/data/jobs/tasks/9a2b3f5e-d1a4-488d-a048-148d2a39573f/worktree/electron/tool-output.js"
+          }
+        ],
+        "attempts": [
+          {
+            "model": "opencode/big-pickle",
+            "error": null
+          }
+        ],
+        "toolCalls": 8,
+        "checkHistory": [],
+        "model": "opencode/big-pickle",
+        "verification": {
+          "status": "passed",
+          "checks": [
+            {
+              "command": "node public.cjs .",
+              "ok": true,
+              "exitCode": 0,
+              "output": "\n\n[exit code 0]"
+            }
+          ]
+        },
+        "usage": {
+          "inTokens": 222051,
+          "outTokens": 6433,
+          "estimated": false,
+          "available": true,
+          "uncachedInTokens": 24419,
+          "cacheReadTokens": 197632,
+          "cacheWriteTokens": 0,
+          "reasoningTokens": 0,
+          "modelRequests": 8
+        },
+        "elapsedMs": 49950
+      },
+      "files": [
+        "electron/tool-output.js"
+      ],
+      "heldout": {
+        "passed": true
+      },
+      "integration": {
+        "applied": true,
+        "appliedAt": "2026-09-21T01:47:21.478Z",
+        "files": [
+          "electron/tool-output.js"
+        ],
+        "checks": [
+          {
+            "command": "node public.cjs .",
+            "ok": true,
+            "exitCode": 0,
+            "output": "\n\n[exit code 0]"
+          }
+        ]
+      },
+      "accepted": true
+    },
+    {
+      "id": "8e44fc0f-915f-4fd7-ac8f-b0d7f71625e1",
+      "case": "output-paging",
+      "round": 0,
+      "profile": "scoped",
+      "status": "completed",
+      "reason": null,
+      "result": {
+        "status": "completed",
+        "reason": null,
+        "summary": "Fixed. Only `electron/tool-output.js` changed; `node public.cjs .` passes.\n\nTwo defects repaired:\n- `capture` stored only `text.slice(0, limit)`, dropping characters beyond the limit and corrupting eviction accounting (`bytes` added full length but subtracted the truncated length). Now stores the full string, so every character is retrievable and `bytes` stays consistent.\n- `read` sliced `text.slice(start+1, start+count+1)` \u2014 an off-by-one that skipped the first character and duplicated/lost others. Now slices `text.slice(start, end)` with `end = min(start+count, length)`, and the metadata range and `next offset=${end}` exactly agree with the returned page, clamping offset to the output length.\n\nVerified: full round-trip paging reconstructs the raw string with no skip/duplication, partial final page marks `; end]` and omits `next offset`, limits default to 12000/clamp to 24000/min 1, previews stay bounded, short outputs return unchanged, and eviction holds the 8 MB bound with `bytes` matching stored lengths.",
+        "changes": [
+          {
+            "tool": "edit",
+            "path": "<benchmark-workspace>/data/jobs/tasks/8e44fc0f-915f-4fd7-ac8f-b0d7f71625e1/worktree/electron/tool-output.js"
+          },
+          {
+            "tool": "edit",
+            "path": "<benchmark-workspace>/data/jobs/tasks/8e44fc0f-915f-4fd7-ac8f-b0d7f71625e1/worktree/electron/tool-output.js"
+          }
+        ],
+        "attempts": [
+          {
+            "model": "opencode/big-pickle",
+            "error": null
+          }
+        ],
+        "toolCalls": 9,
+        "checkHistory": [],
+        "model": "opencode/big-pickle",
+        "verification": {
+          "status": "passed",
+          "checks": [
+            {
+              "command": "node public.cjs .",
+              "ok": true,
+              "exitCode": 0,
+              "output": "\n\n[exit code 0]"
+            }
+          ]
+        },
+        "usage": {
+          "inTokens": 144335,
+          "outTokens": 7390,
+          "estimated": false,
+          "available": true,
+          "uncachedInTokens": 15823,
+          "cacheReadTokens": 128512,
+          "cacheWriteTokens": 0,
+          "reasoningTokens": 0,
+          "modelRequests": 9
+        },
+        "elapsedMs": 51143
+      },
+      "files": [
+        "electron/tool-output.js"
+      ],
+      "heldout": {
+        "passed": true
+      },
+      "integration": {
+        "applied": true,
+        "appliedAt": "2026-09-21T01:47:22.564Z",
+        "files": [
+          "electron/tool-output.js"
+        ],
+        "checks": [
+          {
+            "command": "node public.cjs .",
+            "ok": true,
+            "exitCode": 0,
+            "output": "\n\n[exit code 0]"
+          }
+        ]
+      },
+      "accepted": true
+    },
+    {
+      "id": "33a5497f-73fa-4097-91c2-4aa43b61c52b",
+      "case": "catalog-policy",
+      "round": 0,
+      "profile": "scoped",
+      "status": "completed",
+      "reason": null,
+      "result": {
+        "status": "completed",
+        "reason": null,
+        "summary": "Fixed both regressions in `electron/model-catalog.js`:\n\n1. **Free pricing** (model-catalog.js:12-14): now requires both input and output to be explicitly zero (`isZero` guards null/undefined/empty strings while keeping numeric strings like `\"0\"`); unknown or partly-specified pricing is no longer free. Local models and `:free`/`/free`/`-free` suffixes are preserved.\n2. **Tools-only filtering** (model-catalog.js:90): now requires `m.tools === true`, excluding unknown `null`/`undefined` capability.\n\nCase-insensitive search, paid entries, and combined filter semantics are unchanged. `node public.cjs .` passes.",
+        "changes": [
+          {
+            "tool": "edit",
+            "path": "<benchmark-workspace>/data/jobs/tasks/33a5497f-73fa-4097-91c2-4aa43b61c52b/worktree/electron/model-catalog.js"
+          },
+          {
+            "tool": "edit",
+            "path": "<benchmark-workspace>/data/jobs/tasks/33a5497f-73fa-4097-91c2-4aa43b61c52b/worktree/electron/model-catalog.js"
+          }
+        ],
+        "attempts": [
+          {
+            "model": "opencode/big-pickle",
+            "error": null
+          }
+        ],
+        "toolCalls": 6,
+        "checkHistory": [],
+        "model": "opencode/big-pickle",
+        "verification": {
+          "status": "passed",
+          "checks": [
+            {
+              "command": "node public.cjs .",
+              "ok": true,
+              "exitCode": 0,
+              "output": "\n\n[exit code 0]"
+            }
+          ]
+        },
+        "usage": {
+          "inTokens": 105107,
+          "outTokens": 3182,
+          "estimated": false,
+          "available": true,
+          "uncachedInTokens": 16019,
+          "cacheReadTokens": 89088,
+          "cacheWriteTokens": 0,
+          "reasoningTokens": 0,
+          "modelRequests": 6
+        },
+        "elapsedMs": 24591
+      },
+      "files": [
+        "electron/model-catalog.js"
+      ],
+      "heldout": {
+        "passed": true
+      },
+      "integration": {
+        "applied": true,
+        "appliedAt": "2026-09-21T01:47:46.233Z",
+        "files": [
+          "electron/model-catalog.js"
+        ],
+        "checks": [
+          {
+            "command": "node public.cjs .",
+            "ok": true,
+            "exitCode": 0,
+            "output": "\n\n[exit code 0]"
+          }
+        ]
+      },
+      "accepted": true
+    },
+    {
+      "id": "d32e910e-557e-4101-824a-bc57a5ad8f0b",
+      "case": "catalog-policy",
+      "round": 0,
+      "profile": "standard",
+      "status": "completed",
+      "reason": null,
+      "result": {
+        "status": "completed",
+        "reason": null,
+        "summary": "Fixed in `electron/model-catalog.js`:\n\n- **Cost classification** (gatewayModel:12): `zero` now requires both input and output to be explicitly present (not `null`/`undefined`) and numerically zero via `Number(input) === 0 && Number(output) === 0`. Unknown or partly specified pricing is no longer treated as free; numeric strings like `\"0\"` still count as zero, and local models / `:free$|/free$|-free$` suffixes remain free.\n- **Filtering** (filterModels:90): `tools_only` now requires `m.tools === true`, excluding unknown (`null`/`undefined`) capability. Kept case-insensitive query, truthy-free (`free_only`), paid-entry inclusion, and combined filter semantics.\n\n`node public.cjs .` passes; behavior verified for partial prices, string prices, free suffixes, local providers, tools-only, and combined filters.",
+        "changes": [
+          {
+            "tool": "edit",
+            "path": "<benchmark-workspace>/data/jobs/tasks/d32e910e-557e-4101-824a-bc57a5ad8f0b/worktree/electron/model-catalog.js"
+          },
+          {
+            "tool": "edit",
+            "path": "<benchmark-workspace>/data/jobs/tasks/d32e910e-557e-4101-824a-bc57a5ad8f0b/worktree/electron/model-catalog.js"
+          }
+        ],
+        "attempts": [
+          {
+            "model": "opencode/big-pickle",
+            "error": null
+          }
+        ],
+        "toolCalls": 9,
+        "checkHistory": [],
+        "model": "opencode/big-pickle",
+        "verification": {
+          "status": "passed",
+          "checks": [
+            {
+              "command": "node public.cjs .",
+              "ok": true,
+              "exitCode": 0,
+              "output": "\n\n[exit code 0]"
+            }
+          ]
+        },
+        "usage": {
+          "inTokens": 277041,
+          "outTokens": 5260,
+          "estimated": false,
+          "available": true,
+          "uncachedInTokens": 25649,
+          "cacheReadTokens": 251392,
+          "cacheWriteTokens": 0,
+          "reasoningTokens": 0,
+          "modelRequests": 10
+        },
+        "elapsedMs": 51183
+      },
+      "files": [
+        "electron/model-catalog.js"
+      ],
+      "heldout": {
+        "passed": true
+      },
+      "integration": {
+        "applied": true,
+        "appliedAt": "2026-09-21T01:48:13.956Z",
+        "files": [
+          "electron/model-catalog.js"
+        ],
+        "checks": [
+          {
+            "command": "node public.cjs .",
+            "ok": true,
+            "exitCode": 0,
+            "output": "\n\n[exit code 0]"
+          }
+        ]
+      },
+      "accepted": true
+    },
+    {
+      "id": "925b8bdd-d295-4d9f-b1f8-5a598fbf3e68",
+      "case": "compaction-continuity",
+      "round": 0,
+      "profile": "standard",
+      "status": "completed",
+      "reason": null,
+      "result": {
+        "status": "completed",
+        "reason": null,
+        "summary": "Fixed `electron/compactor.js:34-48` (cutIndex) and `:68-99` (compact). Only the owned file changed; `node public.cjs .` passes.\n\nChanges:\n- **Single-task compaction**: `cutIndex` now cuts at a complete assistant/tool-cycle boundary (4th-from-last assistant) when there's only one user turn, instead of returning `-1`. No tool result is ever orphaned since the tail always starts at an assistant message.\n- **Repeated compactions / failed summarizer**: the anchor prefers the previously preserved task (`priorTask`) over re-deriving from the first remaining user turn, so original constraints survive across repeated compactions and summarizer failures.\n- **System instructions**: all leading `system` messages are preserved verbatim.\n- **Multi-turn**: the existing user-turn cut, budget loop, and output shape are unchanged.\n\nVerified with public.cjs plus extra checks covering single-turn compaction, cycle retention/no orphaned results, repeated compaction, failed-then-successful summarizer chains, and multi-turn behavior.",
+        "changes": [
+          {
+            "tool": "edit",
+            "path": "<benchmark-workspace>/data/jobs/tasks/925b8bdd-d295-4d9f-b1f8-5a598fbf3e68/worktree/electron/compactor.js"
+          },
+          {
+            "tool": "edit",
+            "path": "<benchmark-workspace>/data/jobs/tasks/925b8bdd-d295-4d9f-b1f8-5a598fbf3e68/worktree/electron/compactor.js"
+          },
+          {
+            "tool": "edit",
+            "path": "<benchmark-workspace>/data/jobs/tasks/925b8bdd-d295-4d9f-b1f8-5a598fbf3e68/worktree/electron/compactor.js"
+          },
+          {
+            "tool": "edit",
+            "path": "<benchmark-workspace>/data/jobs/tasks/925b8bdd-d295-4d9f-b1f8-5a598fbf3e68/worktree/electron/compactor.js"
+          },
+          {
+            "tool": "write",
+            "path": "/var/folders/l5/ysts1j1x5d1bzjspwqzmftf40000gn/T/opencode/comptest.js"
+          }
+        ],
+        "attempts": [
+          {
+            "model": "opencode/big-pickle",
+            "error": null
+          }
+        ],
+        "toolCalls": 10,
+        "checkHistory": [],
+        "model": "opencode/big-pickle",
+        "verification": {
+          "status": "passed",
+          "checks": [
+            {
+              "command": "node public.cjs .",
+              "ok": true,
+              "exitCode": 0,
+              "output": "\n\n[exit code 0]"
+            }
+          ]
+        },
+        "usage": {
+          "inTokens": 465039,
+          "outTokens": 21183,
+          "estimated": false,
+          "available": true,
+          "uncachedInTokens": 28559,
+          "cacheReadTokens": 436480,
+          "cacheWriteTokens": 0,
+          "reasoningTokens": 0,
+          "modelRequests": 11
+        },
+        "elapsedMs": 127778
+      },
+      "files": [
+        "electron/compactor.js"
+      ],
+      "heldout": {
+        "passed": true
+      },
+      "integration": {
+        "applied": true,
+        "appliedAt": "2026-09-21T01:49:54.189Z",
+        "files": [
+          "electron/compactor.js"
+        ],
+        "checks": [
+          {
+            "command": "node public.cjs .",
+            "ok": true,
+            "exitCode": 0,
+            "output": "\n\n[exit code 0]"
+          }
+        ]
+      },
+      "accepted": true
+    },
+    {
+      "id": "07537e00-5618-41f7-928e-17867da0ca1b",
+      "case": "compaction-continuity",
+      "round": 0,
+      "profile": "scoped",
+      "status": "completed",
+      "reason": null,
+      "result": {
+        "status": "completed",
+        "reason": null,
+        "summary": "Fixed `electron/compactor.js` (only owned module touched), `node public.cjs .` passes.\n\nChanges:\n- `cutIndex` (compactor.js:34): the single-user-turn fallback built a `boundaries` list but always returned `-1`, so multi-cycle single-task sessions never compacted. It now cuts at a complete assistant/tool-cycle boundary, keeping the latest `KEEP_CYCLES` (4) cycles verbatim so no tool result is orphaned. It returns `-1` only when there aren't more cycles than retained, preserving old behavior for tiny transcripts.\n- `compact` (compactor.js:87): `originalTask = task?.content || priorTask` so the `TASK_MARKER` anchor persists across repeated compactions (including when the only user message is a prior summary and/or when the summarizer fails).\n\nVerified against a comprehensive script: single-task many-cycle compaction (4 cycles verbatim, no orphaned results, system message preserved), repeated compactions with both failing and succeeding summarizers (task constraints retained), and multi-turn compaction still working.",
+        "changes": [
+          {
+            "tool": "edit",
+            "path": "<benchmark-workspace>/data/jobs/tasks/07537e00-5618-41f7-928e-17867da0ca1b/worktree/electron/compactor.js"
+          },
+          {
+            "tool": "edit",
+            "path": "<benchmark-workspace>/data/jobs/tasks/07537e00-5618-41f7-928e-17867da0ca1b/worktree/electron/compactor.js"
+          },
+          {
+            "tool": "edit",
+            "path": "<benchmark-workspace>/data/jobs/tasks/07537e00-5618-41f7-928e-17867da0ca1b/worktree/electron/compactor.js"
+          },
+          {
+            "tool": "write",
+            "path": "/var/folders/l5/ysts1j1x5d1bzjspwqzmftf40000gn/T/opencode/compactor-check.cjs"
+          },
+          {
+            "tool": "edit",
+            "path": "<benchmark-workspace>/data/jobs/tasks/07537e00-5618-41f7-928e-17867da0ca1b/worktree/electron/compactor.js"
+          }
+        ],
+        "attempts": [
+          {
+            "model": "opencode/big-pickle",
+            "error": null
+          }
+        ],
+        "toolCalls": 22,
+        "checkHistory": [],
+        "model": "opencode/big-pickle",
+        "verification": {
+          "status": "passed",
+          "checks": [
+            {
+              "command": "node public.cjs .",
+              "ok": true,
+              "exitCode": 0,
+              "output": "\n\n[exit code 0]"
+            }
+          ]
+        },
+        "usage": {
+          "inTokens": 540320,
+          "outTokens": 19150,
+          "estimated": false,
+          "available": true,
+          "uncachedInTokens": 16032,
+          "cacheReadTokens": 524288,
+          "cacheWriteTokens": 0,
+          "reasoningTokens": 0,
+          "modelRequests": 21
+        },
+        "elapsedMs": 177317
+      },
+      "files": [
+        "electron/compactor.js"
+      ],
+      "heldout": {
+        "passed": true
+      },
+      "integration": {
+        "applied": true,
+        "appliedAt": "2026-09-21T01:51:11.428Z",
+        "files": [
+          "electron/compactor.js"
+        ],
+        "checks": [
+          {
+            "command": "node public.cjs .",
+            "ok": true,
+            "exitCode": 0,
+            "output": "\n\n[exit code 0]"
+          }
+        ]
+      },
+      "accepted": true
+    },
+    {
+      "id": "e2840a53-3f18-49fa-9969-b1712526243e",
+      "case": "repair-accounting",
+      "round": 0,
+      "profile": "scoped",
+      "status": "completed",
+      "reason": null,
+      "result": {
+        "status": "completed",
+        "reason": null,
+        "summary": "Done. Changes in `electron/execution.js:90-97`:\n\n- **Repair on failed checks**: Replaced `if (verification.length) break` (which always exited the loop when checks ran) with `checkHistory.push(...)` + `if (verification.every(c => c.ok)) break`. Failed checks now trigger a bounded repair (\u2264 `repairAttempts`) in the same agent, and each round's checks are recorded in `checkHistory`.\n- **Failed final checks**: When the last allowed round fails, `error = \"Acceptance check failed\"` is set before breaking, so status is `failed`/`partial`, never `completed`.\n- **Usage across turns**: Resets `lastUsage` before each repair `send` so per-turn cumulative totals (including `cacheReadTokens`, `modelRequests`, etc.) are summed once per turn instead of being double-counted/zeroed.\n\n`node public.cjs .` passes; verified cancellation, pass-first-try, single-repair, multi-emission delta counting, bounded repairs, and non-completed final failures.",
+        "changes": [
+          {
+            "tool": "edit",
+            "path": "<benchmark-workspace>/data/jobs/tasks/e2840a53-3f18-49fa-9969-b1712526243e/worktree/electron/execution.js"
+          }
+        ],
+        "attempts": [
+          {
+            "model": "opencode/big-pickle",
+            "error": null
+          }
+        ],
+        "toolCalls": 8,
+        "checkHistory": [],
+        "model": "opencode/big-pickle",
+        "verification": {
+          "status": "passed",
+          "checks": [
+            {
+              "command": "node public.cjs .",
+              "ok": true,
+              "exitCode": 0,
+              "output": "\n\n[exit code 0]"
+            }
+          ]
+        },
+        "usage": {
+          "inTokens": 181770,
+          "outTokens": 14566,
+          "estimated": false,
+          "available": true,
+          "uncachedInTokens": 12042,
+          "cacheReadTokens": 169728,
+          "cacheWriteTokens": 0,
+          "reasoningTokens": 0,
+          "modelRequests": 8
+        },
+        "elapsedMs": 109533
+      },
+      "files": [
+        "electron/execution.js"
+      ],
+      "heldout": {
+        "passed": false,
+        "output": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n\n3 !== 2\n\n    at <benchmark-workspace>/repair-accounting.heldout.cjs:2:620 {\n  generatedMessage: true,\n  code: 'ERR_ASSERTION',\n  actual: 3,\n  expected: 2,\n  operator: 'strictEqual'\n}\n"
+      },
+      "integration": null,
+      "accepted": false
+    },
+    {
+      "id": "ce7050c1-8125-4948-bf44-b10636b70743",
+      "case": "workspace-boundaries",
+      "round": 0,
+      "profile": "standard",
+      "status": "partial",
+      "reason": "Observed token budget reached",
+      "result": {
+        "status": "partial",
+        "reason": "Observed token budget reached",
+        "summary": "",
+        "changes": [
+          {
+            "tool": "edit",
+            "path": "<benchmark-workspace>/data/jobs/tasks/ce7050c1-8125-4948-bf44-b10636b70743/worktree/electron/job-workspace.js"
+          },
+          {
+            "tool": "edit",
+            "path": "<benchmark-workspace>/data/jobs/tasks/ce7050c1-8125-4948-bf44-b10636b70743/worktree/electron/job-workspace.js"
+          },
+          {
+            "tool": "write",
+            "path": "/var/folders/l5/ysts1j1x5d1bzjspwqzmftf40000gn/T/opencode/wspace-check.js"
+          },
+          {
+            "tool": "edit",
+            "path": "/var/folders/l5/ysts1j1x5d1bzjspwqzmftf40000gn/T/opencode/wspace-check.js"
+          },
+          {
+            "tool": "edit",
+            "path": "<benchmark-workspace>/data/jobs/tasks/ce7050c1-8125-4948-bf44-b10636b70743/worktree/electron/job-workspace.js"
+          }
+        ],
+        "attempts": [
+          {
+            "model": "opencode/big-pickle",
+            "error": null
+          }
+        ],
+        "toolCalls": 15,
+        "checkHistory": [],
+        "model": "opencode/big-pickle",
+        "verification": {
+          "status": "unverified",
+          "checks": []
+        },
+        "usage": {
+          "inTokens": 591190,
+          "outTokens": 22589,
+          "estimated": false,
+          "available": true,
+          "uncachedInTokens": 35414,
+          "cacheReadTokens": 555776,
+          "cacheWriteTokens": 0,
+          "reasoningTokens": 0,
+          "modelRequests": 13
+        },
+        "elapsedMs": 159700
+      },
+      "files": [
+        "electron/job-workspace.js"
+      ],
+      "heldout": {
+        "passed": true
+      },
+      "integration": null,
+      "accepted": false
+    },
+    {
+      "id": "2d717e70-5a7d-4976-bfb4-22bd5625f15d",
+      "case": "repair-accounting",
+      "round": 0,
+      "profile": "standard",
+      "status": "partial",
+      "reason": "Observed token budget reached",
+      "result": {
+        "status": "partial",
+        "reason": "Observed token budget reached",
+        "summary": "",
+        "changes": [
+          {
+            "tool": "edit",
+            "path": "<benchmark-workspace>/data/jobs/tasks/2d717e70-5a7d-4976-bfb4-22bd5625f15d/worktree/electron/execution.js"
+          },
+          {
+            "tool": "write",
+            "path": "/var/folders/l5/ysts1j1x5d1bzjspwqzmftf40000gn/T/opencode/exec-check.cjs"
+          },
+          {
+            "tool": "edit",
+            "path": "/var/folders/l5/ysts1j1x5d1bzjspwqzmftf40000gn/T/opencode/exec-check.cjs"
+          }
+        ],
+        "attempts": [
+          {
+            "model": "opencode/big-pickle",
+            "error": null
+          }
+        ],
+        "toolCalls": 17,
+        "checkHistory": [],
+        "model": "opencode/big-pickle",
+        "verification": {
+          "status": "unverified",
+          "checks": []
+        },
+        "usage": {
+          "inTokens": 609291,
+          "outTokens": 24210,
+          "estimated": false,
+          "available": true,
+          "uncachedInTokens": 39179,
+          "cacheReadTokens": 570112,
+          "cacheWriteTokens": 0,
+          "reasoningTokens": 0,
+          "modelRequests": 12
+        },
+        "elapsedMs": 241592
+      },
+      "files": [
+        "electron/execution.js"
+      ],
+      "heldout": {
+        "passed": false,
+        "output": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n\n3 !== 2\n\n    at <benchmark-workspace>/repair-accounting.heldout.cjs:2:620 {\n  generatedMessage: true,\n  code: 'ERR_ASSERTION',\n  actual: 3,\n  expected: 2,\n  operator: 'strictEqual'\n}\n"
+      },
+      "integration": null,
+      "accepted": false
+    },
+    {
+      "id": "b0eb5c3c-4805-4d2b-b28d-028aa4ac524c",
+      "case": "workspace-boundaries",
+      "round": 0,
+      "profile": "scoped",
+      "status": "completed",
+      "reason": null,
+      "result": {
+        "status": "completed",
+        "reason": null,
+        "summary": "Done. Changes in `electron/job-workspace.js`:\n\n- `relativeFile` now normalizes `\\`\u2192`/` first, then rejects absolute paths, any `..` segment, and any `.git` segment on either slash style (`electron/job-workspace.js:12`). Parent traversal like `a\\..\\..\\escape` is now caught; `src/file.js` still passes.\n- `collect`'s ownership matching is boundary-aware (`electron/job-workspace.js:51`): a directory prefix like `src/app/` covers descendants (`src/app/foo.js`) but never similarly named siblings (`src/apple.js`); a path without a trailing slash stays an exact file match. Trailing slashes survive the `relativeCwd` join, and allowed paths are validated through `relativeFile`.\n\nSnapshot isolation (private `GIT_INDEX_FILE`), the `changes.patch` artifact (mode `0600`), and the source index are untouched. `node public.cjs .` passes.",
+        "changes": [
+          {
+            "tool": "edit",
+            "path": "<benchmark-workspace>/data/jobs/tasks/b0eb5c3c-4805-4d2b-b28d-028aa4ac524c/worktree/electron/job-workspace.js"
+          },
+          {
+            "tool": "edit",
+            "path": "<benchmark-workspace>/data/jobs/tasks/b0eb5c3c-4805-4d2b-b28d-028aa4ac524c/worktree/electron/job-workspace.js"
+          },
+          {
+            "tool": "edit",
+            "path": "<benchmark-workspace>/data/jobs/tasks/b0eb5c3c-4805-4d2b-b28d-028aa4ac524c/worktree/electron/job-workspace.js"
+          }
+        ],
+        "attempts": [
+          {
+            "model": "opencode/big-pickle",
+            "error": null
+          }
+        ],
+        "toolCalls": 17,
+        "checkHistory": [],
+        "model": "opencode/big-pickle",
+        "verification": {
+          "status": "passed",
+          "checks": [
+            {
+              "command": "node public.cjs .",
+              "ok": true,
+              "exitCode": 0,
+              "output": "\n\n[exit code 0]"
+            }
+          ]
+        },
+        "usage": {
+          "inTokens": 360419,
+          "outTokens": 17464,
+          "estimated": false,
+          "available": true,
+          "uncachedInTokens": 18147,
+          "cacheReadTokens": 342272,
+          "cacheWriteTokens": 0,
+          "reasoningTokens": 0,
+          "modelRequests": 15
+        },
+        "elapsedMs": 141195
+      },
+      "files": [
+        "electron/job-workspace.js"
+      ],
+      "heldout": {
+        "passed": true
+      },
+      "integration": {
+        "applied": true,
+        "appliedAt": "2026-09-21T01:56:45.624Z",
+        "files": [
+          "electron/job-workspace.js"
+        ],
+        "checks": [
+          {
+            "command": "node public.cjs .",
+            "ok": true,
+            "exitCode": 0,
+            "output": "\n\n[exit code 0]"
+          }
+        ]
+      },
+      "accepted": true
+    },
+    {
+      "id": "05b4acb7-9029-4200-85d8-3b6eeeb80e21",
+      "case": "durable-admission",
+      "round": 0,
+      "profile": "scoped",
+      "status": "partial",
+      "reason": "Observed token budget reached",
+      "result": {
+        "status": "partial",
+        "reason": "Observed token budget reached",
+        "summary": "",
+        "changes": [
+          {
+            "tool": "edit",
+            "path": "<benchmark-workspace>/data/jobs/tasks/05b4acb7-9029-4200-85d8-3b6eeeb80e21/worktree/electron/job-service.js"
+          },
+          {
+            "tool": "edit",
+            "path": "<benchmark-workspace>/data/jobs/tasks/05b4acb7-9029-4200-85d8-3b6eeeb80e21/worktree/electron/job-service.js"
+          }
+        ],
+        "attempts": [
+          {
+            "model": "opencode/big-pickle",
+            "error": null
+          }
+        ],
+        "toolCalls": 20,
+        "checkHistory": [],
+        "model": "opencode/big-pickle",
+        "verification": {
+          "status": "unverified",
+          "checks": []
+        },
+        "usage": {
+          "inTokens": 592567,
+          "outTokens": 18465,
+          "estimated": false,
+          "available": true,
+          "uncachedInTokens": 39863,
+          "cacheReadTokens": 552704,
+          "cacheWriteTokens": 0,
+          "reasoningTokens": 0,
+          "modelRequests": 14
+        },
+        "elapsedMs": 140056
+      },
+      "files": [
+        "electron/job-service.js"
+      ],
+      "heldout": {
+        "passed": true
+      },
+      "integration": null,
+      "accepted": false
+    },
+    {
+      "id": "8c014d9b-3d67-4225-b243-a2a02344d00b",
+      "case": "durable-admission",
+      "round": 0,
+      "profile": "standard",
+      "status": "partial",
+      "reason": "Observed token budget reached",
+      "result": {
+        "status": "partial",
+        "reason": "Observed token budget reached",
+        "summary": "",
+        "changes": [
+          {
+            "tool": "edit",
+            "path": "<benchmark-workspace>/data/jobs/tasks/8c014d9b-3d67-4225-b243-a2a02344d00b/worktree/electron/job-service.js"
+          },
+          {
+            "tool": "edit",
+            "path": "<benchmark-workspace>/data/jobs/tasks/8c014d9b-3d67-4225-b243-a2a02344d00b/worktree/electron/job-service.js"
+          }
+        ],
+        "attempts": [
+          {
+            "model": "opencode/big-pickle",
+            "error": null
+          }
+        ],
+        "toolCalls": 15,
+        "checkHistory": [],
+        "model": "opencode/big-pickle",
+        "verification": {
+          "status": "unverified",
+          "checks": []
+        },
+        "usage": {
+          "inTokens": 649626,
+          "outTokens": 23799,
+          "estimated": false,
+          "available": true,
+          "uncachedInTokens": 60314,
+          "cacheReadTokens": 589312,
+          "cacheWriteTokens": 0,
+          "reasoningTokens": 0,
+          "modelRequests": 11
+        },
+        "elapsedMs": 174565
+      },
+      "files": [
+        "electron/job-service.js"
+      ],
+      "heldout": {
+        "passed": false,
+        "output": "AssertionError [ERR_ASSERTION]: Missing expected exception.\n    at <benchmark-workspace>/durable-admission.heldout.cjs:2:329\n    at Object.<anonymous> (<benchmark-workspace>/durable-admission.heldout.cjs:2:1158)\n    at Module._compile (node:internal/modules/cjs/loader:1734:14)\n    at Object..js (node:internal/modules/cjs/loader:1899:10)\n    at Module.load (node:internal/modules/cjs/loader:1469:32)\n    at Function._load (node:internal/modules/cjs/loader:1286:12)\n    at TracingChannel.traceSync (node:diagnostics_channel:322:14)\n    at wrapModuleLoad (node:internal/modules/cjs/loader:235:24)\n    at Function.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:151:5)\n    at node:internal/main/run_main_module:33:47 {\n  generatedMessage: false,\n  code: 'ERR_ASSERTION',\n  actual: undefined,\n  expected: /disk full/,\n  operator: 'throws'\n}\n"
+      },
+      "integration": null,
+      "accepted": false
+    }
+  ],
+  "repositoryModules": 31,
+  "summary": {
+    "standard": {
+      "jobs": 6,
+      "attempted": 6,
+      "accepted": 3,
+      "usageAvailable": 6,
+      "totalInput": 2814238,
+      "uncachedInput": 213534,
+      "cacheRead": 2600704,
+      "cacheWrite": 0,
+      "output": 103474,
+      "modelRequests": 65,
+      "repairs": 0,
+      "inputPerAccepted": 938079.3333333334,
+      "medianExecutionMs": 143739
+    },
+    "scoped": {
+      "jobs": 6,
+      "attempted": 6,
+      "accepted": 4,
+      "usageAvailable": 6,
+      "totalInput": 1924518,
+      "uncachedInput": 117926,
+      "cacheRead": 1806592,
+      "cacheWrite": 0,
+      "output": 80217,
+      "modelRequests": 73,
+      "repairs": 0,
+      "inputPerAccepted": 481129.5,
+      "medianExecutionMs": 124794.5
+    }
+  },
+  "unfinished": [],
+  "elapsedMs": 791449,
+  "submissionMs": 41
+}

@@ -7,6 +7,24 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- Optional scoped OpenCode workers using the supported custom-agent API: model-specific instructions, local tools, preserved repository rules, no automatic skills catalog, and a fixed 24-step limit. The full `standard` agent remains the default; `focused` adds an experimental compact prompt.
+- Separate engine uncached/cache-read/cache-write/reasoning/request metrics, accumulated across repairs. Paired repository-regression benchmark with withheld evaluator checks and a real-engine local request-size probe.
+- Shared persistent coding worker service with eight MCP job tools and an `omniwork-jobs` CLI. Durable batch admission, reconnectable results, provider capacity and pacing, explicit free/paid policy, and paged artifacts.
+- Isolated Git snapshots of current edits, bounded repository context, owned-path checks, same-worker repair, and verified patch application against the latest source.
+- Multi-client daemon regression coverage and a repeatable opt-in live coding benchmark (`node scripts/benchmark-jobs.js --live`).
+- Searchable desktop and MCP model catalogs with free/paid classification, tool support, context sizes, and access requirements. OpenCode engine models include all connected providers; paid models require explicit selection. `npm run providers -- login` uses OpenCode's official authentication flow.
+- Structured MCP task outcomes and caller-supplied acceptance checks. Single and parallel delegations share deadlines, cancellation, usage reporting, and recovery; batches queue every task with bounded concurrency.
+- Original tool-output retrieval and line-range file reads. Long single-task conversations can compact without orphaning tool results.
+- Required deterministic regression jobs for CI and release builds.
+
+### Fixed
+- Failed writes and intermediate commentary no longer masquerade as completed delegations. Summary-only PASS/FAIL grading is replaced by explicit check results or an unverified label.
+- Workers inherit parent permissions, memory, and skills. More than eight tasks are queued rather than silently dropped.
+- Rate-limit cooldowns survive subsequent steps, honor Retry-After, and avoid duplicate streaming retries. Failed exact edits trigger escalation.
+- Default fallback selection excludes arbitrary paid-only catalog entries; model switches refresh utility and tier policy.
+- Lossy gateway compression is now opt-in per request. The earlier 68% figure did not establish answer correctness; default output paging preserves retrievable source and evidence.
+
 ## [0.12.0] — 2026-09-17
 
 ### Added

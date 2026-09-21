@@ -16,7 +16,11 @@ const sessions = new Map();
 const pending = new Map(); // permissionID -> resolve(response)
 let seq = 0;
 const nid = (p) => `${p}${(++seq).toString(36).padStart(6, "0")}`;
-const send = (ev) => { const line = `data: ${JSON.stringify({ id: nid("evt_"), ...ev })}\n\n`; for (const c of clients) c.write(line); };
+const send = (ev) => {
+  // Exercise both top-level and nested session IDs used by engine events.
+  if (ev.properties?.part || ev.properties?.info) delete ev.properties.sessionID;
+  const line = `data: ${JSON.stringify({ id: nid("evt_"), ...ev })}\n\n`; for (const c of clients) c.write(line);
+};
 const json = (res, code, body) => { res.writeHead(code, { "Content-Type": "application/json" }); res.end(JSON.stringify(body)); };
 const read = (req) => new Promise((r) => { let s = ""; req.on("data", (d) => { s += d; }); req.on("end", () => r(s ? JSON.parse(s) : {})); });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -31,7 +35,9 @@ const PROVIDERS = { all: [
   { id: "opencode-go", name: "OpenCode Go", source: "api", env: ["OPENCODE_API_KEY"], options: {}, models: {
     "ox-alpha-free": { id: "ox-alpha-free", name: "Ox Alpha Free", cost: { input: 0, output: 0 }, tool_call: true, limit: { context: 1000000, output: 131072 } },
   } },
-], default: {}, connected: ["opencode"] };
+  { id: "openai", models: { "connected-coder": { name: "Connected Coder", cost: { input: 1, output: 2 }, tool_call: true, limit: { context: 128000 } } } },
+  { id: "not-connected", models: { "hidden": { cost: { input: 1, output: 2 }, tool_call: true } } },
+], default: {}, connected: ["opencode", "openai"] };
 
 const AUTH = process.env.OPENCODE_SERVER_PASSWORD ? "Basic " + Buffer.from(`${process.env.OPENCODE_SERVER_USERNAME || "opencode"}:${process.env.OPENCODE_SERVER_PASSWORD}`).toString("base64") : null;
 const server = http.createServer(async (req, res) => {
@@ -58,6 +64,10 @@ const server = http.createServer(async (req, res) => {
     if (m[2].startsWith("permissions/")) { const b = await read(req); const r = pending.get(m[3]); if (r) { r(b.response); pending.delete(m[3]); } return json(res, 200, true); }
     // message
     const b = await read(req);
+    if (b.agent) {
+      const configured = JSON.parse(process.env.OPENCODE_CONFIG_CONTENT || "{}").agent?.[b.agent];
+      if (!configured || configured.steps !== 24 || configured.permission?.skill === "allow" || configured.permission?.["*"] !== "deny" || !s.permission.some(p=>p.permission === "*" && p.action === "deny")) return json(res, 400, { error: { message: "Worker profile missing or unbounded" } });
+    }
     const text = (b.parts || []).map((p) => p.text || "").join("\n");
     const messageID = nid("msg_");
     s.aborted = false;
@@ -70,6 +80,7 @@ const server = http.createServer(async (req, res) => {
       }
     }
     if (/TOOL/.test(text)) {
+      send({ type: "message.updated", properties: { info: { id: nid("msg_"), sessionID: s.id, role: "assistant", tokens: { input: 100, output: 10, reasoning: 2, cache: { read: 20, write: 0 } } } } });
       const callID = "call_1";
       const tid = nid("prt_");
       send({ type: "message.part.updated", properties: { sessionID: s.id, time: Date.now(), part: { id: tid, sessionID: s.id, messageID, type: "tool", callID, tool: "bash", state: { status: "pending", input: {}, time: { start: Date.now() } } } } });
@@ -94,7 +105,9 @@ const server = http.createServer(async (req, res) => {
     await sleep(5);
     send({ type: "message.part.delta", properties: { sessionID: s.id, messageID, partID, field: "text", delta: answer.slice(5) } });
     send({ type: "session.idle", properties: { sessionID: s.id } });
-    return json(res, 200, { info: { id: messageID, sessionID: s.id, role: "assistant", time: { created: Date.now(), completed: Date.now() }, modelID: b.model.modelID, providerID: b.model.providerID }, parts: [{ id: partID, sessionID: s.id, messageID, type: "text", text: answer }] });
+    const tokens = { input: 50, output: 5, reasoning: 0, cache: { read: 0, write: 0 } };
+    send({ type: "message.part.updated", properties: { part: { id: nid("prt_"), sessionID: s.id, messageID, type: "step-finish", tokens } } });
+    return json(res, 200, { info: { id: messageID, sessionID: s.id, role: "assistant", tokens, time: { created: Date.now(), completed: Date.now() }, modelID: b.model.modelID, providerID: b.model.providerID }, parts: [{ id: partID, sessionID: s.id, messageID, type: "text", text: answer }] });
   }
   json(res, 404, { error: { type: "NotFound", message: u.pathname } });
 });

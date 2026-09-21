@@ -41,23 +41,27 @@ const warn = (m) => console.log(`  ⚠️  ${m}`);
 function guidance() {
   return `${BEGIN}
 
-## OmniWork (free-model delegation + browsing)
+## OmniWork (durable coding workers + browsing)
 
-The \`omniwork\` MCP server runs work on **free** models via a local gateway. Offload mechanical
-work so your context and tokens go to the reasoning that needs them. For the full situation
-guide, load the \`omniwork\` skill.
+The \`omniwork\` MCP server runs coding workers with a shared warm service. Prefer the durable
+job tools below: free-only by default, isolated worktrees, bounded repair, and verified patches.
+For details, load the \`omniwork\` skill.
 
-- \`delegate(task, cwd)\` — one subtask, autonomous; returns summary + change list
-- \`delegate_parallel(tasks[], cwd)\` — independent subtasks fanned out at once; prefer over N delegate calls
+- \`jobs_submit(cwd, tasks[], defaults?, request_id?)\` — submit up to 100 independent tasks immediately; include owned paths, relevant context files and acceptance checks
+- \`jobs_wait(ids[], after_revision?)\` — wait for results or progress without busy polling; jobs survive disconnects
+- \`jobs_get(id)\` / \`jobs_read(id, artifact)\` — inspect compact evidence and retrieve patch/result pages only when needed
+- \`jobs_apply(id)\` — apply a verified patch after conflict and integration checks; \`jobs_cancel(id)\` stops a job
+- \`jobs_list()\` / \`jobs_status()\` — recover job IDs and inspect shared capacity
+- \`delegate\` / \`delegate_parallel\` — legacy synchronous execution in the original workspace; outside the durable job scheduler
 - \`web_search(query)\` / \`browse_page(url)\` — search and read pages through OmniWork (no API key)
 - \`list_skills()\` / \`install_skills(source)\` — see or extend what delegated agents can do
 - \`list_models()\` — what the gateway can route; pass \`model\` + \`fallback_models\` to \`delegate*\` to pin a coder and say what to try if it fails
 - \`list_providers()\` / \`connect_provider(provider)\` — free providers that stay up; \`openrouter\` opens the user's browser (ask first), \`local\` registers Ollama & co. It takes no API key: keys go in the app or \`npm run providers connect <provider> <key>\`, never through you.
 
-Rules of thumb: always pass \`cwd\`; delegated agents start **cold** (self-contained prompts only);
-~30 s overhead per call, so don't delegate tiny things; not a sandbox — it edits real files with
-full user privileges, so avoid destructive or precision-critical tasks; **verify results yourself**
-(run the test, read the diff) — summaries are claims, not evidence.
+Write self-contained tasks and objective checks. Keep dependent edits together; give independent
+workers nonoverlapping owned paths. Use a stable request_id when retrying submission. Preserve
+the returned IDs; retrieve results rather than submitting the work again. A worktree isolates
+code changes, not process privileges. Only call jobs_apply when the parent wants the source updated.
 
 ${END}`;
 }
@@ -68,10 +72,32 @@ const SKILL_DIR = path.join(CLAUDE_DIR, "skills", "omniwork");
 function skillBody() {
   return `---
 name: omniwork
-description: Delegate coding/research work to free local models via the omniwork MCP server, browse the web through it, and manage its skills. Load when deciding whether/how to delegate, when a delegation misbehaves, or when the user mentions OmniWork.
+description: Delegate coding/research work to connected models through the local OmniWork worker service, browse the web through it, and manage its skills. Load when deciding whether/how to delegate, when a delegation misbehaves, or when the user mentions OmniWork.
 ---
 
 # Using OmniWork — every situation
+
+## Preferred coding workflow
+Call \`jobs_submit\` once for a batch. Each task needs a self-contained instruction; provide
+\`allowed_paths\`, \`context_files\` and \`checks\` when possible. The default \`free_only\`
+policy queues work until an eligible model is available; \`allow_paid\` requires a concrete model.
+The shared service limits concurrency across job clients. It snapshots current tracked edits
+and nonignored new files into separate Git worktrees. It includes a bounded repository map,
+runs checks, and attempts one repair by default within the job's original deadline and observed
+token budget. Optional \`setup\` commands install dependencies in worker and integration worktrees.
+For bounded local coding, set \`engine_profile: "scoped"\` to remove the automatic skills catalog
+and unrelated tools while keeping model-specific instructions. The default \`standard\` profile
+retains all capabilities; \`focused\` uses an experimental compact prompt. Check verified
+outcomes and total request usage before applying a cheaper profile to a whole workload.
+
+Use \`jobs_wait\` for completion and revision updates. Use \`jobs_get\` for compact evidence,
+\`jobs_read\` for patch/result pages, and \`jobs_apply\` to update the original workspace after
+checks pass. Application rejects overlapping source edits and reruns checks against the latest
+source snapshot. An interrupted job retains its workspace and is never silently replayed.
+For a non-Git directory, explicitly choose \`isolation: "shared"\`; this edits the source directly.
+
+The synchronous tools described below remain available for compatibility; they do not use the
+durable scheduler. Prefer jobs for parallel coding, reconnectable work, and automatic repair.
 
 OmniWork executes tasks autonomously on free models through a local gateway. The expensive
 model (you) orchestrates; OmniWork does the grunt work. Tools: \`delegate\`, \`delegate_parallel\`,
@@ -86,7 +112,7 @@ model (you) orchestrates; OmniWork does the grunt work. Tools: \`delegate\`, \`d
 ## When NOT to delegate
 - Needs conversation context — delegates start cold; if a self-contained prompt costs more than
   the work, do the work yourself
-- Small tasks (~30 s overhead per call)
+- Tiny tasks where delegation and verification cost more than the edit itself
 - Precision-critical specs — free models drift on instruction details
 - Destructive, security-sensitive, or hard-to-undo changes — OmniWork is NOT a sandbox; it edits
   real files and runs real commands with the user's privileges

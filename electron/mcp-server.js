@@ -15,9 +15,13 @@
 
 const fs = require("node:fs");
 const { ensureShellPath } = require("./shell-path");
-const { agentEnv, browser, ensureGateway, prewarmGateway, resolveModelsLive, listModels, invalidateModels, noModelHint, providers, makeAgent, isNoModelFailure, engineFallbackModel, opencode, SKILLS_DIR } = require("./headless");
+const { agentEnv, browser, ensureGateway, prewarmGateway, resolveModelsLive, invalidateModels, providers, makeAgent, isNoModelFailure, engineFallbackModel, opencode, SKILLS_DIR } = require("./headless");
 const skillsApi = require("./skills");
-const tuning = require("./tuning");
+const { executeTask, mapLimit, formatResult } = require("./execution");
+const { executeToolResult } = require("./tools");
+const modelCatalog = require("./model-catalog");
+const { resolveModels } = require("./headless");
+const jobTools = require("./job-tools");
 
 ensureShellPath(); // MCP clients can launch us with a minimal environment too
 
@@ -28,108 +32,44 @@ const log = (...a) => process.stderr.write("[omniwork-mcp] " + a.join(" ") + "\n
 // we abort the agent and return whatever it managed to finish.
 const DELEGATE_TIMEOUT_MS = Number(process.env.OMNIWORK_DELEGATE_TIMEOUT_MS || 600_000);
 
-// Run one delegated task; capture a change log + final summary.
-async function runDelegate({ task, cwd, model, fallbackModels, progress }) {
-  const gw = await ensureGateway(log);
-  const workspace = cwd && fs.existsSync(cwd) ? cwd : process.cwd();
-  const changes = [];
-  let steps = 0;
-  let failure = null;
-  const emit = (type, p) => {
-    if (type === "thinking") progress(++steps, "thinking…");
-    else if (type === "error") failure = String(p.message || "");
-    else if (type === "tool_call") {
-      const a = p.args || {};
-      const file = a.path || a.filePath || a.file;
-      if (/^(write_file|write)$/.test(p.name)) changes.push(`wrote ${file}`);
-      else if (/^(edit_file|edit|patch)$/.test(p.name)) changes.push(`edited ${file}`);
-      else if (/^(run_command|bash)$/.test(p.name)) changes.push(`ran: ${String(a.command).slice(0, 80)}`);
-      progress(steps, `${p.name} ${String(file || a.command || a.query || a.pattern || "").slice(0, 60)}`.trim());
-    }
-  };
-  const build = (models) => makeAgent({
-    baseUrl: gw.baseUrl, apiKey: gw.apiKey, ...models,
-    workspace, canSpawn: true, ...agentEnv(workspace),
-    // The caller sees a single tool result, never the token stream.
-    streaming: false,
-    emit,
-  });
-  let agent = build(await resolveModelsLive(gw, { model, fallbackModels }));
-
-  let timedOut = false;
-  let engineNote = "";
-  const timer = setTimeout(() => { timedOut = true; agent.abort(); }, DELEGATE_TIMEOUT_MS);
-  try {
-    await agent.send(task);
-    // No gateway model answered, but OpenCode is installed: run the same task on
-    // its engine instead of returning a dead delegation.
-    if (failure && !agent.lastText && isNoModelFailure(failure) && !agent.isEngine && !timedOut) {
+// The same contract and deadline for one task or every item in a batch.
+async function runDelegate({ task, cwd, model, fallbackModels, checks = [], progress = () => {}, signal }) {
+  if (!task || typeof task !== "string") throw new Error("task must be a non-empty string");
+  if (!cwd || !require("node:path").isAbsolute(cwd) || !fs.statSync(cwd).isDirectory()) throw new Error("cwd must be an existing absolute directory");
+  if (!Array.isArray(checks) || checks.some(c => typeof c !== "string" || !c.trim()) || checks.length > 10) throw new Error("checks must contain up to 10 shell commands");
+  const workspace = cwd;
+  let gw;
+  const build = (models, emit) => makeAgent({ baseUrl: gw?.baseUrl || "http://127.0.0.1", apiKey: gw?.apiKey, ...models, workspace, canSpawn: true, ...agentEnv(workspace), streaming: false, emit });
+  return executeTask({ task, checks, signal, timeoutMs: DELEGATE_TIMEOUT_MS, progress,
+    createAgent: async (emit, signal) => {
+      const selected = resolveModels({ model, fallbackModels });
+      // Explicit engine choices must work even when OmniRoute cannot boot.
+      if (opencode.isEngineModel(selected.model)) return build(selected, emit);
+      gw = await ensureGateway(log);
+      if (signal.aborted) throw new Error("Cancelled before execution");
+      return build(await resolveModelsLive(gw, { model, fallbackModels }), emit);
+    },
+    recover: async (failure, previous, emit, signal) => {
+      if (previous.isEngine || !isNoModelFailure(failure) || signal.aborted) return null;
       const engineModel = await engineFallbackModel();
-      if (engineModel) {
-        engineNote = `\n\n[model: no gateway model answered (${failure.split("\n")[0].slice(0, 100)}) — ran on the OpenCode engine, ${engineModel}]`;
-        failure = null;
-        agent = build({ model: engineModel, fallbackModels: [] });
-        await agent.send(task);
-      }
-    }
-  } finally { clearTimeout(timer); }
-  // A turn that produced nothing but an error is an error, not "(no summary)".
-  // When the error is "no model answered" it comes with the way out.
-  if (failure && !agent.lastText) {
-    throw new Error(isNoModelFailure(failure) ? `${failure}\n\n${noModelHint()}` : failure);
-  }
-
-  const summary = agent.lastText || "(no summary)";
-  const changeLog = changes.length ? `\n\nChanges:\n- ${changes.join("\n- ")}` : "";
-  const note = timedOut ? `\n\n[stopped after ${Math.round(DELEGATE_TIMEOUT_MS / 1000)}s — this is partial work]` : "";
-  // A cheap PASS/FAIL gate on the utility model, so the orchestrator re-delegates
-  // only when the work actually fell short — the expensive path is the caller
-  // re-reading and re-issuing, and this cuts it when the task already succeeded.
-  const verifyNote = (timedOut || !tuning.shouldVerify(task, changes.length > 0)) ? "" : await verifyDelegate(agent, task, summary, changeLog).catch(() => "");
-  return `${summary}${changeLog}${modelNote(agent)}${engineNote}${verifyNote}${note}`;
+      return engineModel && !signal.aborted ? build({ model: engineModel, fallbackModels: [] }, emit) : null;
+    },
+    runCheck: (command, signal) => executeToolResult("run_command", { command }, { workspace, signal }),
+  });
 }
 
-async function verifyDelegate(agent, task, summary, changeLog) {
-  if (!agent || typeof agent.oneShot !== "function" || !summary || summary === "(no summary)") return "";
-  const prompt =
-    "You are grading whether a coding agent completed a task. Reply with exactly PASS or FAIL, then a dash and one short reason.\n\n" +
-    `TASK:\n${String(task).slice(0, 1500)}\n\nAGENT SUMMARY:\n${String(summary).slice(0, 1500)}${changeLog.slice(0, 600)}`;
-  let out = "";
-  try { out = String(await agent.oneShot(prompt)).trim(); } catch { return ""; }
-  const m = /^(PASS|FAIL)\b[\s-]*(.*)$/i.exec(out.split("\n")[0] || "");
-  if (!m) return "";
-  const verdict = m[1].toUpperCase();
-  return `\n\n[verify: ${verdict}${m[2] ? " — " + m[2].slice(0, 140) : ""}]`;
-}
-
-// The caller asked for a model; if it got a different one, it should know.
-function modelNote(agent) {
-  if (!agent.modelSwitches.length) return "";
-  const hops = agent.modelSwitches.map((s) => `${s.from} failed (${s.reason.slice(0, 120)})`).join("; ");
-  return `\n\n[model: ran on ${agent.model} — ${hops}]`;
-}
-
-// The catalog, grouped by provider prefix so a long list reads at a glance.
-async function listModelsText() {
-  const ids = await listModels(await ensureGateway(log));
-  if (!ids.length) return "The gateway returned no models (is it still starting? retry in a few seconds).";
-  const groups = new Map();
-  for (const id of ids) {
-    const i = id.indexOf("/");
-    const p = i > 0 ? id.slice(0, i) : "(other)";
-    if (!groups.has(p)) groups.set(p, []);
-    groups.get(p).push(id);
-  }
-  const lines = [`${ids.length} models. \`auto\` routes the free pool; a provider prefix pins one. Models behind a provider key you haven't added will fail — put them in fallback_models after a free one, or use them alone only if the key is configured in the router dashboard.`, ""];
-  for (const [p, list] of groups) lines.push(`## ${p} (${list.length})`, list.join(", "), "");
-  if (opencode.available()) {
-    let engine = [];
-    try { engine = await opencode.getEngine().models(); } catch (e) { lines.push(`## opencode (engine)`, `could not list: ${e.message}`, ""); }
-    if (engine.length) lines.push(`## opencode (engine — free, no account; runs on OpenCode's own server and tools)`, engine.map((m) => m.id).join(", "), "");
-  } else {
-    lines.push(`## opencode (engine) — not present yet`, `${opencode.INSTALL_COMMAND} (a ~45 MB download the user runs) adds its free Zen models (Nemotron 3.5 Lightning, MiMo V2.5, Big Pickle, Ling 3.0 Flash, Nemotron 3 Ultra) as an engine that needs no account.`, "");
-  }
-  return lines.join("\n").trim();
+async function listModelsText(options = {}) {
+  const gw = await ensureGateway(log).catch(() => null);
+  const result = await modelCatalog.catalog(gw, { force: Boolean(options.refresh) });
+  const all = modelCatalog.filterModels(result.models, options);
+  const offset = Math.max(0, Math.floor(Number(options.offset) || 0));
+  const limit = Math.min(100, Math.max(1, Math.floor(Number(options.limit) || 40)));
+  const rows = all.slice(offset, offset + limit);
+  return `${all.length} matching models; showing ${offset + 1}-${offset + rows.length}. Catalog availability is untested. Paid models require explicit selection.\n`
+    + rows.map(m => `${m.id} | ${m.pricing} | tools: ${m.tools == null ? "unknown" : m.tools ? "yes" : "no"} | context: ${m.context || "unknown"} | ${m.access}`).join("\n")
+    + (offset + rows.length < all.length ? `\nMore: list_models(offset=${offset + rows.length})` : "")
+    + result.errors.map(e => `\n${e.source}: ${e.message}`).join("")
+    + `\nConnect additional providers using OpenCode's own auth login, or OmniWork's provider panel. Refresh after connecting.`;
 }
 
 const MODEL_PARAM = {
@@ -142,6 +82,7 @@ const FALLBACK_PARAM = {
 };
 
 const TOOLS = [
+  ...jobTools.TOOLS,
   {
     name: "delegate",
     description:
@@ -153,8 +94,9 @@ const TOOLS = [
         cwd: { type: "string", description: "Absolute working directory. Always pass this explicitly." },
         model: MODEL_PARAM,
         fallback_models: FALLBACK_PARAM,
+        checks: { type: "array", maxItems: 10, items: { type: "string" }, description: "Acceptance commands to run after completion, e.g. npm test. Results include exit codes. Without checks the result is unverified." },
       },
-      required: ["task"],
+      required: ["task", "cwd"],
     },
   },
   {
@@ -164,12 +106,13 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        tasks: { type: "array", items: { type: "string" }, description: "Independent, self-contained subtask instructions." },
+        tasks: { type: "array", minItems: 1, maxItems: 100, items: { type: "string" }, description: "Independent, self-contained subtask instructions." },
         cwd: { type: "string", description: "Absolute working directory. Always pass this explicitly." },
         model: MODEL_PARAM,
         fallback_models: FALLBACK_PARAM,
+        checks: { type: "array", maxItems: 10, items: { type: "string" }, description: "Acceptance commands to run after completion, e.g. npm test. Results include exit codes. Without checks the result is unverified." },
       },
-      required: ["tasks"],
+      required: ["tasks", "cwd"],
     },
   },
   {
@@ -192,9 +135,11 @@ const TOOLS = [
   },
   {
     name: "list_models",
-    description:
-      "List the model ids OmniWork's gateway can route right now, grouped by provider. USE before pinning a model in delegate/delegate_parallel, or when a pinned model failed — free catalogs change as providers retire models.",
-    inputSchema: { type: "object", properties: {}, required: [] },
+    description: "Search available gateway and connected OpenCode model catalogs, with pricing class, tool support and context size. Catalog entries are untested. Use filters before pinning a model. Refresh after connecting a provider.",
+    inputSchema: { type: "object", properties: {
+      query: { type: "string" }, free_only: { type: "boolean" }, tools_only: { type: "boolean" },
+      refresh: { type: "boolean" }, offset: { type: "integer", minimum: 0 }, limit: { type: "integer", minimum: 1, maximum: 100 },
+    } },
   },
   {
     name: "web_search",
@@ -222,9 +167,10 @@ const TOOLS = [
   },
 ];
 
-async function callTool(name, args, progress = () => {}) {
-  if (name === "delegate") return await runDelegate({ task: args.task, cwd: args.cwd, model: args.model, fallbackModels: args.fallback_models, progress });
-  if (name === "list_models") return await listModelsText();
+async function callTool(name, args, progress = () => {}, signal) {
+  if (jobTools.TOOLS.some(t => t.name === name)) return jobTools.call(name, args, signal);
+  if (name === "delegate") return await runDelegate({ task: args.task, cwd: args.cwd, model: args.model, fallbackModels: args.fallback_models, checks: args.checks, progress, signal });
+  if (name === "list_models") return await listModelsText(args);
   if (name === "list_providers") return providers.describe(await providers.status(await ensureGateway(log)));
   if (name === "connect_provider") {
     const gw = await ensureGateway(log);
@@ -255,37 +201,9 @@ async function callTool(name, args, progress = () => {}) {
     return `${head}${url ? `\n(sign-in URL was ${url})` : ""}\nFallback chain now: ${st.chain.length ? st.chain.join(" → ") : "(empty)"}`;
   }
   if (name === "delegate_parallel") {
-    const gw = await ensureGateway(log);
-    const workspace = args.cwd && fs.existsSync(args.cwd) ? args.cwd : process.cwd();
-    let done = 0;
-    const tasks = (args.tasks || []).map((t, i) => ({ title: `task ${i + 1}`, prompt: t }));
-    const switched = [];
-    const agent = makeAgent({
-      baseUrl: gw.baseUrl, apiKey: gw.apiKey, ...(await resolveModelsLive(gw, { model: args.model, fallbackModels: args.fallback_models })),
-      workspace, canSpawn: true, ...agentEnv(workspace), streaming: false,
-      emit: (type, p) => {
-        if (type !== "subagent") return;
-        if (p.kind === "done") progress(++done, `${done}/${tasks.length} subagents finished`, tasks.length);
-        else if (p.kind === "tool") progress(done, `${p.title || "subagent"}: ${p.tool}`, tasks.length);
-        else if (p.kind === "model") { switched.push(`${p.from} → ${p.to}`); progress(done, `${p.title || "subagent"}: model ${p.from} failed, continuing on ${p.to}`, tasks.length); }
-      },
-    });
-    if (agent.isEngine) {
-      // The engine has no in-loop subagents; each task gets its own session.
-      const results = await Promise.all(tasks.map(async (t) => {
-        const one = makeAgent({
-          baseUrl: gw.baseUrl, apiKey: gw.apiKey, model: agent.model, fallbackModels: [],
-          workspace, canSpawn: false, ...agentEnv(workspace), streaming: false,
-          emit: (type, p) => { if (type === "tool_call") progress(done, `${t.title}: ${p.name}`, tasks.length); },
-        });
-        await one.send(t.prompt);
-        progress(++done, `${done}/${tasks.length} engine sessions finished`, tasks.length);
-        return `## ${t.title}\n${one.lastText || "(no summary returned)"}`;
-      }));
-      return results.join("\n\n---\n\n");
-    }
-    const out = await agent.runSubagents(tasks);
-    return switched.length ? `${out}\n\n[model: some subagents fell back — ${[...new Set(switched)].join(", ")}]` : out;
+    if (!Array.isArray(args.tasks) || !args.tasks.length || args.tasks.length > 100 || args.tasks.some(t => typeof t !== "string" || !t.trim())) throw new Error("tasks must contain 1–100 non-empty task strings");
+    const results = await mapLimit(args.tasks, 4, (task, i) => runDelegate({ task, cwd: args.cwd, model: args.model, fallbackModels: args.fallback_models, checks: args.checks, signal, progress: (step, text) => progress(step, `Task ${i + 1}: ${text}`) }));
+    return { status: results.every(r => r.status === "completed") ? "completed" : "partial", tasks: results };
   }
   if (name === "web_search") return await browser.search(args.query);
   if (name === "browse_page") return await browser.open(args.url);
@@ -309,8 +227,10 @@ function sendMsg(obj) { process.stdout.write(JSON.stringify(obj) + "\n"); }
 function reply(id, result) { sendMsg({ jsonrpc: "2.0", id, result }); }
 function replyErr(id, message) { sendMsg({ jsonrpc: "2.0", id, error: { code: -32000, message } }); }
 
+const activeRequests = new Map();
 async function handle(msg) {
   const { id, method, params } = msg;
+  if (method === "notifications/cancelled") { activeRequests.get(params?.requestId)?.abort(); return; }
   if (method === "initialize") {
     // Boot OmniRoute now, in the background. It used to start on the first
     // delegate call, so the caller paid the whole cold-start (tens of seconds,
@@ -330,12 +250,18 @@ async function handle(msg) {
       if (token === undefined || token === null) return;
       sendMsg({ jsonrpc: "2.0", method: "notifications/progress", params: { progressToken: token, progress: n, ...(total ? { total } : {}), message } });
     };
+    const controller = new AbortController(); activeRequests.set(id, controller);
     try {
-      const text = await callTool(params.name, params.arguments || {}, progress);
-      reply(id, { content: [{ type: "text", text }] });
+      const result = await callTool(params.name, params.arguments || {}, progress, controller.signal);
+      if (jobTools.TOOLS.some(t => t.name === params.name)) reply(id, { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result });
+      else if (typeof result === "string") reply(id, { content: [{ type: "text", text: result }] });
+      else {
+        const text = result.tasks ? result.tasks.map((r,i) => `## task ${i + 1}\n${formatResult(r)}`).join("\n\n") : formatResult(result);
+        reply(id, { content: [{ type: "text", text }], structuredContent: result, isError: result.status !== "completed" });
+      }
     } catch (e) {
       reply(id, { content: [{ type: "text", text: `Error: ${e.message}` }], isError: true });
-    }
+    } finally { activeRequests.delete(id); }
   } else if (id != null) {
     replyErr(id, `unknown method: ${method}`);
   }
@@ -354,5 +280,5 @@ process.stdin.on("data", (chunk) => {
     handle(msg).catch((e) => log("handler error", e.message));
   }
 });
-process.stdin.on("end", () => process.exit(0));
+process.stdin.on("end", () => { for (const ctl of activeRequests.values()) ctl.abort(); setTimeout(() => process.exit(0), 600).unref(); });
 log("OmniWork MCP server ready (stdio)");

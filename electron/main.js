@@ -144,6 +144,9 @@ ipcMain.handle("gateway:openDashboard", () => { if (gateway) shell.openExternal(
 // Whatever is connected becomes every session's fallback chain, live.
 const providers = require("./providers");
 const opencodeEngine = require("./opencode-engine");
+const modelCatalog = require("./model-catalog");
+ipcMain.handle("models:probe", (_e, model) => modelCatalog.probe(gateway, model));
+ipcMain.handle("models:catalog", (_e, options) => modelCatalog.catalog(gateway, { force: Boolean(options?.refresh) }));
 async function applyFallbacks() {
   if (!gateway || !sessions) return [];
   try {
@@ -173,7 +176,7 @@ ipcMain.handle("providers:remove", async (_e, provider) => {
 });
 // Only the catalog's own "get a key" pages — never an arbitrary URL from the renderer.
 ipcMain.handle("app:openUrl", (_e, url) => {
-  const allowed = providers.CATALOG.some((p) => p.keyUrl === url);
+  const allowed = providers.CATALOG.some((p) => p.keyUrl === url) || url === "https://opencode.ai/docs/providers/";
   if (allowed) shell.openExternal(url);
   return allowed;
 });

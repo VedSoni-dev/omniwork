@@ -14,7 +14,18 @@ permissions:
   contents: write
 
 jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --legacy-peer-deps
+      - run: npm run test:regression
   build:
+    needs: regression
     strategy:
       fail-fast: false
       matrix:

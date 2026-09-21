@@ -27,7 +27,7 @@ function appDataDir() {
   return path.join(process.env.XDG_CONFIG_HOME || path.join(h, ".config"), "omniwork");
 }
 
-const DATA_DIR = appDataDir();
+const DATA_DIR = process.env.OMNIWORK_DATA_DIR || appDataDir();
 const SKILLS_DIR = path.join(DATA_DIR, "skills");
 const GLOBAL_MEMORY_DIR = path.join(DATA_DIR, "memory");
 
@@ -117,7 +117,7 @@ function resolveModels({ model, fallbackModels } = {}) {
 
 // The gateway's catalog, cached briefly: an ACP client asks for it on every
 // session, and it only changes when someone adds a provider key.
-let modelCache = { at: 0, ids: [] };
+let modelCache = { at: 0, ids: [], contexts: {} };
 async function listModels(gw) {
   if (Date.now() - modelCache.at < 30_000) return modelCache.ids;
   let ids = modelCache.ids;
@@ -128,10 +128,11 @@ async function listModels(gw) {
     });
     if (res.ok) {
       const data = await res.json();
+      modelCache.contexts = Object.fromEntries((data.data || []).filter(m => m.id && (m.context_length || m.max_input_tokens)).map(m => [m.id, m.context_length || m.max_input_tokens]));
       ids = (data.data || []).map((m) => m && m.id).filter((id) => typeof id === "string" && id);
     }
   } catch {}
-  modelCache = { at: Date.now(), ids };
+  modelCache = { ...modelCache, at: Date.now(), ids };
   return ids;
 }
 
@@ -151,9 +152,10 @@ function invalidateModels() { modelCache = { at: 0, ids: [] }; chainCache = { at
 
 async function resolveModelsLive(gw, opts = {}) {
   const r = resolveModels(opts);
+  await listModels(gw); // Pinned models need context metadata too.
   const decided = opts.fallbackModels != null || process.env.OMNIWORK_MODEL_FALLBACKS != null;
   if (!decided) r.fallbackModels = (await defaultFallbacks(gw)).filter((m) => m !== r.model);
-  return r;
+  return { ...r, modelContexts: modelCache.contexts, contextTokens: modelCache.contexts?.[r.model] };
 }
 
 // What to tell a caller whose every model failed. The built-in free pool is
@@ -185,8 +187,8 @@ async function engineFallbackModel() {
   if (/^(0|off|false|no)$/i.test(String(process.env.OMNIWORK_ENGINE_FALLBACK || ""))) return null;
   if (!opencode.available()) return null;
   try {
-    const list = await opencode.getEngine().models();
-    return list.length ? list[0].id : `${opencode.PREFIX}nemotron-3.5-lightning-free`;
+    const list = (await opencode.getEngine().models()).filter(m => m.free && m.tools !== false);
+    return list.length ? list[0].id : null;
   } catch { return null; }
 }
 

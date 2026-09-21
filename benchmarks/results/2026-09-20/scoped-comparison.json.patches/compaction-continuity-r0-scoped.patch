@@ -1,0 +1,42 @@
+diff --git a/electron/compactor.js b/electron/compactor.js
+index fc33406..5b38d0c 100644
+--- a/electron/compactor.js
++++ b/electron/compactor.js
+@@ -7,6 +7,7 @@
+ const DEFAULT_CONTEXT = 100_000; // tokens; conservative when the model is unknown
+ const COMPACT_AT = 0.8;          // auto-compact at 80% of budget
+ const KEEP_TURNS = 6;            // recent user turns kept verbatim
++const KEEP_CYCLES = 4;           // assistant/tool cycles kept verbatim without user turns
+ const MAX_SUMMARY_INPUT = 48_000; // chars fed to the summarize call
+ 
+ const SUMMARY_MARKER = "[Conversation summary — earlier context was compacted]";
+@@ -35,13 +36,17 @@ function cutIndex(messages, keepTurns = KEEP_TURNS) {
+   for (let i = messages.length - 1; i > 0; i--) {
+     if (messages[i].role === "user" && ++turns >= keepTurns) return i;
+   }
+-  // Delegations normally contain a single user turn. Cut only at a complete
+-  // assistant/tool-cycle boundary, retaining the latest four cycles verbatim.
++  // Delegations normally contain a single user turn but many assistant/tool
++  // cycles. Cut only at a complete assistant/tool-cycle boundary — an assistant
++  // message whose tool results all follow it — so no tool result is orphaned.
++  // Retain the latest KEEP_CYCLES cycles verbatim; if there aren't more cycles
++  // than that, nothing meaningful precedes the tail.
+   const boundaries = [];
+   for (let i = 2; i < messages.length; i++) {
+     if (messages[i].role === "assistant") boundaries.push(i);
+   }
+-  return -1;
++  if (boundaries.length <= KEEP_CYCLES) return -1;
++  return boundaries[boundaries.length - KEEP_CYCLES];
+ }
+ 
+ // Render older messages as plain text for the summarize call.
+@@ -77,7 +82,7 @@ async function compact(messages, summarize, { budget = DEFAULT_CONTEXT } = {}) {
+   const task = messages.find((m) => m.role === "user" && typeof m.content === "string" && !m.content.startsWith(SUMMARY_MARKER));
+   const previousSummary = messages.find(m => m.role === "user" && typeof m.content === "string" && m.content.startsWith(SUMMARY_MARKER));
+   const priorTask = previousSummary?.content.includes(TASK_MARKER) ? previousSummary.content.slice(previousSummary.content.indexOf(TASK_MARKER) + TASK_MARKER.length) : "";
+-  const originalTask = task?.content;
++  const originalTask = task?.content || priorTask;
+   const anchor = originalTask ? TASK_MARKER + originalTask.slice(0, 12000) : "";
+   const summaryLimit = Math.max(256, Math.min(16000, Math.floor(budget * 0.8)));
+   let summaryMsg;

@@ -1,0 +1,44 @@
+diff --git a/electron/job-service.js b/electron/job-service.js
+index 5e703f5..f77b52a 100644
+--- a/electron/job-service.js
++++ b/electron/job-service.js
+@@ -45,8 +45,13 @@ function atomic(file, data) {
+   fs.renameSync(tmp, file);
+ }
+ function providerKey(model) {
+-  // Zen and Go may share capacity. Do not multiply slots by model aliases.
+-  return model.id;
++  // OpenCode Zen and Go (and any account routed through the engine) share one
++  // capacity bucket: do not multiply slots by model id or provider alias.
++  // Gateway models bucket by their route prefix, one bucket per provider.
++  if (model && model.source === "OpenCode") return "opencode";
++  const id = String((model && model.id) || "");
++  const slash = id.indexOf("/");
++  return slash > 0 ? id.slice(0, slash) : id;
+ }
+ class JobService extends EventEmitter {
+   constructor({ dir, catalog, run, runCheck, concurrency = 4, providerConcurrency = 2, requestsPerMinute = 20, providerLimits = {} }) {
+@@ -92,10 +97,20 @@ class JobService extends EventEmitter {
+     const jobs = entries.map(({ spec, key, fingerprint, existing }) => {
+       if (existing) return this.view(existing);
+       const id = crypto.randomUUID();
+-      fs.mkdirSync(path.join(this.dir, id), { mode: 0o700 });
++      const dir = path.join(this.dir, id);
++      fs.mkdirSync(dir, { mode: 0o700 });
+       const job = { id, key, fingerprint, batch, batchSize: specs.length, spec, status: "queued", createdAt: new Date().toISOString(), result: null, progress: null };
+-      // Admission must reach disk before the scheduler can see this job.
+-      this.jobs.set(id, job); this.keys.set(key, id); this.save(job); return this.view(job);
++      this.jobs.set(id, job); this.keys.set(key, id);
++      // Admission must reach disk before the scheduler can see this job. A
++      // persistence failure must not leave a schedulable in-memory job or a
++      // deduplication key: roll both back and remove the empty directory.
++      try { this.save(job); }
++      catch (e) {
++        this.jobs.delete(id); if (this.keys.get(key) === id) this.keys.delete(key);
++        try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
++        throw e;
++      }
++      return this.view(job);
+     });
+     setImmediate(() => this.tick());
+     return { request_id: batch, revision: this.revision, jobs };

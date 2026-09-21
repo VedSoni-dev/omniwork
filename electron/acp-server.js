@@ -21,7 +21,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { ensureShellPath } = require("./shell-path");
-const { agentEnv, ensureGateway, prewarmGateway, resolveModelsLive, listModels, invalidateModels, noModelHint, providers, makeAgent, isNoModelFailure, engineFallbackModel, opencode, DATA_DIR, SKILLS_DIR } = require("./headless");
+const { agentEnv, ensureGateway, prewarmGateway, resolveModels, resolveModelsLive, listModels, invalidateModels, noModelHint, providers, makeAgent, isNoModelFailure, engineFallbackModel, opencode, DATA_DIR, SKILLS_DIR } = require("./headless");
 const skillsApi = require("./skills");
 
 ensureShellPath(); // ACP clients can launch us with a minimal environment too
@@ -156,8 +156,9 @@ function persist(sess) {
 }
 
 async function buildSession({ id, cwd, mode, messages, model, fallbackModels, engineSession }) {
-  const gw = await ensureGateway(log);
-  const models = await resolveModelsLive(gw, { model, fallbackModels });
+  const selected = resolveModels({ model, fallbackModels });
+  const gw = opencode.isEngineModel(selected.model) ? { baseUrl: "http://127.0.0.1", apiKey: "" } : await ensureGateway(log);
+  const models = opencode.isEngineModel(selected.model) ? selected : await resolveModelsLive(gw, { model, fallbackModels });
   const sess = {
     id, cwd, mode: mode || DEFAULT_MODE,
     sink: () => {},                 // replaced per turn
@@ -166,6 +167,7 @@ async function buildSession({ id, cwd, mode, messages, model, fallbackModels, en
     agent: null,
   };
   sess.gw = gw;
+  sess.modelContexts = models.modelContexts || {};
   attachAgent(sess, models.model, models.fallbackModels, { messages: Array.isArray(messages) && messages.length ? messages : null, sessionID: engineSession || null });
   sessions.set(id, sess);
   return sess;
@@ -180,6 +182,7 @@ function attachAgent(sess, model, fallbackModels, { messages = null, sessionID =
     apiKey: gw.apiKey,
     model,
     fallbackModels,
+    modelContexts: sess.modelContexts,
     messages,   // the engine carries these into its first prompt; the gateway agent restores them below
     sessionID,  // an OpenCode session to resume
     workspace: sess.cwd,
@@ -225,7 +228,7 @@ async function modelOption(sess) {
   const current = sess.agent.model;
   const chain = sess.agent.fallbackModels;
   let catalog = [];
-  try { catalog = await listModels(await ensureGateway(log)); } catch {}
+  try { if (!sess.agent.isEngine) catalog = await listModels(await ensureGateway(log)); } catch {}
   const options = [];
   const seen = new Set();
   let engine = [];
@@ -237,7 +240,7 @@ async function modelOption(sess) {
     const notes = [];
     if (n >= 0) notes.push(`Fallback #${n + 1}`);
     if (id === "auto") notes.push("free pool, routed by the gateway");
-    if (opencode.isEngineModel(id)) notes.push("OpenCode engine · free, no account");
+    if (opencode.isEngineModel(id)) { const entry = engine.find(m => m.id === id); notes.push(`OpenCode engine · ${entry?.free ? "free" : "connected account; charges may apply"}`); }
     options.push({ value: id, name: id, ...(notes.length ? { description: notes.join(" · ") } : {}) });
     if (options.length >= MAX_MODEL_OPTIONS) break;
   }
@@ -259,13 +262,19 @@ async function setModel(sess, modelId) {
   const id = String(modelId == null ? "" : modelId).trim();
   if (!id) throw new RpcError(-32602, "model id is required");
   if (sess.running) throw new RpcError(-32000, "cannot change the model while a prompt is running");
-  const catalog = await listModels(await ensureGateway(log)).catch(() => []);
+  if (!opencode.isEngineModel(id)) sess.gw = await ensureGateway(log);
+  const catalog = opencode.isEngineModel(id) ? [] : await listModels(sess.gw).catch(() => []);
+  if (!opencode.isEngineModel(id)) {
+    const resolved = await resolveModelsLive(sess.gw, { model: id, fallbackModels: sess.agent.fallbackModels });
+    sess.modelContexts = resolved.modelContexts || {};
+    if (!sess.agent.isEngine) sess.agent.modelContexts = sess.modelContexts;
+  }
   // Not an error: passthrough providers accept ids the catalog doesn't list.
   if (catalog.length && !catalog.includes(id)) log(`model ${id} is not in the gateway catalog — passing it through`);
   if (Boolean(sess.agent.isEngine) !== opencode.isEngineModel(id)) {
     attachAgent(sess, id, sess.agent.fallbackModels.filter((m) => m !== id), { messages: sess.agent.messages });
   } else {
-    sess.agent.model = id;
+    sess.agent.setModel(id);
     sess.agent.fallbackModels = sess.agent.fallbackModels.filter((m) => m !== id);
   }
   persist(sess);

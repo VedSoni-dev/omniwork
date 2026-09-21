@@ -4,10 +4,10 @@
 
 # OmniWork
 
-**A free, local, Claude&nbsp;Code–style coding agent — with a whole AI gateway baked in.**
+**A local coding harness for Codex, Claude Code, and the desktop—with durable parallel workers and verified patches.**
 
-Download it, open a folder, and start building. No API key. No login. No config.
-Free models work the second you launch — and you can run a whole *team* of agents at once.
+Submit a batch once. OmniWork schedules workers, isolates their edits, runs acceptance checks,
+and returns patches. Use available free models, local inference, or explicitly selected account models.
 
 [![Release](https://img.shields.io/github/v/release/VedSoni-dev/omniwork?color=8bb072&label=release)](https://github.com/VedSoni-dev/omniwork/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-d97757.svg)](LICENSE)
@@ -24,10 +24,9 @@ Free models work the second you launch — and you can run a whole *team* of age
 
 ## Why OmniWork
 
-Every other AI coding tool makes you bring an API key, sign in, or pay per token. OmniWork
-doesn't. It bundles **[OmniRoute](https://github.com/diegosouzapw/OmniRoute)** — a local AI
-gateway fronting 278+ providers (90+ free) — as an in-app sidecar. On launch it starts the
-gateway, points its agent at it, and you're coding with **zero setup**.
+OmniWork combines **[OmniRoute](https://github.com/diegosouzapw/OmniRoute)**, the official
+OpenCode engine, and its own coding loop. A shared worker service keeps engines warm across
+MCP clients, queues work within provider capacity, and preserves jobs when a client disconnects.
 
 Then it goes further than a single chat agent: run **many agents in parallel**, let one agent
 **fan work out to subagents**, plug in **MCP tools**, and even use OmniWork as a **token-saving
@@ -37,7 +36,9 @@ delegate** *inside* Claude Code or Codex.
 
 | | |
 |---|---|
-| 🆓 **Free models** | `auto` routes the gateway's free pool out of the box, and one click connects a free provider that *stays* up (OpenRouter, Ollama Cloud, Groq, Gemini…) — see [Free models that stay up](#free-models-that-stay-up). |
+| 🆓 **Model access** | Search connected gateway and OpenCode models. Durable jobs select catalogued free models by default; account models require explicit selection and `allow_paid`. Provider quotas still apply. |
+| ⚡ **Durable workers** | Submit up to 100 jobs at once, share a warm service across MCP clients, reconnect to results, and page artifacts on demand. |
+| ✅ **Verified patches** | Git snapshots preserve current edits, owned paths constrain accepted changes, and acceptance checks run before and during integration. |
 | 🖥️ **Claude Code UI** | A clean terminal: `⏺`/`⎿` tool calls, `✻` thinking, `>` prompt, `@`-file mentions, per-turn time + token counts. |
 | 📁 **Projects & memory** | Sessions live under projects. Durable `MEMORY.md` per project plus a global scope — it remembers what you teach it. |
 | 🎓 **Skills** | Claude Code–compatible `SKILL.md` packs, loaded on demand. Ships with Anthropic's public set; the agent can write and install more. |
@@ -50,7 +51,7 @@ delegate** *inside* Claude Code or Codex.
 | 🔗 **ACP agent** | Speaks Agent Client Protocol, so OpenClaw / acpx / Zed can drive OmniWork as a full coding agent. |
 | ✂️ **Select to quote** | Highlighting output copies it instantly; a pill (or `⌘L`) quotes it into the prompt as `> ` lines. |
 | 📋 **Collapsed pastes** | Paste 300 lines and the prompt shows `[Pasted text #1 +322 lines]` — the model still gets all of it. |
-| 🔒 **100% local** | Everything runs on your machine. The gateway never phones home. |
+| 🔒 **Local orchestration** | Jobs, workspaces, and routing run locally. Cloud model providers receive prompts; local inference is available through connected local providers. |
 | 🧩 **MIT, hackable** | Plain CommonJS, no build step for the UI. Fork it, ship it, sell it. |
 
 ## Download
@@ -92,16 +93,43 @@ xattr -dr com.apple.quarantine /Applications/OmniWork.app
 
 ## Use OmniWork *inside* Claude Code / Codex — token saver 🪙
 
-Don't want to fully switch? Keep your premium agent as the orchestrator and let it **delegate the
-token-heavy grunt work to OmniWork's free models.** OmniWork ships an MCP server exposing these tools:
+Keep Codex or Claude Code as the orchestrator and submit independent coding tasks to the shared
+worker service. These changes are available from this checkout; released installers may lag behind.
 
-- `delegate(task, cwd?, model?, fallback_models?)` — OmniWork does the subtask autonomously (free models by default) and returns a summary + changes
-- `delegate_parallel(tasks[], cwd?, model?, fallback_models?)` — fan a batch out to parallel subagents
-- `list_models()` — what the gateway can route right now, so you can pin a model and name what to try if it fails
-- `list_providers()` / `connect_provider(provider)` — see which free providers are connected and connect one (OpenRouter opens the browser; `local` registers Ollama & co.). It takes no API key on purpose: keys are pasted in the app or the terminal, never by a model.
+- `jobs_submit` returns durable IDs for up to 100 tasks. Supply `allowed_paths`, `context_files`, and acceptance `checks`.
+- `jobs_wait` waits for results; `jobs_get` returns compact evidence; `jobs_read` pages patches and full results.
+- `jobs_apply` reruns checks against the current source before applying an isolated patch.
+- `jobs_list`, `jobs_cancel`, and `jobs_status` recover jobs and manage the shared queue.
+- `list_models` searches connected model catalogs. Omit the job model for managed free selection, or explicitly select an account model with `policy: "allow_paid"`.
 
-Your expensive model spends tokens on the hard reasoning; OmniWork burns **free** tokens on the
-mechanical work, in the same project folder.
+The older `delegate` and `delegate_parallel` tools remain available. They edit the supplied directory
+directly and run outside the durable queue's capacity limits.
+
+Try the CLI from this checkout with a `tasks.json` file:
+
+```json
+{
+  "cwd": "/absolute/path/to/your/git-project",
+  "request_id": "slug-fix-001",
+  "tasks": [{
+    "task": "Fix slug generation for empty input and repeated separators.",
+    "allowed_paths": ["src/slug.js"],
+    "context_files": ["src/slug.js", "test/slug.test.js"],
+    "checks": ["node --test test/slug.test.js"]
+  }]
+}
+```
+
+```sh
+npm run jobs -- submit tasks.json
+npm run jobs -- wait <job-id>
+npm run jobs -- get <job-id>
+npm run jobs -- apply <job-id>
+```
+
+Replace the paths and check command with those in your project. The default Git worktree snapshot
+includes current nonignored changes; ignored dependencies need an explicit `setup` command.
+See the [worker service guide](docs/worker-service.md) for configuration, contracts, and limits.
 
 ### Set it up in one command
 
@@ -139,31 +167,60 @@ supports it. Add to `.mcp.json` (or run `claude mcp add`):
 
 </details>
 
-Keep the desktop app running and delegated calls reuse its warm gateway; otherwise the first call
-boots one, which takes longer.
+For Codex, register the same stdio server:
 
-### When delegating is actually worth it
+```sh
+codex mcp add omniwork -- node /absolute/path/to/omniwork/electron/mcp-server.js
+```
 
-Delegation is not free — there's ~25–30 s of overhead per call, and the delegated agent starts
-**cold**, with no view of your conversation. It pays for bulk mechanical work, independent chunks
-you can fan out with `delegate_parallel`, and read-heavy research you want kept out of context. It
-does not pay for small edits, work that needs conversation context, or anything where precision
-matters — free models drift on instruction details.
+Durable jobs start a background service automatically; the desktop app need not stay open.
+Later clients reuse that service and its engines. The first model request can still incur provider
+or engine startup latency.
 
-Treat the returned summary as a **claim, not evidence**, and verify before calling the work done.
-`npm run connect` installs this guidance so your agent applies it automatically.
+### Get useful work per token
+
+Split work along independent file ownership boundaries. Give each worker a self-contained contract,
+a few relevant files, and checks that distinguish a correct solution from a plausible one. Wait for
+compact evidence, inspect the patch, then apply it. One repair attempt is enabled by default and
+shares the original deadline and observed token budget. Stronger models can be selected explicitly
+for tasks that need them.
+
+For bounded local coding tasks, select `engine_profile: "scoped"` to omit the automatic skills catalog and unrelated tools while retaining model-specific coding instructions and project rules. The full `standard` profile remains the default; the compact-prompt `focused` profile is experimental. See [coding benchmarks](docs/coding-benchmarks.md) for measured savings and quality limits.
+
+This reduces repeated setup and transcript copying. It does not create unlimited provider quota
+or guarantee that a free model solves every task. Check quality still determines what “verified” means.
 
 ## Fewer tokens per task 🗜️
 
-Free tiers are the same for everyone now, so OmniWork competes on how little it spends finishing a task. The gateway compresses tool output by default (a real grep result: **9,812 → 3,170 tokens**), housekeeping and mechanical steps run on the fast free pool while real reasoning escalates to the coding pool, a rate-limited provider rotates instead of draining, and every session reuses one id so the gateway caches its prefix. All on by default, all opt-outable:
+OmniWork limits repeated context without silently rewriting source or evidence. Tool results larger than 12k characters are paged, and `read_output` retrieves the original text by character offset. `read_file` supports targeted line ranges (200 lines by default, up to 400). Long single-task runs compact at complete tool-cycle boundaries, preserving the task constraints.
 
-| Env | Default | Effect |
-|-----|---------|--------|
-| `OMNIWORK_COMPRESSION` | on | `off` disables gateway-side tool-output compression |
-| `OMNIWORK_MODEL_TIERS` | on | `off` runs `auto` on one tier instead of fast-then-escalate |
-| `OMNIWORK_UTILITY_MODEL` | `auto/best-fast` | model for titles, memory, compaction summaries |
+Single and parallel MCP delegations return a structured result with `status` (`completed`, `partial`, `failed`, or `cancelled`), `reason`, successful `changes`, actual model attempts, token usage when available, and verification results. An assistant summary alone is **unverified**. Supply `checks: ["npm test"]` to run explicit acceptance commands; failed checks produce an error result. These commands execute in the requested workspace. Parallel requests accept up to 100 tasks, queue four at a time, and return every result. MCP cancellation and deadlines stop active agents and shell commands. In-loop workers inherit the parent's permissions, memory, and skills.
 
-## Free models that stay up 🆓
+| Environment variable | Default | Effect |
+|---|---|---|
+| `OMNIWORK_COMPRESSION` | off | `rtk` explicitly opts into upstream lossy compression; default sends `off` on every request, including reused gateways |
+| `OMNIWORK_MODEL_TIERS` | on | `off` disables fast-to-coding escalation for `auto` |
+| `OMNIWORK_UTILITY_MODEL` | fast for auto; selected model for pinned choices | Explicit override for titles, memory, and compaction |
+| `OMNIWORK_DELEGATE_TIMEOUT_MS` | 600000 | Deadline for each MCP task including acceptance checks |
+| `OMNIWORK_DATA_DIR` | platform app directory | Alternate headless data directory for isolated environments |
+
+Rate-limit cooldowns persist across steps and are shared by workers using the same gateway. `Retry-After` is honored. Session IDs support affinity, but cache savings require provider usage evidence; they are not assumed. Raw output is retained in a bounded session-local store (8 million characters); expired references require rerunning the tool. Commands producing over 2 million characters are stopped with a visible notice.
+
+### More models through your existing accounts
+
+Open **Models & providers** in the sidebar to search models, filter free choices or advertised tool support, see context sizes, and select a model. **Test** sends a small readiness prompt at that model's rates. It does not execute tools or establish coding quality. Some providers reject restricted probes even when normal engine tasks work; failures show that distinction. Catalog listings begin untested, and availability can change.
+
+OmniWork now exposes **all providers connected to its OpenCode engine**, including custom providers, instead of only a fixed list of free Zen models. Existing free IDs such as `opencode/nemotron-3.5-lightning-free` remain valid. Connected account models use `opencode/<provider>/<model>`, preventing provider collisions. Paid or unknown-cost models require explicit selection and are never used as automatic engine fallback.
+
+```bash
+npm run providers -- login
+```
+
+This opens the official OpenCode CLI authentication flow in your terminal. Complete login, then refresh the model browser. Keys remain in OpenCode's own credential store. If a running engine has cached old provider configuration, restart OmniWork after connecting. [OpenCode provider setup](https://opencode.ai/docs/providers/) covers account and custom-endpoint configuration. No new client-identity synthesis is added by this feature; OmniRoute remains the existing gateway dependency.
+
+Run `npm run test:regression` before shipping. CI and release builds now require the deterministic suites, including failure reporting, nine-task batches, compaction, cancellation, free fallback selection, and output retrieval.
+
+## Connect free model providers 🆓
 
 The gateway's built-in keyless pool is a set of unofficial endpoints that providers shut off
 without notice — on a bad day every one of them is gone and `auto` returns 503. So OmniWork
@@ -171,17 +228,17 @@ makes the durable kind of free easy: real free tiers behind a free account, no c
 
 | Provider | Free tier | Connect |
 |---|---|---|
-| **OpenRouter** | 20 free models, 18 with tool calling · 20 req/min, 50 req/day (1,000/day after a one-time $10 top-up) | one click — browser sign-in, no key to paste |
+| **OpenRouter** | Free and paid catalogs; account limits apply | one click — browser sign-in, no key to paste |
 | **Ollama Cloud** | DeepSeek V4, Kimi K2.6, GLM 5.1, Gemma 4 on a "light usage" tier | paste a key |
 | **Kilo Gateway** | `kilo-auto/free` router + Nemotron / MiniMax `:free` | paste a key |
 | **Groq** | gpt-oss-120b at 30 req/min, 1,000 req/day; Qwen 3 32B | paste a key |
 | **Cerebras**, **NVIDIA NIM**, **Gemini**, **Mistral** | free developer tiers | paste a key |
-| **OpenCode engine** | Zen's free models with **no account**: Nemotron 3.5 Lightning (default, answers in seconds), MiMo V2.5, Big Pickle, Ling 3.0 Flash, Nemotron 3 Ultra (strongest, ~100 s a step) | ships with a clone and with the desktop app; otherwise one click downloads it (~45 MB) |
+| **OpenCode engine** | Zen's current free models, plus models from connected accounts; use the live catalog | ships with a clone and with the desktop app; otherwise one click downloads it (~45 MB) |
 | **Ollama / LM Studio / llama.cpp / vLLM** | whatever runs on your machine | auto-detected |
 
 Three ways in, all the same code path:
 
-- **App** — *🆓 free models* in the sidebar. Connected providers become every session's fallback chain on the spot.
+- **App** — *Models & providers* in the sidebar. Connected providers become every session's fallback chain on the spot.
 - **Terminal** — `npm run providers` shows status; `npm run providers connect openrouter` opens the browser; `npm run providers connect groq <key>`; `npm run providers connect local`; `npm run providers connect opencode` downloads the engine if a clone or installer didn't bring it. Also `npx omniwork-providers`.
 - **From a harness** — the MCP server has `list_providers` / `connect_provider`; the ACP server offers `openrouter` and `local` as auth methods.
 
@@ -189,8 +246,7 @@ A pasted key is exercised once before it is kept, so a bad key never lands in th
 connected becomes the default fallback chain for the MCP and ACP servers (unless you set
 `OMNIWORK_MODEL_FALLBACKS` yourself), ordered strongest coder first, local last.
 
-**The OpenCode engine is the floor.** OpenCode Zen only serves its free tier to OpenCode itself, so
-OmniWork doesn't pretend to be OpenCode — it runs it. And nobody has to install anything or touch
+**The OpenCode engine provides another execution path.** OmniWork runs the official engine and discovers its providers. Nobody has to install anything or touch
 their PATH: `npm install` brings OpenCode in as an optional dependency (`opencode-ai`, the binary
 for your platform), the desktop installers stage it per platform at build time, and if it is
 missing anyway one click fetches the same npm package (~45 MB) into OmniWork's data folder —
@@ -202,7 +258,7 @@ runs a session on OpenCode's own headless server (`opencode serve`, the same thi
 drive) and its own tools, scoped to your workspace, streamed back as OmniWork events — text as
 text, the model's reasoning on its own lane, tool calls as tool calls. Pick one in the model
 menu, pass `model: "opencode/nemotron-3.5-lightning-free"` to `delegate`, or do nothing: when no
-gateway model answers, the turn finishes on the engine and says so. What you give up there is
+gateway model answers before tools have run, MCP delegation can retry on a free engine model and records the attempt. Availability remains provider-dependent. What you give up there is
 OmniWork's own skills and memory — OpenCode runs its tools, not ours.
 
 ## Drive OmniWork from OpenClaw, Zed, or any ACP harness 🔌

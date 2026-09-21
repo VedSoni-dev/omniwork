@@ -289,3 +289,9 @@ body.dropping::after { content: "Drop files to attach"; position: fixed; inset: 
 .prow-link { background: none; border: none; color: var(--dim); cursor: pointer; font-size: 11px; padding: 0; }
 .prow-link:hover { color: var(--accent); }
 .prow-busy { opacity: .6; pointer-events: none; }
+
+.catalog-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 12px 0; font-size: 12px; }
+.catalog-controls input[type="search"] { flex: 1 1 200px; min-width: 0; padding: 8px; background: var(--bg); color: inherit; border: 1px solid var(--border); border-radius: 6px; }
+#model-catalog-list { max-height: 240px; }
+#model-catalog-list .prow > div { min-width: 0; overflow-wrap: anywhere; }
+#providers-modal .modal-box { max-height: 90vh; overflow-y: auto; width: min(800px, 94vw); }
