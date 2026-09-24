@@ -70,6 +70,26 @@ function rpcClient(file, env) {
   check("engine usage includes intermediate steps and cached tokens without double counting", usage.inTokens === 170 && usage.outTokens === 17 && usage.estimated === false);
 
   check("engine usage separates uncached input, cache reads, reasoning and request count", usage.uncachedInTokens === 150 && usage.cacheReadTokens === 20 && usage.cacheWriteTokens === 0 && usage.reasoningTokens === 2 && usage.modelRequests === 2);
+  check("engine exposes per-message usage and tool correlation", tool.events.some(e => e.type === "request" && e.tokens?.input === 100) && call.requestId && result.outputBytes === 3);
+  const { executeTask } = require("../electron/execution");
+  let checkpointAgent, checksAtIdle = 0;
+  const checkpointResult = await executeTask({ task: "TOOL SLOW", checks: ["fixture"], maxTokens: 1000, timeoutMs: 5000, verificationReserveTokens: 900, trace: true,
+    createAgent: async emit => (checkpointAgent = new opencode.OpenCodeAgent({ engine, workspace, engineProfile: "scoped", emit })),
+    runCheck: async () => { if (await engine.isIdle(checkpointAgent.sessionID, workspace)) checksAtIdle++; return { ok: true, exitCode: 0, text: "verified" }; },
+  });
+  check("engine checkpoint waits for abort acknowledgement and idle before checking", checkpointResult.status === "completed" && checkpointResult.completion?.checkpoint.confirmed && checksAtIdle === 1);
+  check("engine checkpoint retains request/tool trace", checkpointResult.trace.requests.length >= 1 && checkpointResult.trace.tools.length === 1);
+  const timedCheckpoint = await executeTask({ task: "SLOW", checks: ["fixture"], timeoutMs: 1500, verificationReserveMs: 1200,
+    createAgent: async emit => new opencode.OpenCodeAgent({ engine, workspace, engineProfile: "scoped", emit }),
+    runCheck: async () => ({ ok: true, exitCode: 0, text: "verified" }),
+  });
+  check("time reserve interrupts inference within the original deadline", timedCheckpoint.status === "completed" && timedCheckpoint.completion?.checkpoint.trigger === "time" && timedCheckpoint.elapsedMs < 1500);
+  let prematureChecks = 0;
+  const stillBusy = await executeTask({ task: "TOOL SLOW BUSY_AFTER_ABORT", checks: ["fixture"], maxTokens: 1000, timeoutMs: 5000, verificationReserveTokens: 900,
+    createAgent: async emit => new opencode.OpenCodeAgent({ engine, workspace, engineProfile: "scoped", emit }),
+    runCheck: async () => { prematureChecks++; return { ok: true, exitCode: 0, text: "must not run" }; },
+  });
+  check("an abort acknowledgement alone cannot authorize verification while status is busy", stillBusy.status !== "completed" && prematureChecks === 0 && /not be confirmed/.test(stillBusy.reason));
   const prompt = engine.prompt.bind(engine); let selectedAgent;
   engine.prompt = (sid, opts) => { selectedAgent = opts.agent; return prompt(sid, opts); };
   const focused = await run("TOOL then say READY", { engineProfile: "focused" });

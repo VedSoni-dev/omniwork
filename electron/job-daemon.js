@@ -61,6 +61,8 @@ const service = new JobService({
   },
   runCheck: (command, cwd, signal) => executeToolResult("run_command", { command }, { workspace: cwd, signal }),
   run: async opts => executeTask({ task: opts.task, signal: opts.signal, timeoutMs: opts.timeoutMs,
+    trace: true, verificationReserveTokens: opts.verification_reserve_tokens || 0,
+    verificationReserveMs: opts.verification_reserve_ms || 0,
     checks: opts.checks, repairAttempts: opts.repair_attempts, maxTokens: opts.max_tokens, progress: opts.progress,
     createAgent: async emit => {
       const isEngine = headless.opencode.isEngineModel(opts.model);

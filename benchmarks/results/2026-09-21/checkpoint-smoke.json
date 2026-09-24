@@ -1,0 +1,97 @@
+{
+  "testedAt": "2026-09-21T07:58:17.141Z",
+  "engineVersion": "1.18.31",
+  "scope": "Real installed engine, synthetic local inference; verifies stop-before-check, not coding quality or token savings.",
+  "requests": 2,
+  "checkedIdle": true,
+  "status": "completed",
+  "completion": {
+    "source": "checkpoint",
+    "checkpoint": {
+      "requested": true,
+      "confirmed": true,
+      "trigger": "time"
+    }
+  },
+  "usage": {
+    "inTokens": 100,
+    "outTokens": 5,
+    "estimated": false,
+    "available": true,
+    "uncachedInTokens": 100,
+    "cacheReadTokens": 0,
+    "cacheWriteTokens": 0,
+    "reasoningTokens": 0,
+    "modelRequests": 2
+  },
+  "elapsedMs": 5075,
+  "trace": {
+    "version": 1,
+    "requestCoverage": "observed",
+    "coverage": "Observed engine assistant messages and tool events; provider retries, child sessions and full request payloads are not captured.",
+    "summary": {
+      "requestCoverage": "observed",
+      "requests": 2,
+      "requestsWithUsage": 1,
+      "tools": 1,
+      "repeatedReads": 0,
+      "toolOutputBytes": 24,
+      "requestsWithTiming": 2,
+      "toolsWithTiming": 1,
+      "cumulativeAssistantMs": 4679,
+      "cumulativeToolMs": 6,
+      "verificationMs": 3,
+      "executionMs": 5074,
+      "discardedEvents": 0
+    },
+    "requests": [
+      {
+        "id": "r1",
+        "startedAt": 1789977492445,
+        "completedAt": 1789977493049,
+        "turn": 1,
+        "model": "fixture/coder",
+        "usage": {
+          "input": 100,
+          "output": 5,
+          "reasoning": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "usageReported": true,
+        "elapsedMs": 604
+      },
+      {
+        "id": "r2",
+        "startedAt": 1789977493050,
+        "completedAt": 1789977497125,
+        "turn": 1,
+        "model": "fixture/coder",
+        "usage": {
+          "input": 0,
+          "output": 0,
+          "reasoning": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "usageReported": false,
+        "failed": true,
+        "elapsedMs": 4075
+      }
+    ],
+    "tools": [
+      {
+        "id": "t1",
+        "startedAt": 1789977493037,
+        "completedAt": 1789977493043,
+        "turn": 1,
+        "name": "write",
+        "request": "r1",
+        "fingerprint": "87a2872fa824640d4bc65bf2",
+        "ok": true,
+        "outputBytes": 24,
+        "elapsedMs": 6
+      }
+    ]
+  }
+}

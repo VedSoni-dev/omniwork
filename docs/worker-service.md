@@ -54,7 +54,7 @@ The CLI accepts the same JSON as `npm run jobs -- submit tasks.json`, or a singl
 | `jobs_wait` | Wait up to 25 seconds for a terminal result, or a change after `after_revision`. |
 | `jobs_get` | Compact evidence; `detail: true` includes the contract, attempts, and acceptance output. |
 | `jobs_list` | Recover recent IDs; filter by status and paginate. |
-| `jobs_read` | Read a character page from `patch` or `result`; continue at `next_offset`. |
+| `jobs_read` | Read a character page from `patch`, `result`, or `trace`; continue at `next_offset`. |
 | `jobs_cancel` | Stop queued or active work while retaining evidence and workspaces. |
 | `jobs_apply` | Validate and apply a completed isolated patch to the original source. |
 | `jobs_status` | Inspect shared capacity, provider cooldowns, and counts. |
@@ -103,6 +103,36 @@ Desktop sessions and legacy delegations keep their existing default agent. Permi
 
 Engine usage now reports `uncachedInTokens`, `cacheReadTokens`, `cacheWriteTokens`, `reasoningTokens`, and `modelRequests` alongside existing totals. `inTokens` includes uncached input plus cache reads/writes; `outTokens` includes output plus reasoning. Repeated usage events are deduplicated by message, and repair turns accumulate usage. These measure the observed session; independently running engine background/child sessions are not a complete account billing ledger. Missing detailed fields mean unavailable, not zero.
 
+## Request traces and verification reserves
+
+Durable jobs save a bounded `trace.json`, retrievable with `jobs_read(id, artifact: "trace")`. Compact status includes the trace summary and queue/preparation/execution/collection timings. Benchmark runs preserve traces in a companion `.traces/` directory before deleting temporary workspaces.
+
+The trace merges engine assistant-message updates by ID and records observed per-request usage, timestamps, tool names, tool durations, output byte counts, and repeated read/search argument fingerprints. Fingerprints use a per-execution secret; saved traces contain no prompts, source text, tool arguments, tool outputs, or raw errors. Existing result/patch artifacts still contain their normal task evidence. Each request/tool table is capped at 1,000 entries, with discarded events counted.
+
+Timing is observational: assistant-message lifetimes can include tool execution; cumulative durations overlap and are not pure inference time. Missing timestamps remain unknown. Requests initialized with zero tokens are not marked usage-reported without a completed-step receipt or nonzero usage. Interrupted requests can therefore have unknown final usage. Native workers currently provide tool traces only, with request coverage marked unavailable; engine background/child work and internal provider retries are not fully captured. Traces become durable when execution returns, not after every event. Repeated argument fingerprints identify candidates for inspection, not proof that a read was unnecessary after edits.
+
+To reserve room for verification on an isolated, pinned OpenCode worker:
+
+```json
+{
+  "model": "opencode/big-pickle",
+  "engine_profile": "scoped",
+  "max_tokens": 200000,
+  "timeout_ms": 180000,
+  "verification_reserve_tokens": 40000,
+  "verification_reserve_ms": 30000,
+  "checks": ["npm test"]
+}
+```
+
+Restart an older worker service with `npm run jobs -- stop` before using these capabilities; the client refuses to reuse a daemon from the previous capability version.
+
+Both reserve settings default to zero. They require `scoped` or `focused`, worktree isolation, and caller acceptance checks. At the first soft threshold in the initial model turn, OmniWork requests an engine abort, waits for the prompt response, and requires an acknowledged stop plus idle status. Only then does it run the checks. Passing checks can finish the job without an additional model-authored summary. Failed checks can trigger the existing bounded repair in the same agent/workspace; repairs use the remaining original budget and receive no second soft checkpoint.
+
+The hard token cap, original deadline, caller cancellation, ownership checks, and integration checks still apply. A request can overshoot the soft and hard token thresholds. Stop-confirmation failure or a provider error cannot be converted into success. Engine startup, tool shutdown, and check duration may exhaust the reserved time; these settings do not guarantee completion. Arbitrary detached processes are outside this coordination guarantee. Use strong acceptance commands; a passing smoke test cannot establish requirements it does not test.
+
+Run `node scripts/probe-engine-checkpoint.js` to exercise the installed engine against synthetic local inference. It writes a fixture, stalls a subsequent model response, and asserts stop/idle before verification. This probe spends no real inference tokens and does not measure coding-quality gains.
+
 ## Context and practical boundaries
 
 Workers receive a bounded task contract, selected file excerpts, and a cached repository orientation map of relevant paths and declarations. The map is capped at 4,000 characters; explicit file excerpts total at most 24,000 characters. Full content remains accessible through tools. Parent clients receive compact evidence and can retrieve artifacts without absorbing every worker transcript.
@@ -113,7 +143,7 @@ Worktrees isolate ordinary edits; they are not operating-system sandboxes. Worke
 
 There is no dependency graph, automatic cross-job conflict resolution, durable provider conversation resumption after a daemon crash, or automatic workspace garbage collection yet. Parallel tasks should have independent ownership. Retained worktrees and artifacts use disk space. On restart, uncertain in-flight execution is marked interrupted instead of silently replayed; inspect it before resubmission. An interrupted integration may require inspecting both source and the retained integration directory. The service exits after 15 idle minutes without queued or active jobs, and the next client restarts it. Completed results remain on disk.
 
-Artifacts live beneath `<data-dir>/jobs/tasks/<id>/`; `job.json`, `result.json`, `changes.patch`, and the worktree provide evidence. The service descriptor contains a private token for its loopback API; do not share it. `service.log` records service errors. To clean a retained Git worktree, stop relevant jobs, inspect the output, and use `git worktree remove <path>` before deleting its artifact directory.
+Artifacts live beneath `<data-dir>/jobs/tasks/<id>/`; `job.json`, `result.json`, `trace.json`, `changes.patch`, and the worktree provide evidence. The service descriptor contains a private token for its loopback API; do not share it. `service.log` records service errors. To clean a retained Git worktree, stop relevant jobs, inspect the output, and use `git worktree remove <path>` before deleting its artifact directory.
 
 ## Validation and design references
 

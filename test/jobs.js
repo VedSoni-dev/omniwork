@@ -50,6 +50,13 @@ const model = { id: "local/coder", provider: "local", free: true, tools: true };
       assert.equal(normalize({ ...spec(1), engine_profile }).engine_profile, engine_profile);
     }
     assert.throws(() => normalize({ ...spec(1), engine_profile: "unknown" }), /engine_profile/);
+    assert.throws(() => normalize({ ...spec(1), verification_reserve_tokens: 100 }), /reserves require/);
+    const reserved = { ...spec(1), model: "opencode/big-pickle", engine_profile: "scoped", verification_reserve_tokens: 100 };
+    assert.equal(normalize(reserved).verification_reserve_tokens, 100);
+    assert.throws(() => normalize({ ...reserved, checks: [] }), /reserves require/);
+    assert.throws(() => normalize({ ...reserved, isolation: "shared" }), /reserves require/);
+    assert.throws(() => normalize({ ...reserved, verification_reserve_ms: 180000 }), /smaller/);
+    assert.throws(() => normalize({ ...reserved, verification_reserve_tokens: 200000 }), /smaller/);
   });
   const save = service.save;
   service.save = () => { throw new Error("fixture disk full"); };

@@ -28,7 +28,14 @@ function normalize(input) {
   if (!["focused", "scoped", "standard"].includes(engine_profile)) throw new Error("engine_profile must be focused, scoped or standard");
   const isolation = input.isolation || "worktree";
   if (!["worktree", "shared"].includes(isolation)) throw new Error("isolation must be worktree or shared");
+  const verification_reserve_tokens = integer(input.verification_reserve_tokens, 0, 0, 1000000);
+  const verification_reserve_ms = integer(input.verification_reserve_ms, 0, 0, 900000);
+  if (verification_reserve_tokens || verification_reserve_ms) {
+    if (!model?.startsWith("opencode/") || engine_profile === "standard" || isolation !== "worktree" || !input.checks?.length) throw new Error("Verification reserves require a pinned OpenCode model, scoped/focused profile, worktree isolation and acceptance checks");
+    if (verification_reserve_tokens >= (input.max_tokens ?? 200000) || verification_reserve_ms >= (input.timeout_ms ?? 180000)) throw new Error("Verification reserves must be smaller than the original job budgets");
+  }
   return { task: input.task, cwd: fs.realpathSync(input.cwd), model, policy, isolation, engine_profile,
+    ...(verification_reserve_tokens || verification_reserve_ms ? { verification_reserve_tokens, verification_reserve_ms } : {}),
     checks: strings(input.checks, 10), setup: strings(input.setup, 4),
     allowed_paths: strings(input.allowed_paths, 100, 1000).map(workspace.relativeFile),
     context_files: strings(input.context_files, 20, 1000).map(workspace.relativeFile),
@@ -107,6 +114,8 @@ class JobService extends EventEmitter {
       createdAt: job.createdAt, updatedAt: job.updatedAt, reason: job.reason || job.result?.reason || null,
       progress: job.progress, verification: job.result?.verification?.status || "unverified",
       summary: job.result?.summary?.slice(0, 1600) || "", usage: job.result?.usage || null,
+      trace: job.trace?.summary || null,
+      timings: job.timings || null,
       files: job.artifact?.files || [], outsideScope: job.artifact?.outsideScope || [],
       workspace: job.workspace?.cwd || null, patch: job.artifact?.patch || null, appliedAt: job.appliedAt || null, integration: job.integration?.status || null };
   }
@@ -174,6 +183,7 @@ class JobService extends EventEmitter {
     job.deadlineAt ||= Date.now() + job.spec.timeout_ms;
     this.save(job); this.active.set(job.id, ctl); state.active++;
     const dir = path.join(this.dir, job.id), started = Date.now();
+    job.timings = { queueMs: (job.timings?.queueMs || 0) + Math.max(0, started - Date.parse(job.queuedAt || job.createdAt)) };
     const deadline = setTimeout(() => ctl.abort(new Error("Job deadline exceeded")), Math.max(1, job.deadlineAt - Date.now()));
     let lastProgress = 0;
     (async () => {
@@ -186,6 +196,7 @@ class JobService extends EventEmitter {
         job.setupComplete = true; this.save(job);
         const prompt = await workspace.context(job.spec, job.workspace);
         ctl.signal.throwIfAborted(); job.status = "running"; this.save(job);
+        job.timings.preparationMs = Date.now() - started;
         const priorTokens = (job.providerHistory || []).reduce((n, attempt) => n + (attempt.usage?.inTokens || 0) + (attempt.usage?.outTokens || 0), 0);
         job.result = await this.run({ ...job.spec, task: prompt, cwd: job.workspace.cwd, sourceCwd: job.spec.cwd, model: model.id, signal: ctl.signal,
           max_tokens: Math.max(1, job.spec.max_tokens - priorTokens),
@@ -200,6 +211,8 @@ class JobService extends EventEmitter {
         job.reason = e.message;
       } finally {
         clearTimeout(deadline);
+        job.timings.executionMs = job.result?.elapsedMs ?? null;
+        const collectionStarted = Date.now();
         let outcome = job.status;
         job.status = "collecting"; this.save(job);
         if (job.workspace) {
@@ -207,6 +220,11 @@ class JobService extends EventEmitter {
           catch (e) { job.reason = `Could not collect patch: ${e.message}`; if (outcome === "completed") outcome = "partial"; }
         }
         if (job.artifact?.outsideScope?.length) { outcome = "partial"; job.reason = "Worker edited files outside allowed_paths; patch requires review"; }
+        if (job.result?.trace) {
+          atomic(path.join(dir, "trace.json"), job.result.trace);
+          job.trace = { summary: job.result.trace.summary };
+          delete job.result.trace;
+        }
         if (job.result) atomic(path.join(dir, "result.json"), job.result);
         job.status = this.stopping ? "interrupted" : ctl.signal.aborted && ctl.signal.reason?.message !== "Job deadline exceeded" ? "cancelled" : outcome;
         // Retry only native provider failures before ANY tool ran. Never replay
@@ -221,8 +239,10 @@ class JobService extends EventEmitter {
           job.providerHistory ||= []; job.providerHistory.push({ model: model.id, reason: job.reason, usage: job.result.usage });
           this.rateLimited(key, /429/.test(job.reason) ? 60000 : 5000);
           job.status = "queued"; job.reason = "Waiting for provider recovery before a safe retry";
+          job.queuedAt = new Date().toISOString();
         }
         if (TERMINAL.has(job.status)) job.finishedAt = new Date().toISOString();
+        job.timings.collectionMs = Date.now() - collectionStarted;
         this.save(job);
         state.active--; state[job.status === "completed" ? "completed" : "failed"]++;
         state.latencyMs = state.latencyMs == null ? Date.now() - started : state.latencyMs * 0.8 + (Date.now() - started) * 0.2;
@@ -260,8 +280,8 @@ class JobService extends EventEmitter {
   }
   async read({ id, artifact = "patch", offset = 0, limit = 12000 }) {
     const job = this.job(id);
-    if (!["patch", "result"].includes(artifact)) throw new Error("artifact must be patch or result");
-    const file = artifact === "patch" ? job.artifact?.patch : job.result && path.join(this.dir, id, "result.json");
+    if (!["patch", "result", "trace"].includes(artifact)) throw new Error("artifact must be patch, result or trace");
+    const file = artifact === "patch" ? job.artifact?.patch : artifact === "trace" ? job.trace && path.join(this.dir, id, "trace.json") : job.result && path.join(this.dir, id, "result.json");
     if (!file) throw new Error("Artifact is not available yet");
     const text = await fs.promises.readFile(file, "utf8");
     const start = integer(offset, 0, 0, text.length), count = integer(limit, 12000, 1, 24000);
