@@ -38,7 +38,7 @@ const rpc = (method, params) => new Promise((resolve, reject) => {
 
   const list = await rpc("tools/list", {});
   const names = list.result.tools.map((t) => t.name).sort();
-  check("all nine tools listed", names.join(",") === "browse_page,connect_provider,delegate,delegate_parallel,install_skills,list_models,list_providers,list_skills,web_search");
+  check("legacy and durable job tools are listed", names.length === 17 && ["jobs_submit", "jobs_wait", "jobs_get", "jobs_list", "jobs_cancel", "jobs_read", "jobs_apply", "jobs_status", "delegate", "delegate_parallel"].every(n => names.includes(n)));
   const connectTool = list.result.tools.find((t) => t.name === "connect_provider");
   check("connect_provider warns that openrouter opens the browser", /OPENS THE USER'S BROWSER/.test(connectTool.description));
   check("connect_provider takes no API key — a model must never be able to plant one", !("api_key" in connectTool.inputSchema.properties) && /takes no API key/.test(connectTool.description));

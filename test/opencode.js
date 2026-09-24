@@ -47,12 +47,13 @@ function rpcClient(file, env) {
   const health = await engine.health();
   check("serve starts and reports health", health && health.healthy === true);
   const models = await engine.models();
-  check("only free models are listed, fastest first, Ultra last", models.map((m) => m.id).join(",") === "opencode/nemotron-3.5-lightning-free,opencode/big-pickle,opencode/nemotron-3-ultra-free,opencode/ox-alpha-free");
+  check("free models remain first with connected paid models available", models.filter(m => m.free).map((m) => m.id).join(",") === "opencode/nemotron-3.5-lightning-free,opencode/big-pickle,opencode/nemotron-3-ultra-free,opencode/ox-alpha-free");
+  check("connected account models are exposed without leaking disconnected catalogs", models.some(m => m.id === "opencode/openai/connected-coder" && !m.free) && !models.some(m => m.providerID === "not-connected"));
   check("opencode-go models keep their provider", models.find((m) => m.modelID === "ox-alpha-free").providerID === "opencode-go");
 
-  const run = async (text, { approvalMode = "auto", approver = null, model } = {}) => {
+  const run = async (text, { approvalMode = "auto", approver = null, model, engineProfile } = {}) => {
     const events = [];
-    const agent = new opencode.OpenCodeAgent({ model, workspace, approvalMode, approver, emit: (type, p) => events.push({ type, ...p }) });
+    const agent = new opencode.OpenCodeAgent({ model, workspace, approvalMode, approver, engineProfile, emit: (type, p) => events.push({ type, ...p }) });
     await agent.send(text);
     return { agent, events };
   };
@@ -65,6 +66,22 @@ function rpcClient(file, env) {
   const tool = await run("TOOL then say READY");
   const call = tool.events.find((e) => e.type === "tool_call"); const result = tool.events.find((e) => e.type === "tool_result");
   check("tool parts map to tool_call / tool_result, announced once the input exists", call && call.name === "bash" && call.args.command === "echo hi" && result && result.id === call.id && result.result === "hi\n" && tool.events.filter((e) => e.type === "tool_call").length === 1);
+  const usage = tool.events.find(e => e.type === "done");
+  check("engine usage includes intermediate steps and cached tokens without double counting", usage.inTokens === 170 && usage.outTokens === 17 && usage.estimated === false);
+
+  check("engine usage separates uncached input, cache reads, reasoning and request count", usage.uncachedInTokens === 150 && usage.cacheReadTokens === 20 && usage.cacheWriteTokens === 0 && usage.reasoningTokens === 2 && usage.modelRequests === 2);
+  const prompt = engine.prompt.bind(engine); let selectedAgent;
+  engine.prompt = (sid, opts) => { selectedAgent = opts.agent; return prompt(sid, opts); };
+  const focused = await run("TOOL then say READY", { engineProfile: "focused" });
+  const focusedAgent = selectedAgent;
+  const scoped = await run("TOOL then say READY", { engineProfile: "scoped" });
+  const scopedAgent = selectedAgent;
+  engine.prompt = prompt;
+  check("focused workers select a configured, restricted engine agent", focusedAgent === "omniwork-worker" && /^READY/.test(focused.agent.lastText) && !focused.events.some(e=>e.type === "error"));
+  const profile = require("../electron/engine-profile");
+  check("scoped workers retain provider instructions and select their restricted agent", scopedAgent === "omniwork-scoped" && /^READY/.test(scoped.agent.lastText) && !profile.config({compact:false}).prompt);
+  check("focused plan mode keeps shell and edits denied", profile.permissions("plan").filter(p=>["bash","edit","write","apply_patch"].includes(p.permission)).every(p=>p.action === "deny"));
+  check("focused workers omit recursive and unrelated tools", profile.config().permission["*"] === "deny" && !profile.CORE.some(t=>["task","skill","question"].includes(t)));
 
   let asked = null;
   const perm = await run("PERMISSION then say READY", { approvalMode: "ask", approver: async (id, name, args) => { asked = { id, name, args }; return false; } });
@@ -151,10 +168,12 @@ function rpcClient(file, env) {
   await mcp.rpc("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "t", version: "0" } });
   const d1 = await mcp.rpc("tools/call", { name: "delegate", arguments: { task: "say READY", cwd: workspace, model: "opencode/big-pickle" } });
   check("MCP delegate runs a pinned engine model", !d1.result.isError && /READY from opencode\/big-pickle/.test(d1.result.content[0].text));
+  const paid = await mcp.rpc("tools/call", { name: "delegate", arguments: { task: "say READY", cwd: workspace, model: "opencode/openai/connected-coder" } });
+  check("an explicitly selected connected account model reaches the right provider", /READY from openai\/connected-coder/.test(paid.result.content[0].text));
   const d2 = await mcp.rpc("tools/call", { name: "delegate", arguments: { task: "say READY", cwd: workspace } });
-  check("MCP delegate falls through to the engine when the gateway has nothing", !d2.result.isError && /READY from opencode\/nemotron-3.5-lightning-free/.test(d2.result.content[0].text) && /ran on the OpenCode engine/.test(d2.result.content[0].text));
+  check("MCP delegate falls through to the engine when the gateway has nothing", !d2.result.isError && /READY from opencode\/nemotron-3.5-lightning-free/.test(d2.result.content[0].text) && d2.result.structuredContent.attempts.length === 2);
   const lm = await mcp.rpc("tools/call", { name: "list_models", arguments: {} });
-  check("list_models shows the engine section", /opencode \(engine/.test(lm.result.content[0].text) && /opencode\/nemotron-3.5-lightning-free/.test(lm.result.content[0].text));
+  check("list_models shows engine models with access metadata", /no account/.test(lm.result.content[0].text) && /opencode\/nemotron-3.5-lightning-free/.test(lm.result.content[0].text));
   const cp = await mcp.rpc("tools/call", { name: "connect_provider", arguments: { provider: "opencode" } });
   check("connect_provider('opencode') reports the engine instead of installing", /OpenCode is installed/.test(cp.result.content[0].text));
   mcp.proc.kill();

@@ -14,7 +14,6 @@ const net = require("node:net");
 const path = require("node:path");
 const fs = require("node:fs");
 const crypto = require("node:crypto");
-const tuning = require("./tuning");
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -153,13 +152,6 @@ class Gateway {
     return false;
   }
 
-  // Turn on gateway-side token savings once it is healthy (compression). A PUT,
-  // idempotent and best-effort — never blocks or fails a boot.
-  #applyTuning() {
-    if (this._tuned) return; this._tuned = true;
-    tuning.enableCompression(this.baseUrl, this.apiKey, (...a) => { if (process.env.OMNIWORK_DEV) process.stderr.write("[sidecar] " + a.join(" ") + "\n"); }).catch(() => {});
-  }
-
   async start() {
     this.status("boot", "Launching OmniRoute…");
     this._stopped = false;
@@ -168,7 +160,7 @@ class Gateway {
       this.ready = true;
       this.adopted = true; // not ours to kill on shutdown
       this.status("ready", "OmniRoute · free models");
-      this.#applyTuning();
+
       this.#watchdog(); // adopted gateways can die under us (their owner exits)
       return this.baseUrl;
     }
@@ -212,7 +204,7 @@ class Gateway {
         this.ready = true;
         this.adopted = true; // not ours to kill on shutdown
         this.status("ready", "OmniRoute · free models");
-        this.#applyTuning();
+
         this.#watchdog();
         return this.baseUrl;
       }
@@ -229,8 +221,8 @@ class Gateway {
       PORT: String(this.port), // may differ from PORT if the well-known one was blocked
       HOSTNAME: HOST, // bind loopback only
       DATA_DIR: gwDataDir, // OmniRoute reads DATA_DIR for its storage + .env
-      // Let the free "auto" pool fall back to the full pool if a sub-combo is empty.
-      OMNIROUTE_AUTO_FREE_FALLBACK_TO_FULL_POOL: "true",
+      // Keep free auto routes from widening to paid candidates when empty.
+      OMNIROUTE_AUTO_FREE_FALLBACK_TO_FULL_POOL: "false",
       // Skip outbound startup syncs — faster, quieter, works offline.
       ARENA_ELO_SYNC_ENABLED: "false",
       PRICING_SYNC_ENABLED: "false",
@@ -250,7 +242,7 @@ class Gateway {
       try {
         await this.#waitHealthy();
         if (this._stopped) { this.#killProc(); throw new Error("gateway start aborted by shutdown"); }
-        this.#applyTuning();
+
         this.#watchdog();
         return this.baseUrl;
       } catch (e) {

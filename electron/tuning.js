@@ -1,17 +1,6 @@
 "use strict";
-// Token economy — how OmniWork finishes a task on fewer tokens than a
-// competitor that only cheats its way to a free tier. Every lever here is
-// opt-outable by env, and none of it changes *which* provider answers, only
-// how little we spend getting the answer.
-//
-//   1. gateway-side compression (RTK) rewrites tool-result text — the bulk of
-//      an agent's context — with cheap heuristics, no model call.
-//   2. housekeeping (titles, memory, compaction summaries) runs on the fast
-//      free pool, never the session's chosen model.
-//   3. mechanical steps run on the fast pool and escalate to the coding pool
-//      only when the fast model gets stuck.
-//   6. a stable per-session id lets the gateway keep prompt-cache affinity, so
-//      the unchanged system+history prefix is cached upstream.
+// Routing and request policy. Tool output is paged locally with retrievable raw
+// text; lossy gateway compression is an explicit opt-in.
 
 const crypto = require("node:crypto");
 
@@ -21,8 +10,9 @@ const STRONG = "auto/best-coding"; // free "coding" routing combo — real reaso
 
 const off = (v) => /^(0|off|false|no)$/i.test(String(v ?? ""));
 
-// ── 1: compression, enabled once per gateway when it turns healthy ──
-const compressionOn = () => !off(process.env.OMNIWORK_COMPRESSION);
+// Compression policy is sent per request; gateway settings are not mutated.
+const compressionOn = () => /^(rtk|on|true|1)$/i.test(String(process.env.OMNIWORK_COMPRESSION || ""));
+const requestHeaders = () => ({ "x-omniroute-compression": compressionOn() ? "rtk" : "off" });
 
 // The richest payload we're confident the strict settings schema accepts,
 // then a proven-minimal fallback so a schema drift never leaves compression off.
@@ -32,11 +22,11 @@ const COMPRESSION_RICH = {
   rtkConfig: {
     intensity: "standard",
     applyToToolResults: true,   // tool output is the bulk of an agent's context
-    applyToCodeBlocks: true,
-    rawOutputRetention: "failures", // keep failed-command output verbatim for debugging
+    applyToCodeBlocks: false,
+    rawOutputRetention: "always", // retained by upstream; OmniWork pages raw output locally
     deduplicateThreshold: 3,    // collapse blocks that repeat 3+ times
-    enableGrouping: true,       // fold near-identical lines (grep/log spew)
-    stripCodeComments: true,    // comments rarely change the model's decision
+    enableGrouping: false,       // preserve individual search matches
+    stripCodeComments: false,    // comments can carry requirements
     preserveDocstrings: true,   // …but docstrings often carry the contract
   },
   preserveSystemPromptMode: "whenNoCache", mcpDescriptionCompressionEnabled: true,
@@ -78,7 +68,7 @@ function tiersFor(primary, opt) {
 // A tool result that means the step failed — the signal to escalate.
 function toolFailed(result) {
   const s = String(result || "");
-  if (/^(Error in |Failed to |Failed to start|Search failed|Browse failed|Install failed|❌|⏸)/.test(s)) return true;
+  if (/^(Error in |old_string not found|Unknown tool:|Failed to |Failed to start|Search failed|Browse failed|Install failed|❌|⏸)/.test(s)) return true;
   // A non-zero exit code, wherever it lands (head+tail truncation keeps the tail).
   if (/\[exit code ([1-9]\d*)\]/.test(s)) return true;
   // Shell error lines, anchored so the words don't false-positive inside output.
@@ -97,4 +87,4 @@ function shouldVerify(task, changed) {
 
 const newSessionId = () => crypto.randomUUID();
 
-module.exports = { AUTO, FAST, STRONG, compressionOn, enableCompression, utilityModel, tiersFor, toolFailed, shouldVerify, newSessionId };
+module.exports = { AUTO, FAST, STRONG, compressionOn, requestHeaders, enableCompression, utilityModel, tiersFor, toolFailed, shouldVerify, newSessionId };

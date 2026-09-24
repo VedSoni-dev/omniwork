@@ -49,6 +49,8 @@ contextBridge.exposeInMainWorld("omniwork", {
 
   // app
   getState: () => ipcRenderer.invoke("app:state"),
+  probeModel: (model) => ipcRenderer.invoke("models:probe", model),
+  modelCatalog: (options) => ipcRenderer.invoke("models:catalog", options),
   listModels: () => ipcRenderer.invoke("models:list"),
   setModel: (model) => ipcRenderer.invoke("app:setModel", model),
   openDashboard: () => ipcRenderer.invoke("gateway:openDashboard"),

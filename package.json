@@ -1,7 +1,7 @@
 {
   "name": "omniwork",
   "version": "0.12.0",
-  "description": "Open-source Claude Code / Cowork-style desktop agent with OmniRoute baked in. Download, open, and code with free AI models — zero setup.",
+  "description": "Open-source Claude Code / Cowork-style desktop agent with OmniRoute baked in. Download, open, and code with free AI models \u2014 zero setup.",
   "author": "OmniWork contributors",
   "license": "MIT",
   "main": "electron/main.js",
@@ -41,12 +41,19 @@
     "test:tuning": "node test/tuning.js",
     "test:sidecar": "node test/sidecar.js",
     "mcp": "node electron/mcp-server.js",
-    "acp": "node electron/acp-server.js"
+    "acp": "node electron/acp-server.js",
+    "test:regression": "node scripts/test-regression.js",
+    "test:reliability": "node test/reliability.js",
+    "jobs": "node scripts/jobs.js",
+    "test:jobs": "node test/jobs.js",
+    "benchmark:coding": "node scripts/benchmark-coding.js",
+    "benchmark:engine-prompt": "node scripts/measure-engine-prompt.js"
   },
   "bin": {
     "omniwork-mcp": "electron/mcp-server.js",
     "omniwork-acp": "electron/acp-server.js",
-    "omniwork-providers": "scripts/providers.js"
+    "omniwork-providers": "scripts/providers.js",
+    "omniwork-jobs": "scripts/jobs.js"
   },
   "dependencies": {
     "omniroute": "^3.8.50",

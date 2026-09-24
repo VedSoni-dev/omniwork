@@ -36,10 +36,10 @@ const TOOL_SCHEMA = [
     type: "function",
     function: {
       name: "read_file",
-      description: "Read a UTF-8 text file's contents.",
+      description: "Read a UTF-8 text file. Defaults to the first 200 lines; use start_line/end_line for targeted reads (up to 400 lines).",
       parameters: {
         type: "object",
-        properties: { path: { type: "string" } },
+        properties: { path: { type: "string" }, start_line: { type: "integer", minimum: 1 }, end_line: { type: "integer", minimum: 1 } },
         required: ["path"],
       },
     },
@@ -133,32 +133,47 @@ function userShell() {
   return fs.existsSync("/bin/zsh") ? "/bin/zsh" : "/bin/bash";
 }
 
-async function runCommand(workspace, command, onChunk) {
+async function runCommand(workspace, command, onChunk, signal) {
   return new Promise((resolve) => {
     const isWin = process.platform === "win32";
     const shell = userShell();
     const args = isWin ? ["-NoProfile", "-Command", command] : ["-lc", command];
-    const child = spawn(shell, args, { cwd: workspace, env: process.env });
+    if (signal?.aborted) return resolve({ text: "Command cancelled", ok: false, exitCode: null });
+    const child = spawn(shell, args, { cwd: workspace, env: process.env, detached: !isWin });
+    let killTimer;
+    const kill = (hard = false) => {
+      try {
+        if (isWin) spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" }).on("error", () => {});
+        else process.kill(-child.pid, hard ? "SIGKILL" : "SIGTERM");
+      } catch {}
+    };
+    const abort = () => { kill(); killTimer = setTimeout(() => kill(true), 500); killTimer.unref(); };
+    signal?.addEventListener("abort", abort, { once: true });
     let out = "";
     const push = (d) => {
       const t = d.toString();
       out += t;
+      if (out.length > 2_000_000) { out = out.slice(0, 1_000_000) + "\n[command output exceeded 2MB; command stopped]\n" + out.slice(-100_000); kill(); }
       if (onChunk) onChunk(t);
     };
     child.stdout.on("data", push);
     child.stderr.on("data", push);
-    child.on("error", (e) => resolve(`Failed to start command: ${e.message}`));
+    child.on("error", (e) => { signal?.removeEventListener("abort", abort); resolve({ text: `Failed to start command: ${e.message}`, ok: false, exitCode: null }); });
     child.on("close", (code) => {
-      resolve(truncate(out.trim() + `\n\n[exit code ${code}]`));
+      signal?.removeEventListener("abort", abort);
+      // The shell can exit before descendants which ignored SIGTERM.
+      // Kill the remaining process group before cancelling the escalation.
+      if (killTimer) { kill(true); clearTimeout(killTimer); }
+      resolve({ text: out.trim() + `\n\n[exit code ${code}]`, ok: code === 0 && !signal?.aborted, exitCode: code });
     });
   });
 }
 
-async function webFetch(url) {
+async function webFetch(url, signal) {
   let u = String(url || "");
   if (!/^https?:\/\//i.test(u)) u = "https://" + u;
   try {
-    const res = await fetch(u, { redirect: "follow", headers: { "User-Agent": "OmniWork/0.2" } });
+    const res = await fetch(u, { signal, redirect: "follow", headers: { "User-Agent": "OmniWork/0.2" } });
     const type = res.headers.get("content-type") || "";
     let body = await res.text();
     if (type.includes("html")) {
@@ -200,7 +215,7 @@ async function openExternal(url) {
 }
 
 // ---- Dispatcher. Returns a string result for the given tool call. ----
-async function executeTool(name, args, ctx) {
+async function executeRaw(name, args, ctx) {
   const { workspace, onChunk } = ctx;
   try {
     switch (name) {
@@ -217,9 +232,12 @@ async function executeTool(name, args, ctx) {
         const file = confine(workspace, args.path);
         const stat = fs.statSync(file);
         if (stat.size > MAX_READ_BYTES) {
-          return `File too large (${stat.size} bytes). Read a smaller file or use run_command with head/Select-Object.`;
+          return `Error in read_file: file too large (${stat.size} bytes). Read a smaller file or use run_command with head/Select-Object.`;
         }
-        return fs.readFileSync(file, "utf8");
+        const lines = fs.readFileSync(file, "utf8").split("\n");
+        const start = Math.max(1, Math.floor(Number(args.start_line) || 1));
+        const end = Math.min(lines.length, start + 399, Math.max(start, Math.floor(Number(args.end_line) || start + 199)));
+        return lines.slice(start - 1, end).join("\n") + (start > 1 || end < lines.length ? `\n[lines ${start}-${end} of ${lines.length}${end < lines.length ? `; next start_line=${end + 1}` : ""}]` : "");
       }
       case "write_file": {
         const file = confine(workspace, args.path);
@@ -232,7 +250,7 @@ async function executeTool(name, args, ctx) {
         const file = confine(workspace, args.path);
         const cur = fs.readFileSync(file, "utf8");
         if (!cur.includes(args.old_string)) {
-          return `old_string not found in ${args.path}. Read the file first to copy exact text.`;
+          return `Error in edit_file: old_string not found in ${args.path}. Read the file first to copy exact text.`;
         }
         if (ctx.recordUndo) ctx.recordUndo(args.path, cur);
         const next = cur.replace(args.old_string, args.new_string);
@@ -240,10 +258,10 @@ async function executeTool(name, args, ctx) {
         return `Edited ${args.path}`;
       }
       case "run_command": {
-        return await runCommand(workspace, args.command, onChunk);
+        return await runCommand(workspace, args.command, onChunk, ctx.signal);
       }
       case "web_fetch": {
-        return await webFetch(args.url);
+        return await webFetch(args.url, ctx.signal);
       }
       case "open_url": {
         let u = String(args.url || "");
@@ -259,4 +277,14 @@ async function executeTool(name, args, ctx) {
   }
 }
 
-module.exports = { TOOL_SCHEMA, executeTool };
+async function executeToolResult(name, args, ctx) {
+  const raw = await executeRaw(name, args, ctx);
+  if (raw && typeof raw === "object") return raw;
+  const text = String(raw);
+  const ok = !/^(Error in |Failed to |Unknown tool:|File too large)/.test(text);
+  return { text, ok, changed: ok && (name === "write_file" || name === "edit_file") };
+}
+async function executeTool(name, args, ctx) {
+  return truncate((await executeToolResult(name, args, ctx)).text);
+}
+module.exports = { TOOL_SCHEMA, executeTool, executeToolResult };

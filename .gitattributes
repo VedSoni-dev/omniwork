@@ -1,0 +1,2 @@
+# Unified diff evidence has significant single-space context lines.
+benchmarks/results/**/*.patch -whitespace

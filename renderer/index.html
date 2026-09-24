@@ -26,7 +26,7 @@
 
         <div class="rail-foot">
           <button id="recipes-btn" class="rail-link">⚡ recipes</button>
-          <button id="free-models" class="rail-link">🆓 free models</button>
+          <button id="free-models" class="rail-link">◈ models & providers</button>
           <button id="dashboard" class="rail-link">router dashboard ↗</button>
         </div>
       </aside>
@@ -116,10 +116,20 @@
     </div>
 
     <!-- Free providers modal -->
-    <div id="providers-modal" class="modal hidden">
+    <div id="providers-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="providers-title">
       <div class="modal-box">
-        <div class="modal-title">🆓 Free models that stay up</div>
-        <div class="modal-sub dim">The built-in keyless pool comes and goes. A free account on any of these gives every session a model that answers — and becomes the fallback when <code>auto</code> fails.</div>
+        <div id="providers-title" class="modal-title">Models &amp; providers</div>
+        <div class="modal-sub dim">Use free models, local servers, or your connected accounts. Paid models are available by explicit selection; automatic fallback uses eligible free models.</div>
+        <div class="catalog-controls">
+          <input id="model-search" type="search" placeholder="Search models or providers" aria-label="Search models or providers" />
+          <label><input id="model-free-only" type="checkbox" /> Free only</label>
+          <label><input id="model-tools-only" type="checkbox" /> Tools confirmed</label>
+          <button id="model-refresh" class="btn-ghost">Refresh</button>
+        </div>
+        <div id="model-catalog-status" class="prov-status dim" aria-live="polite"></div>
+        <div id="model-catalog-list" class="prov-list"></div>
+        <div class="modal-sub dim">Already use OpenCode? Connected providers appear here too. To add another, run <code>npm run providers -- login</code> in your terminal, complete sign-in, then refresh. <button class="prow-link" data-url="https://opencode.ai/docs/providers/">Provider setup ↗</button></div>
+        <div class="modal-divider"><span>connect a provider</span></div>
         <div id="prov-status" class="prov-status dim"></div>
         <div id="prov-list" class="prov-list"></div>
         <div class="modal-divider"><span>on this machine</span></div>

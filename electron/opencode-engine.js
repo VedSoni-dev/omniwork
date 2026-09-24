@@ -23,6 +23,7 @@ const path = require("node:path");
 
 const PROVIDER_IDS = ["opencode", "opencode-go"];
 const PREFIX = "opencode/";
+const workerProfile = require("./engine-profile");
 
 // ── locating / getting the binary ────────────────────────────────
 // Nobody should have to touch their PATH. The binary is looked for where each
@@ -196,6 +197,7 @@ class Engine {
       // any config the user already passes by env.
       let extra = { snapshot: false };
       if (process.env.OPENCODE_CONFIG_CONTENT) { try { extra = { ...JSON.parse(process.env.OPENCODE_CONFIG_CONTENT), ...extra }; } catch {} }
+      extra.agent = { ...(extra.agent || {}), [workerProfile.NAME]: workerProfile.config(), [workerProfile.SCOPED_NAME]: workerProfile.config({ compact: false }) };
       const env = {
         ...process.env,
         OPENCODE_DISABLE_AUTOUPDATE: "1",
@@ -286,7 +288,7 @@ class Engine {
             for (const line of chunk.split("\n")) {
               if (!line.startsWith("data:")) continue;
               let ev; try { ev = JSON.parse(line.slice(5).trim()); } catch { continue; }
-              const sid = ev && ev.properties && ev.properties.sessionID;
+              const sid = ev?.properties?.sessionID || ev?.properties?.part?.sessionID || ev?.properties?.info?.sessionID;
               const set = sid && this.listeners.get(sid);
               if (set) for (const fn of set) { try { fn(ev); } catch {} }
             }
@@ -330,17 +332,21 @@ class Engine {
     if (!force && Date.now() - this.modelsCache.at < 300_000) return this.modelsCache.list;
     const data = await this.#req("GET", "/provider", { timeoutMs: 20_000 });
     const list = [];
+    const connected = new Set(data?.connected || []);
     for (const prov of (data && data.all) || []) {
-      if (!PROVIDER_IDS.includes(prov.id)) continue;
+      const builtIn = PROVIDER_IDS.includes(prov.id);
+      if (!builtIn && !connected.has(prov.id)) continue;
       for (const [id, m] of Object.entries(prov.models || {})) {
         const cost = m && m.cost;
-        const free = cost && Number(cost.input) === 0 && Number(cost.output) === 0;
-        if (!free) continue;
-        list.push({ id: `${PREFIX}${id}`, providerID: prov.id, modelID: id, name: m.name || id, tools: m.tool_call !== false, context: m.limit && m.limit.context });
+        const free = cost && cost.input != null && cost.output != null && Number(cost.input) === 0 && Number(cost.output) === 0;
+        if (!free && !connected.has(prov.id)) continue;
+        if (m.status === "deprecated") continue;
+        const route = builtIn && free ? `${PREFIX}${id}` : `${PREFIX}${prov.id}/${id}`;
+        list.push({ id: route, providerID: prov.id, modelID: id, name: m.name || id, tools: typeof m.tool_call === "boolean" ? m.tool_call : null, context: m.limit && m.limit.context, free: Boolean(free), cost: cost || null, access: free && builtIn ? "no account" : "connected account", source: "OpenCode" });
       }
     }
     // Strongest coders first: Nemotron Ultra, then the rest in catalog order.
-    list.sort((a, b) => rank(a.modelID) - rank(b.modelID));
+    list.sort((a, b) => Number(b.free) - Number(a.free) || rank(a.modelID) - rank(b.modelID));
     this.modelsCache = { at: Date.now(), list };
     return list;
   }
@@ -351,9 +357,9 @@ class Engine {
     const s = await this.#req("POST", "/session", { body, directory });
     return s.id;
   }
-  async prompt(sessionID, { directory, providerID, modelID, text, signal }) {
+  async prompt(sessionID, { directory, providerID, modelID, text, signal, agent }) {
     return await this.#req("POST", `/session/${sessionID}/message`, {
-      body: { model: { providerID, modelID }, parts: [{ type: "text", text }] },
+      body: { model: { providerID, modelID }, ...(agent ? { agent } : {}), parts: [{ type: "text", text }] },
       directory, signal, timeoutMs: 0,
     });
   }
@@ -398,8 +404,10 @@ function getEngine(opts) {
 // → error. What OmniWork can't offer here is its own skills and memory —
 // OpenCode runs its own tools — which is the honest price of the free tier.
 class OpenCodeAgent {
-  constructor({ model, workspace, emit, approvalMode = "auto", approver = null, engine = getEngine(), fallbackModels = [], messages = null, sessionID = null }) {
+  constructor({ model, workspace, emit, approvalMode = "auto", approver = null, engine = getEngine(), fallbackModels = [], messages = null, sessionID = null, engineProfile = "standard" }) {
     this.engine = engine;
+    if (!["standard", "focused", "scoped"].includes(engineProfile)) throw new Error("Unknown engine profile");
+    this.engineProfile = engineProfile;
     this.model = model || `${PREFIX}nemotron-3.5-lightning-free`;
     this.fallbackModels = fallbackModels; // accepted for interface parity; the engine picks its own
     this.workspace = workspace;
@@ -422,7 +430,8 @@ class OpenCodeAgent {
 
   get isEngine() { return true; }
   setWorkspace(dir) { this.workspace = dir; this.sessionID = null; }
-  abort() { this.aborted = true; if (this.sessionID) this.engine.abort(this.sessionID, this.workspace); }
+  abort() { this.aborted = true; this.abortCtl?.abort(); if (this.sessionID) this.engine.abort(this.sessionID, this.workspace); }
+  setModel(model) { this.model = model; this.contextTokens = this.engine.modelsCache.list.find(m => m.id === model)?.context || 200_000; }
   async compactNow() { return null; }
   async oneShot(prompt) {
     const { providerID, modelID } = this.#target();
@@ -435,13 +444,16 @@ class OpenCodeAgent {
   #target() {
     const id = this.model.startsWith(PREFIX) ? this.model.slice(PREFIX.length) : this.model;
     // opencode-go models are namespaced by the engine's provider list; default provider is Zen.
-    const cached = this.engine.modelsCache.list.find((m) => m.modelID === id);
-    return { providerID: cached ? cached.providerID : "opencode", modelID: id };
+    const cached = this.engine.modelsCache.list.find((m) => m.id === this.model);
+    if (cached) return { providerID: cached.providerID, modelID: cached.modelID };
+    const slash = id.indexOf("/");
+    return slash > 0 ? { providerID: id.slice(0, slash), modelID: id.slice(slash + 1) } : { providerID: "opencode", modelID: id };
   }
 
   // OpenCode's per-session ruleset: an ordered list of {permission, pattern,
   // action}, mirroring OmniWork's approval modes.
   #permission() {
+    if (this.engineProfile !== "standard") return workerProfile.permissions(this.approvalMode);
     const rule = (permission, action) => ({ permission, pattern: "*", action });
     if (this.approvalMode === "auto") return [rule("*", "allow")];
     if (this.approvalMode === "plan") return [rule("*", "ask"), rule("read", "allow"), rule("edit", "deny"), rule("write", "deny"), rule("bash", "deny")];
@@ -451,6 +463,8 @@ class OpenCodeAgent {
 
   async send(userText, images) {
     this.aborted = false;
+    this.lastText = "";
+    this.abortCtl = new AbortController();
     this.turnStats = { startedAt: Date.now(), inTokens: 0, outTokens: 0, estimated: true };
     let text = images && images.length ? `${userText}\n\n(${images.length} image(s) attached — not forwarded to the OpenCode engine)` : userText;
     if (this.carryOver) { text = carriedContext(this.messages) + text; this.carryOver = false; }
@@ -465,6 +479,19 @@ class OpenCodeAgent {
     const partType = new Map();  // partID -> "text" | "reasoning" | …  (deltas don't say)
     const held = new Map();      // partID -> delta text that arrived before the part's type
     const seen = new Map();      // callID -> "called" | "done"
+    const usageByMessage = new Map();
+    const recordUsage = (id, tokens) => {
+      if (!id || !Number.isFinite(tokens?.input) || !Number.isFinite(tokens?.output)) return;
+      usageByMessage.set(id, tokens);
+      let input = 0, output = 0, uncached = 0, cacheRead = 0, cacheWrite = 0, reasoning = 0;
+      for (const t of usageByMessage.values()) {
+        uncached += t.input; cacheRead += t.cache?.read || 0; cacheWrite += t.cache?.write || 0; reasoning += t.reasoning || 0;
+        input += t.input + (t.cache?.read || 0) + (t.cache?.write || 0);
+        output += t.output + (t.reasoning || 0);
+      }
+      this.turnStats = { ...this.turnStats, inTokens: input, outTokens: output, uncachedInTokens: uncached, cacheReadTokens: cacheRead, cacheWriteTokens: cacheWrite, reasoningTokens: reasoning, modelRequests: usageByMessage.size, estimated: false };
+      this.emit("stats", this.#stats());
+    };
     const flush = (partID, type, delta) => {
       if (type === "text") { streamedText += delta; this.emit("assistant_delta", { chunk: delta }); }
       else if (type === "reasoning") this.emit("reasoning_delta", { chunk: delta });
@@ -476,6 +503,9 @@ class OpenCodeAgent {
       unsubscribe = this.engine.subscribe(sid, (ev) => {
         const p = ev.properties || {};
         switch (ev.type) {
+          case "message.updated":
+            if (p.info?.role === "assistant") recordUsage(p.info.id, p.info.tokens);
+            break;
           // A delta only names its part; the part's type came (or comes) with a
           // message.part.updated. Reasoning streams on field "text" too, so a
           // delta is held until its part is known and never mistaken for the reply.
@@ -488,6 +518,7 @@ class OpenCodeAgent {
           }
           case "message.part.updated": {
             const part = p.part || {};
+            if (part.type === "step-finish") recordUsage(part.messageID, part.tokens);
             if (part.id && part.type && !partType.has(part.id)) {
               partType.set(part.id, part.type);
               if (held.has(part.id)) { flush(part.id, part.type, held.get(part.id)); held.delete(part.id); }
@@ -504,7 +535,7 @@ class OpenCodeAgent {
             }
             if (seen.get(id) === "called" && (st.status === "completed" || st.status === "error")) {
               seen.set(id, "done");
-              this.emit("tool_result", { id, result: st.status === "error" ? `Error in ${part.tool}: ${st.error || "failed"}` : String(st.output ?? st.title ?? "") });
+              this.emit("tool_result", { id, name: part.tool, ok: st.status === "completed", result: st.status === "error" ? `Error in ${part.tool}: ${st.error || "failed"}` : String(st.output ?? st.title ?? "") });
             }
             break;
           }
@@ -517,7 +548,8 @@ class OpenCodeAgent {
         }
       }, this.workspace);
 
-      const res = await this.engine.prompt(sid, { directory: this.workspace, providerID, modelID, text });
+      const res = await this.engine.prompt(sid, { directory: this.workspace, providerID, modelID, text, signal: this.abortCtl.signal, agent: this.engineProfile === "scoped" ? workerProfile.SCOPED_NAME : this.engineProfile === "focused" ? workerProfile.NAME : undefined });
+      recordUsage(res?.info?.id, res?.info?.tokens);
       if (this.aborted) { this.emit("aborted", this.#stats()); return; }
       const err = res && res.info && res.info.error;
       if (err) {
@@ -555,7 +587,7 @@ class OpenCodeAgent {
     await this.engine.replyPermission(sid, p.id, response, this.workspace).catch(() => {});
   }
 
-  #stats() { const s = this.turnStats; return s ? { elapsedMs: Date.now() - s.startedAt, inTokens: 0, outTokens: 0, estimated: true } : {}; }
+  #stats() { const s = this.turnStats; return s ? { elapsedMs: Date.now() - s.startedAt, inTokens: s.estimated ? null : s.inTokens, outTokens: s.estimated ? null : s.outTokens, ...(s.estimated ? {} : Object.fromEntries(["uncachedInTokens", "cacheReadTokens", "cacheWriteTokens", "reasoningTokens", "modelRequests"].map(k => [k, s[k]]))), estimated: s.estimated } : {}; }
 
   async runSubagents() { return "Subagents aren't available on the OpenCode engine — delegate the pieces separately."; }
   loadProjectMemory() { return ""; }

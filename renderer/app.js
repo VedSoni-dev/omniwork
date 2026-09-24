@@ -14,6 +14,8 @@ const stub = {
   listDir: async () => ({ root: null, entries: [] }), readFile: async () => ({ content: "" }),
   getState: async () => ({ model: "auto", sessions: [], activeId: null, mcp: [] }),
   setModel: async () => {}, openDashboard: async () => {}, on: () => () => {},
+  probeModel: async () => ({ health: "unavailable", detail: "Desktop only" }),
+  modelCatalog: async () => ({ models: [], errors: [] }),
   providersStatus: async () => null, providersConnect: async () => ({}), providersRemove: async () => 0, openUrl: async () => false,
   copyText: async () => {}, setCopyOnSelect: async () => {},
 };
@@ -1020,6 +1022,7 @@ $("add-mcp").addEventListener("click", openModal);
 
 // ── Free providers ───────────────────────────────────────────────
 async function renderProviders() {
+  loadModelCatalog();
   const st = await api.providersStatus();
   const list = $("prov-list"); const local = $("prov-local"); const status = $("prov-status");
   list.innerHTML = ""; local.innerHTML = "";
@@ -1027,7 +1030,7 @@ async function renderProviders() {
   const on = st.providers.filter((p) => p.connected);
   status.textContent = on.length
     ? `Connected: ${on.map((p) => p.name).join(", ")} · fallback chain: ${st.chain.join(" → ") || "(empty)"}`
-    : "Nothing connected yet — pick one below (all free, no card).";
+    : "Connect an account below, or use an installed OpenCode engine or local server.";
   st.providers.forEach((p) => {
     const row = document.createElement("div"); row.className = "prow";
     const act = p.connected
@@ -1042,7 +1045,7 @@ async function renderProviders() {
     const oc = st.opencode;
     const row = document.createElement("div"); row.className = "prow";
     const act = oc.installed
-      ? `<span class="dim">${oc.models.length} free models · engine</span>`
+      ? `<span class="dim">${oc.models.length} models · ${oc.freeModels ?? "?"} free</span>`
       : `<button class="btn-accent" data-connect="opencode" title="Downloads OpenCode's official release into OmniWork's data folder — no npm, no PATH">Download (~45 MB)</button>`;
     row.innerHTML = `<div><div class="prow-name">${oc.installed ? '<span class="ok">✓</span>' : ""}OpenCode engine</div><div class="prow-free">${oc.installed ? esc(oc.models.join(", ") || "no free models listed") : "Zen's free models with no account: Nemotron 3 Ultra, Nemotron 3.5 Lightning, MiMo V2.5, Ling 3.0 Flash, Big Pickle. Runs OpenCode's own server as an engine."}</div></div><div class="prow-act">${act}</div>`;
     local.appendChild(row);
@@ -1057,6 +1060,52 @@ async function renderProviders() {
     local.appendChild(row);
   });
 }
+let catalogModels = [];
+async function loadModelCatalog(refresh = false) {
+  const status = $("model-catalog-status"); status.textContent = "Loading models…";
+  try {
+    const data = await api.modelCatalog({ refresh });
+    catalogModels = data.models || []; renderModelCatalog();
+    if (data.errors?.length) status.textContent += " · " + data.errors.map(e => `${e.source}: ${e.message}`).join("; ");
+  } catch (e) { status.textContent = "Could not load models: " + e.message; }
+}
+function renderModelCatalog() {
+  const query = $("model-search").value.toLowerCase();
+  const rows = catalogModels.filter(m => (!$("model-free-only").checked || m.free) && (!$("model-tools-only").checked || m.tools === true) && `${m.id} ${m.name} ${m.provider}`.toLowerCase().includes(query));
+  $("model-catalog-status").textContent = `${rows.length} matching models · Test checks whether a model answers; availability can change`;
+  const list = $("model-catalog-list"); list.innerHTML = "";
+  rows.slice(0, 100).forEach(m => {
+    const row = document.createElement("div"); row.className = "prow";
+    row.innerHTML = `<div><div class="prow-name">${esc(m.name)}</div><div class="prow-free">${esc(m.id)} · ${esc(m.pricing)} · ${esc(m.access)} · tools: ${m.tools == null ? "unknown" : m.tools ? "yes" : "no"} · context: ${m.context || "unknown"} · ${esc(m.health || "untested")}${m.latencyMs ? ` (${(m.latencyMs/1000).toFixed(1)}s)` : ""}</div></div><div class="prow-act"><button class="btn-ghost" data-probe-model="${esc(m.id)}" title="Sends a small readiness prompt. This model’s rates apply.">Test</button><button class="btn-ghost" data-pick-model="${esc(m.id)}">Use${m.pricing === "paid" ? " paid model" : ""}</button></div>`;
+    list.appendChild(row);
+  });
+  if (!rows.length) list.textContent = "No matching models. Change filters or connect a provider.";
+  if (rows.length > 100) list.insertAdjacentHTML("beforeend", '<div class="dim">Showing the first 100. Narrow your search to find another model.</div>');
+}
+$("model-search").addEventListener("input", renderModelCatalog);
+$("model-free-only").addEventListener("change", renderModelCatalog);
+$("model-tools-only").addEventListener("change", renderModelCatalog);
+$("model-refresh").addEventListener("click", () => loadModelCatalog(true));
+$("model-catalog-list").addEventListener("click", async (e) => {
+  const probe = e.target.dataset.probeModel;
+  if (probe) {
+    e.target.disabled = true; e.target.textContent = "Testing…";
+    try {
+      const result = await api.probeModel(probe);
+      const row = catalogModels.find(m => m.id === probe); if (row) Object.assign(row, result);
+      renderModelCatalog(); $("model-catalog-status").textContent = `${probe}: ${result.health} · ${result.detail}`;
+    } catch (error) { e.target.disabled = false; e.target.textContent = "Test"; $("model-catalog-status").textContent = error.message; }
+    return;
+  }
+  const id = e.target.dataset.pickModel; if (!id) return;
+  try {
+    await api.setModel(id);
+    const picker = $("model");
+    if (![...picker.options].some(o => o.value === id)) picker.add(new Option(id, id));
+    picker.value = id;
+    addSystem("Model selected: " + id); $("providers-modal").classList.add("hidden");
+  } catch (error) { $("model-catalog-status").textContent = "Could not select model: " + error.message; }
+});
 async function connectProvider(id, key) {
   const modal = $("providers-modal"); modal.classList.add("prow-busy");
   try {

@@ -1,0 +1,62 @@
+{
+  "scope": "Real OpenCode HTTP requests to a local synthetic inference server; character counts, not token estimates",
+  "rows": [
+    {
+      "profile": "standard",
+      "systemChars": 62668,
+      "toolSchemaChars": 22371,
+      "messageChars": 64263,
+      "tools": [
+        "bash",
+        "edit",
+        "glob",
+        "grep",
+        "question",
+        "read",
+        "skill",
+        "task",
+        "todowrite",
+        "webfetch",
+        "write"
+      ],
+      "preservesProjectRule": true,
+      "hasFixtureSkill": true
+    },
+    {
+      "profile": "focused",
+      "systemChars": 6854,
+      "toolSchemaChars": 12341,
+      "messageChars": 7025,
+      "tools": [
+        "bash",
+        "edit",
+        "glob",
+        "grep",
+        "read",
+        "write"
+      ],
+      "preservesProjectRule": true,
+      "hasFixtureSkill": false
+    },
+    {
+      "profile": "scoped",
+      "systemChars": 14520,
+      "toolSchemaChars": 12341,
+      "messageChars": 14795,
+      "tools": [
+        "bash",
+        "edit",
+        "glob",
+        "grep",
+        "read",
+        "write"
+      ],
+      "preservesProjectRule": true,
+      "hasFixtureSkill": false
+    }
+  ],
+  "reduction": {
+    "focused": 0.7764618971766282,
+    "scoped": 0.6867742456772168
+  }
+}

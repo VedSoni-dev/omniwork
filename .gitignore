@@ -5,3 +5,7 @@ build/
 *.log
 .DS_Store
 data/
+.gstack/
+
+# Private session reviews, raw local experiments, and memory drafts.
+reviews/

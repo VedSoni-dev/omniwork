@@ -1,0 +1,26 @@
+diff --git a/electron/tool-output.js b/electron/tool-output.js
+index e1200ad..5bc22ae 100644
+--- a/electron/tool-output.js
++++ b/electron/tool-output.js
+@@ -9,7 +9,7 @@ class ToolOutputStore {
+     text = String(text);
+     if (text.length <= limit) return text;
+     const id = crypto.randomUUID();
+-    this.entries.set(id, text.slice(0, limit)); this.bytes += text.length;
++    this.entries.set(id, text); this.bytes += text.length;
+     while (this.bytes > 8_000_000 && this.entries.size > 1) {
+       const first = this.entries.keys().next().value;
+       this.bytes -= this.entries.get(first).length; this.entries.delete(first);
+@@ -20,9 +20,10 @@ class ToolOutputStore {
+   read(id, offset = 0, limit = 12000) {
+     const text = this.entries.get(id);
+     if (text == null) return "Error in read_output: output expired or belongs to another task; rerun the tool.";
+-    const start = Math.max(0, Math.floor(Number(offset) || 0));
++    const start = Math.min(text.length, Math.max(0, Math.floor(Number(offset) || 0)));
+     const count = Math.min(24000, Math.max(1, Math.floor(Number(limit) || 12000)));
+-    return `${text.slice(start + 1, start + count + 1)}\n[characters ${start}-${Math.min(start + count, text.length)} of ${text.length}${start + count < text.length ? `; next offset=${start + count}` : "; end"}]`;
++    const end = Math.min(start + count, text.length);
++    return `${text.slice(start, end)}\n[characters ${start}-${end} of ${text.length}${end < text.length ? `; next offset=${end}` : "; end"}]`;
+   }
+ }
+ const OUTPUT_TOOL = { type: "function", function: { name: "read_output", description: "Retrieve original tool output by its session-local id and character offset when a result was paged. No compression or omitted middle within the requested page.", parameters: { type: "object", properties: { id: { type: "string" }, offset: { type: "integer", minimum: 0 }, limit: { type: "integer", minimum: 1, maximum: 24000 } }, required: ["id"] } } };

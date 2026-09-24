@@ -6,7 +6,10 @@
 // `spawn_subagents` tool — the "Agent Deck". Subagents run concurrently, each
 // with its own context/tool-loop, and report a summary back to the parent.
 
-const { TOOL_SCHEMA, executeTool } = require("./tools");
+const { TOOL_SCHEMA, executeToolResult } = require("./tools");
+const { ToolOutputStore, OUTPUT_TOOL } = require("./tool-output");
+const { mapLimit } = require("./execution");
+const cooldowns = new Map();
 const { MEMORY_TOOL, saveMemory, loadForPrompt, KNOWLEDGE_TOOL, knowledgeSection, readKnowledge } = require("./memory");
 const { DEFAULT_CONTEXT, estimateTokens, shouldCompact, compact } = require("./compactor");
 const skills = require("./skills");
@@ -122,7 +125,9 @@ const failureSignature = (err) => `${err.status || 0}:${String(err.message || ""
 const tuning = require("./tuning");
 
 class Agent {
-  constructor({ baseUrl, apiKey, model, fallbackModels = [], workspace, emit, mcp, memory = null, skillsDir = null, browser = null, canSpawn = true, depth = 0, approvalMode = "auto", approver = null, streaming = true, utilityModel, tiers, sessionId } = {}) {
+  constructor({ baseUrl, apiKey, model, fallbackModels = [], workspace, emit, mcp, memory = null, skillsDir = null, browser = null, canSpawn = true, depth = 0, approvalMode = "auto", approver = null, streaming = true, utilityModel, tiers, sessionId, contextTokens, modelContexts, beforeRequest, onRateLimit, maxSteps = MAX_STEPS, maxOutputTokens, allowedTools } = {}) {
+    this.allowedTools = allowedTools ? new Set(allowedTools) : null;
+    this.beforeRequest = beforeRequest; this.onRateLimit = onRateLimit; this.maxSteps = maxSteps; this.maxOutputTokens = maxOutputTokens;
     this.baseUrl = baseUrl.replace(/\/$/, "");
     this.apiKey = apiKey;
     this.model = model || "auto";
@@ -135,16 +140,21 @@ class Agent {
     // gateway keeps prompt-cache affinity; the utility model runs housekeeping;
     // tiers run grunt work on the fast pool and escalate to the coding pool.
     this.sessionId = sessionId || tuning.newSessionId();
+    this.utilityOverride = utilityModel;
     this.utilityModel = utilityModel || tuning.utilityModel(this.model);
     this.tiers = tiers !== undefined ? tiers : tuning.tiersFor(this.model);
-    this.cooling = new Map(); // model -> ms timestamp it is rate-limited until
+    if (!cooldowns.has(this.baseUrl)) cooldowns.set(this.baseUrl, new Map());
+    this.cooling = cooldowns.get(this.baseUrl);
+    this.children = new Set();
+    this.outputs = new ToolOutputStore();
+    this.modelContexts = modelContexts || {};
     this.workspace = workspace;
     this.emit = emit; // (event, payload) => void
     this.mcp = mcp || null;
     this.memory = memory; // { globalDir, projectDir, knowledgeDir? } | null
     this.skillsDir = skillsDir || null; // global skills root
     this.browser = browser || null;    // BrowserManager
-    this.contextTokens = DEFAULT_CONTEXT;
+    this.contextTokens = contextTokens || this.modelContexts[this.model] || DEFAULT_CONTEXT;
     this.canSpawn = canSpawn;
     this.depth = depth;
     this.approvalMode = approvalMode;   // "auto" | "ask"
@@ -162,13 +172,14 @@ class Agent {
   // ── per-turn usage accounting ────────────────────────────────────
   // Real API usage when the gateway reports it; chars/4 as a marked estimate
   // when it doesn't. Every model call in the turn counts, compaction included.
-  #addUsage(usage, fallbackChars) {
+  #addUsage(usage, fallbackChars, inputEstimate) {
     const s = this.turnStats;
     if (!s) return;
     if (usage && (usage.completion_tokens != null || usage.prompt_tokens != null)) {
       s.inTokens += usage.prompt_tokens || 0;
       s.outTokens += usage.completion_tokens || 0;
     } else {
+      s.inTokens += inputEstimate ?? (estimateTokens(this.messages) + Math.ceil(JSON.stringify(this.toolSchema()).length / 4));
       s.outTokens += Math.ceil((fallbackChars || 0) / 4);
       s.estimated = true;
     }
@@ -237,7 +248,7 @@ class Agent {
     const kn = this.memory && this.memory.knowledgeDir ? [KNOWLEDGE_TOOL] : [];
     const sk = this.skillsDir ? [skills.USE_SKILL_TOOL, skills.SAVE_SKILL_TOOL, skills.INSTALL_SKILLS_TOOL] : [];
     const web = this.browser ? [require("./browser").WEB_SEARCH_TOOL, require("./browser").BROWSE_TOOL] : [];
-    return [...TOOL_SCHEMA, ...sub, ...mem, ...kn, ...sk, ...web, ...extra];
+    return [...TOOL_SCHEMA, OUTPUT_TOOL, ...sub, ...mem, ...kn, ...sk, ...web, ...extra].filter(t => !this.allowedTools || this.allowedTools.has(t.function.name));
   }
 
   // Aborting must also kill in-flight network work — a flag alone leaves the
@@ -245,23 +256,31 @@ class Agent {
   abort() {
     this.aborted = true;
     try { this.abortCtl?.abort(); } catch {}
+    for (const child of this.children) child.abort();
   }
   setWorkspace(dir) { this.workspace = dir; }
+  setModel(model) {
+    this.model = model;
+    this.tiers = tuning.tiersFor(model);
+    this.utilityModel = this.utilityOverride || tuning.utilityModel(model);
+    this.contextTokens = this.modelContexts[model] || DEFAULT_CONTEXT;
+  }
 
   // One-off model call outside the session's message history (summaries,
   // titles, memory capture).
   async oneShot(prompt, { model = this.utilityModel } = {}) {
     const call = async (m) => {
+      await this.beforeRequest?.(this.abortCtl?.signal);
       const res = await fetch(`${this.baseUrl}/chat/completions`, {
         method: "POST",
-        signal: AbortSignal.timeout(60_000),
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}`, "x-session-id": this.sessionId },
-        body: JSON.stringify({ model: m, messages: [{ role: "user", content: prompt }], temperature: 0.2 }),
+        signal: this.abortCtl ? AbortSignal.any([this.abortCtl.signal, AbortSignal.timeout(60_000)]) : AbortSignal.timeout(60_000),
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}`, "x-session-id": this.sessionId, ...tuning.requestHeaders() },
+        body: JSON.stringify({ model: m, messages: [{ role: "user", content: prompt }], temperature: 0.2, max_tokens: 2048 }),
       });
-      if (!res.ok) { const e = new Error(`Gateway ${res.status}`); e.status = res.status; throw e; }
+      if (!res.ok) { const e = new Error(`Gateway ${res.status}`); e.status = res.status; if (res.status === 429) this.onRateLimit?.(60000); throw e; }
       const data = await res.json();
       const content = data.choices?.[0]?.message?.content || "";
-      this.#addUsage(data.usage, content.length); // counts only while a turn is active
+      this.#addUsage(data.usage, content.length, Math.ceil(prompt.length / 4));
       return content;
     };
     // Housekeeping runs on the cheap utility model; if the gateway doesn't know
@@ -276,8 +295,9 @@ class Agent {
 
   // Compact when over threshold (or forced by /compact). Returns the notice, or null.
   async compactNow({ force = false } = {}) {
-    if (!force && !shouldCompact(this.messages, this.contextTokens)) return null;
-    const { messages, note } = await compact(this.messages, (p) => this.oneShot(p));
+    const budget = Math.max(2000, this.contextTokens - Math.ceil(JSON.stringify(this.toolSchema()).length / 4) - 4096);
+    if (!force && !shouldCompact(this.messages, budget)) return null;
+    const { messages, note } = await compact(this.messages, (p) => this.oneShot(p), { budget });
     this.messages = messages;
     this.#emitContext();
     if (note) return note;
@@ -300,11 +320,13 @@ class Agent {
     const failures = [];
     let lastErr = null;
     let lastSig = null;
-    let transientPrimary = false; // primary only hit 429 — keep it, don't switch
+    let transientPrimary = this.cooling.get(this.model) > now; // primary only hit 429 — keep it, don't switch
     for (let i = 0; i < chain.length; i++) {
       const model = chain[i];
       const last = i === chain.length - 1;
       let msg;
+      if (this.modelContexts[model]) this.contextTokens = this.modelContexts[model];
+      await this.compactNow();
       try { msg = await this.#callOnce(model); }
       catch (err) {
         if (this.aborted || !isModelFailure(err)) throw err;
@@ -313,14 +335,14 @@ class Agent {
         // rotate to the next provider, but keep the primary for later steps so
         // connected free tiers share the load instead of one draining first.
         if (err.status === 429) {
-          this.cooling.set(model, Date.now() + 60_000);
+          this.cooling.set(model, Date.now() + (err.retryAfterMs || 60_000));
           if (model === this.model) transientPrimary = true;
           lastErr = err; continue;
         }
-        // Two models failing identically is the gateway talking, not the
-        // models; walking further would only replay the conversation again.
+        // Only a known gateway-wide exhaustion message justifies stopping.
+        // Two providers can independently reject credentials with identical text.
         const sig = failureSignature(err);
-        if (lastSig !== null && sig === lastSig) { lastErr = err; failures.push("(stopped: the next model failed the same way — this is the gateway, not the model)"); break; }
+        if (lastSig !== null && sig === lastSig && /Maximum combo retry limit reached/i.test(err.message)) { lastErr = err; failures.push("(stopped: the next model failed the same way — gateway pool exhausted)"); break; }
         lastSig = sig; lastErr = err;
         continue;
       }
@@ -335,6 +357,7 @@ class Agent {
       }
       // Rotating past a rate-limited primary is temporary — don't make the
       // switch permanent, so the primary is retried once its cooldown passes.
+      this.effectiveModel = model;
       if (model !== this.model && !transientPrimary) this.#switchModel(model, failures.join("; "));
       return msg;
     }
@@ -358,6 +381,7 @@ class Agent {
   #switchModel(to, reason) {
     const from = this.model;
     this.model = to;
+    this.contextTokens = this.modelContexts[to] || this.contextTokens;
     this.modelSwitches.push({ from, to, reason });
     this.emit("model_switch", { from, to, reason });
     this.emit("system", { content: `⇄ ${from} failed (${reason.slice(0, 160)}) — continuing on ${to}` });
@@ -379,7 +403,7 @@ class Agent {
       // Auth and unknown-model rejections don't depend on streaming — don't pay
       // a second request to learn the same thing. Anything else (a provider that
       // rejects stream_options, a flaky 5xx) still gets the non-streaming retry.
-      if (err.status === 401 || err.status === 403 || err.status === 404) throw err;
+      if (this.aborted || [401, 403, 404, 429].includes(err.status)) throw err;
       streamed = null;
     }
     if (hasContent(streamed)) return streamed;
@@ -387,16 +411,18 @@ class Agent {
   }
 
   async #requestModel(stream, model = this.model) {
+    await this.beforeRequest?.(this.abortCtl?.signal);
     const res = await fetch(`${this.baseUrl}/chat/completions`, {
       method: "POST",
       signal: this.abortCtl?.signal,
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}`, "x-session-id": this.sessionId },
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}`, "x-session-id": this.sessionId, ...tuning.requestHeaders() },
       body: JSON.stringify({
         model,
         messages: this.messages,
         tools: this.toolSchema(),
         tool_choice: "auto",
         temperature: 0.3,
+        ...(this.maxOutputTokens ? { max_tokens: this.maxOutputTokens } : {}),
         stream,
         // Ask for exact usage in the final stream chunk (OpenAI-compatible).
         // Providers that reject it fail the stream; callModel then falls back
@@ -408,6 +434,10 @@ class Agent {
       const body = await res.text().catch(() => "");
       const err = new Error(`Gateway ${res.status}: ${body.slice(0, 500)}`);
       err.status = res.status;
+      const retry = res.headers.get("retry-after");
+      const delay = retry && (/^\d+(\.\d+)?$/.test(retry) ? Number(retry) * 1000 : Date.parse(retry) - Date.now());
+      if (Number.isFinite(delay) && delay > 0) err.retryAfterMs = Math.min(delay, 300_000);
+      if (res.status === 429) this.onRateLimit?.(err.retryAfterMs || 60000);
       throw err;
     }
     const ctype = res.headers.get("content-type") || "";
@@ -484,44 +514,60 @@ class Agent {
 
   // Fan out to parallel subagents and return the combined summaries.
   async runSubagents(tasks) {
-    const list = Array.isArray(tasks) ? tasks.slice(0, 8) : [];
+    const list = Array.isArray(tasks) ? tasks : [];
+    if (list.length > 100) return "Error in spawn_subagents: maximum 100 tasks per call; none started.";
     if (!list.length) return "No subtasks provided.";
     const groupId = "g" + Date.now().toString(36);
     this.emit("subagent", { groupId, kind: "group_start", count: list.length, titles: list.map((t) => t.title || "subagent") });
 
-    const results = await Promise.all(
-      list.map(async (t, i) => {
+    const results = await mapLimit(list, 4, async (t, i) => {
+        if (this.aborted) return { title: t.title || `subagent ${i + 1}`, result: "[status: cancelled] Parent stopped" };
         const subId = `${groupId}_${i}`;
         const title = t.title || `subagent ${i + 1}`;
         this.emit("subagent", { groupId, subId, title, kind: "start" });
+        let failure = null, done = false, childUsage = { inTokens: 0, outTokens: 0 };
         const child = new Agent({
           baseUrl: this.baseUrl, apiKey: this.apiKey, model: this.model, fallbackModels: this.fallbackModels,
-          utilityModel: this.utilityModel, tiers: this.tiers,
+          utilityModel: this.utilityOverride, tiers: this.tiers,
+          approvalMode: this.approvalMode, approver: this.approver, memory: this.memory, skillsDir: this.skillsDir, modelContexts: this.modelContexts,
           workspace: this.workspace, mcp: this.mcp, browser: this.browser, canSpawn: false, depth: this.depth + 1,
           // Nobody reads a subagent's token-by-token output — only its tool
           // labels and final summary. Skipping the stream attempt halves the
           // worst-case request count across the whole fan-out.
           streaming: false,
           emit: (type, payload) => {
+            if (type === "tool_call" || type === "tool_result") this.emit("subagent", { groupId, subId, kind: type, payload });
+            if (type === "error") failure = payload.message;
+            if (type === "done") done = true;
+            if (type === "stats" && this.turnStats) {
+              this.turnStats.inTokens += Math.max(0, payload.inTokens - childUsage.inTokens);
+              this.turnStats.outTokens += Math.max(0, payload.outTokens - childUsage.outTokens);
+              this.turnStats.estimated ||= payload.estimated;
+              childUsage = payload;
+            }
             if (type === "tool_call") this.emit("subagent", { groupId, subId, kind: "tool", tool: subLabel(payload.name, payload.args) });
             else if (type === "assistant") this.emit("subagent", { groupId, subId, kind: "text", snippet: String(payload.content || "").slice(0, 160) });
             else if (type === "error") this.emit("subagent", { groupId, subId, kind: "error", message: payload.message });
             else if (type === "model_switch") this.emit("subagent", { groupId, subId, kind: "model", from: payload.from, to: payload.to });
           },
         });
+        this.children.add(child);
         try { await child.send(t.prompt || t.task || title); }
-        catch (e) { this.emit("subagent", { groupId, subId, kind: "error", message: e.message }); }
-        this.emit("subagent", { groupId, subId, kind: "done" });
-        return { title, result: child.lastText || "(no summary returned)" };
-      })
-    );
+        catch (e) { failure = e.message; this.emit("subagent", { groupId, subId, kind: "error", message: e.message }); }
+        finally { this.children.delete(child); }
+        this.emit("subagent", { groupId, subId, kind: "done", status: child.aborted ? "cancelled" : failure || !done ? "failed" : "completed" });
+        return { title, result: `[status: ${child.aborted ? "cancelled" : failure || !done ? "failed" : "completed"}] ${failure || ""}\n${child.lastText || "(no summary returned)"}` };
+      });
 
     this.emit("subagent", { groupId, kind: "group_done" });
-    return results.map((r) => `## ${r.title}\n${r.result}`).join("\n\n---\n\n");
+    const failed = results.filter(r => /^\[status: (failed|cancelled)\]/.test(r.result)).length;
+    return (failed ? `Error in spawn_subagents: ${failed} task(s) did not complete.\n\n` : "")
+      + results.map((r) => `## ${r.title}\n${r.result}`).join("\n\n---\n\n");
   }
 
   async send(userText, images) {
     this.aborted = false;
+    this.lastText = "";
     this.abortCtl = new AbortController();
     this.turnUndo = new Map();
     this.undoAvailable = false;
@@ -545,7 +591,7 @@ class Agent {
       this.messages.push({ role: "user", content: userText });
     }
 
-    for (let step = 0; step < MAX_STEPS; step++) {
+    for (let step = 0; step < this.maxSteps; step++) {
       if (this.aborted) { this.emit("aborted", this.#statsPayload()); return; }
       // Auto-compact before the call would overflow; a failed summary degrades
       // to truncation inside compact(), never a crashed turn.
@@ -558,7 +604,7 @@ class Agent {
       // backstop deep in — not on raw step count, so a fast model steadily
       // editing many files stays cheap instead of jumping to the coding tier.
       if (step >= 8 && this._tierFails > 0) this.#escalate("stalling on the fast tier");
-      else if (step >= Math.floor(MAX_STEPS / 2)) this.#escalate("halfway through the step budget");
+      else if (step >= Math.floor(this.maxSteps / 2)) this.#escalate("halfway through the step budget");
       this.emit("thinking", { step });
 
       let msg;
@@ -590,16 +636,16 @@ class Agent {
         this.emit("tool_call", { id: call.id, name, args: parsedArgs });
 
         // Approval gate (top-level agents only): mode decides per tool.
-        const decision = approvalDecision(this.approvalMode, name, !!(this.mcp && this.mcp.isMcpTool(name)));
+        const decision = this.allowedTools && !this.allowedTools.has(name) ? "block" : approvalDecision(this.approvalMode, name, !!(this.mcp && this.mcp.isMcpTool(name)));
         if (decision === "block") {
-          const blocked = "⏸ Plan mode — changes are disabled. Present your plan instead; the user can switch modes to execute it.";
+          const blocked = this.allowedTools && !this.allowedTools.has(name) ? `Error in ${name}: tool is not available for this worker.` : "⏸ Plan mode — changes are disabled. Present your plan instead; the user can switch modes to execute it.";
           this.emit("tool_result", { id: call.id, name, result: blocked });
           this.messages.push({ role: "tool", tool_call_id: call.id, content: blocked });
           continue;
         }
-        if (decision === "ask" && this.approver) {
+        if (decision === "ask") {
           const preview = this.#approvalPreview(name, parsedArgs);
-          const ok = await this.approver(call.id, name, parsedArgs, preview);
+          const ok = this.approver ? await this.approver(call.id, name, parsedArgs, preview) : false;
           if (!ok) {
             const denied = "❌ Denied by user.";
             this.emit("tool_result", { id: call.id, name, result: denied });
@@ -608,8 +654,10 @@ class Agent {
           }
         }
 
-        let result;
-        if (name === "spawn_subagents" && this.canSpawn) {
+        let result, outcome;
+        if (name === "read_output") {
+          result = this.outputs.read(parsedArgs.id, parsedArgs.offset, parsedArgs.limit);
+        } else if (name === "spawn_subagents" && this.canSpawn) {
           result = await this.runSubagents(parsedArgs.tasks);
         } else if (name === "web_search" && this.browser) {
           try { result = await this.browser.search(parsedArgs.query); }
@@ -640,7 +688,8 @@ class Agent {
         } else if (this.mcp && this.mcp.isMcpTool(name)) {
           result = await this.mcp.callTool(name, parsedArgs);
         } else {
-          result = await executeTool(name, parsedArgs, {
+          outcome = await executeToolResult(name, parsedArgs, {
+            signal: this.abortCtl.signal,
             workspace: this.workspace,
             onChunk: (chunk) => this.emit("tool_stream", { id: call.id, chunk }),
             recordUndo: (rel, original) => {
@@ -649,13 +698,16 @@ class Agent {
           });
         }
 
-        this.emit("tool_result", { id: call.id, name, result });
+        if (outcome) result = outcome.text;
+        const ok = outcome ? outcome.ok : !tuning.toolFailed(result);
+        if (name !== "read_output") result = this.outputs.capture(result, Math.max(1000, Math.min(12000, Math.floor(this.contextTokens / 4))));
+        this.emit("tool_result", { id: call.id, name, result, ok, exitCode: outcome?.exitCode, changed: outcome?.changed || false });
         this.messages.push({ role: "tool", tool_call_id: call.id, content: result });
-        if (tuning.toolFailed(result)) { if (++this._tierFails >= 2) this.#escalate("two failed steps in a row"); }
+        if (!ok) { if (++this._tierFails >= 2) this.#escalate("two failed steps in a row"); }
         else this._tierFails = 0;
       }
     }
-    this.emit("error", { message: `Reached max steps (${MAX_STEPS}) without finishing.` });
+    this.emit("error", { message: `Reached max steps (${this.maxSteps}) without finishing.` });
   }
 }
 

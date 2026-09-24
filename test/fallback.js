@@ -131,7 +131,14 @@ const errorOf = (events) => (events.find((e) => e.type === "error") || {}).messa
     check("a 400 that names the model does", agent.model === "b/two" && agent.lastText === "ok");
     gw.close();
   }
-  // ── two identical failures mean the gateway, not the models: stop walking ──
+  // Identical provider failures need not affect the next provider.
+  {
+    const gw = await gateway(b => b.model === "c/three" ? reply("third provider works") : { status: 403, json: { error: { message: "Access denied" } } });
+    const { agent } = await turn(gw, { model: "a/one", fallbackModels: ["b/two", "c/three"] });
+    check("identical provider rejections still reach a working third provider", agent.lastText === "third provider works");
+    gw.close();
+  }
+  // ── known gateway exhaustion can short-circuit ──
   {
     const gw = await gateway(() => ({ status: 503, json: { error: { message: "Maximum combo retry limit reached" } } }));
     const { events } = await turn(gw, { model: "a/one", fallbackModels: ["b/two", "c/three", "d/four"] });

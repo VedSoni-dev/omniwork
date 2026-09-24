@@ -1,0 +1,41 @@
+diff --git a/electron/job-service.js b/electron/job-service.js
+index 5e703f5..098f203 100644
+--- a/electron/job-service.js
++++ b/electron/job-service.js
+@@ -45,8 +45,13 @@ function atomic(file, data) {
+   fs.renameSync(tmp, file);
+ }
+ function providerKey(model) {
+-  // Zen and Go may share capacity. Do not multiply slots by model aliases.
+-  return model.id;
++  // A capacity bucket is the account or route that serves the request, never
++  // the model id or an alias. OpenCode Zen and Go run on the same engine and
++  // share one slot pool; gateway models on a provider share that provider's
++  // pool instead of taking independent slots per model.
++  if (!model) return "default";
++  if (model.source === "OpenCode") return "opencode";
++  return model.provider || (typeof model.id === "string" ? model.id.split("/")[0] : null) || model.id || "default";
+ }
+ class JobService extends EventEmitter {
+   constructor({ dir, catalog, run, runCheck, concurrency = 4, providerConcurrency = 2, requestsPerMinute = 20, providerLimits = {} }) {
+@@ -94,8 +99,18 @@ class JobService extends EventEmitter {
+       const id = crypto.randomUUID();
+       fs.mkdirSync(path.join(this.dir, id), { mode: 0o700 });
+       const job = { id, key, fingerprint, batch, batchSize: specs.length, spec, status: "queued", createdAt: new Date().toISOString(), result: null, progress: null };
+-      // Admission must reach disk before the scheduler can see this job.
+-      this.jobs.set(id, job); this.keys.set(key, id); this.save(job); return this.view(job);
++      // Admission must reach disk before the scheduler can see this job. A
++      // persistence failure must not leave an executable in-memory job or a
++      // deduplication key: register in the maps only after the durable write.
++      try {
++        job.revision = this.revision + 1; job.updatedAt = new Date().toISOString();
++        atomic(path.join(this.dir, id, "job.json"), job);
++      } catch (e) {
++        fs.rmSync(path.join(this.dir, id), { recursive: true, force: true });
++        throw e;
++      }
++      this.revision = job.revision;
++      this.jobs.set(id, job); this.keys.set(key, id); this.emit("change", job.id); return this.view(job);
+     });
+     setImmediate(() => this.tick());
+     return { request_id: batch, revision: this.revision, jobs };

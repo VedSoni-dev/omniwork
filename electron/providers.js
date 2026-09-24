@@ -25,7 +25,7 @@ const CATALOG = [
   {
     id: "openrouter", alias: "openrouter", name: "OpenRouter", connect: "pkce",
     keyUrl: "https://openrouter.ai/settings/keys",
-    free: "20 free models (18 with tool calling) — 20 req/min, 50 req/day; 1,000/day after a one-time $10 top-up",
+    free: "Browser sign-in. Free and paid catalogs; free models are selected separately. Account limits apply.",
     prefer: ["cohere/north-mini-code:free", "nvidia/nemotron-3-super-120b-a12b:free", "google/gemma-4-31b-it:free", "nvidia/nemotron-3.5-lightning:free"],
     preferPattern: /:free$/,
   },
@@ -39,6 +39,7 @@ const CATALOG = [
     id: "kilo-gateway", alias: "kg", name: "Kilo Gateway", connect: "key",
     keyUrl: "https://app.kilo.ai",
     free: "kilo-auto/free router plus Nemotron 3 Super and MiniMax M2.5 :free (free account)",
+    preferPattern: /:free$|\/free$/,
     prefer: ["kilo-auto/free", "nvidia/nemotron-3-super-120b-a12b:free", "minimax/minimax-m2.5:free"],
   },
   {
@@ -181,7 +182,8 @@ function suggestChain(ids, { max = MAX_CHAIN } = {}) {
     if (!have.length) continue;
     const pick = (p.prefer || []).find((m) => have.includes(m))
       || (p.preferPattern ? have.find((m) => p.preferPattern.test(m)) : null)
-      || have[0];
+      || (LOCAL.includes(p) ? have[0] : null);
+    if (!pick) continue;
     chain.push(`${p.alias}/${pick}`);
     if (chain.length >= max) break;
   }
@@ -214,7 +216,7 @@ async function status(gw, { detectLocal = true, candidates = LOCAL } = {}) {
   const oc = { installed: opencode.available(), version: null, models: [], installCommand: opencode.INSTALL_COMMAND, installScript: opencode.INSTALL_SCRIPT };
   if (oc.installed) {
     oc.version = opencode.version();
-    try { oc.models = (await opencode.getEngine().models()).map((m) => m.id); } catch (e) { oc.error = e.message; }
+    try { oc.catalog = await opencode.getEngine().models(); oc.models = oc.catalog.map((m) => m.id); oc.freeModels = oc.catalog.filter(m => m.free).length; } catch (e) { oc.error = e.message; }
   }
   return {
     providers, local, opencode: oc,
@@ -404,7 +406,7 @@ function describe(st) {
   if (oc) {
     lines.push("");
     lines.push(oc.installed
-      ? `OpenCode engine: installed (${oc.version || "?"}) — ${oc.models.length ? `free models, no account: ${oc.models.join(", ")}` : (oc.error ? `could not list models: ${oc.error}` : "no free models listed")}. Runs OpenCode's own server; the automatic fallback when nothing else answers.`
+      ? `OpenCode engine: installed (${oc.version || "?"}) — ${oc.models.length ? `${oc.freeModels ?? "?"} free models plus connected accounts: ${oc.models.join(", ")}` : (oc.error ? `could not list models: ${oc.error}` : "no free models listed")}. Runs OpenCode's own server; the automatic fallback when nothing else answers.`
       : `OpenCode engine: not present yet. ${oc.installCommand} downloads OpenCode's official release (~45 MB, no npm, no PATH) and adds Zen's free models (Nemotron 3.5 Lightning, MiMo V2.5, Big Pickle, Ling 3.0 Flash, Nemotron 3 Ultra) with no account at all.`);
   }
   const running = st.local.filter((l) => l.running);

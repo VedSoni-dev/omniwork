@@ -359,6 +359,7 @@ class SessionManager {
 
   setModel(model) {
     this.model = model;
+    this._ctxTokens = null;
     for (const s of this.sessions.values()) {
       if (!s.agent) continue;
       // Crossing between the gateway loop and the OpenCode engine is a new
@@ -367,8 +368,11 @@ class SessionManager {
         // Never leave a running agent behind: it would keep emitting into a
         // session whose Stop now points at the new one.
         if (s.status === "running") s.agent.abort();
+        const messages = s.agent.messages.slice();
         this.#buildAgent(s);
-      } else s.agent.model = model;
+        s.agent.messages = messages;
+        if (s.agent.isEngine) s.agent.carryOver = messages.some(m => m.role === "user");
+      } else s.agent.setModel(model);
     }
     this.refreshContextLimit();
   }
@@ -377,11 +381,18 @@ class SessionManager {
   // agents keep their conservative default when it's unknown.
   async refreshContextLimit() {
     try {
+      if (opencode.isEngineModel(this.model)) {
+        const m = (await opencode.getEngine().models()).find(m => m.id === this.model);
+        if (m?.context) for (const s of this.sessions.values()) if (s.agent?.model === m.id) s.agent.contextTokens = m.context;
+        return;
+      }
       const res = await fetch(`${this.gateway.baseUrl}/models`, { signal: AbortSignal.timeout(4000) });
       const data = await res.json();
+      const contexts = Object.fromEntries((data.data || []).filter(m => m.context_length || m.max_input_tokens).map(m => [m.id, m.context_length || m.max_input_tokens]));
+      for (const s of this.sessions.values()) if (s.agent && !s.agent.isEngine) s.agent.modelContexts = contexts;
       const m = (data.data || []).find((x) => x.id === this.model);
       const ctx = m && (m.context_length || m.max_input_tokens);
-      if (!ctx || ctx < 16_000) return;
+      if (!ctx || ctx < 1024) return;
       this._ctxTokens = ctx;
       for (const s of this.sessions.values()) if (s.agent) s.agent.contextTokens = ctx;
     } catch {}

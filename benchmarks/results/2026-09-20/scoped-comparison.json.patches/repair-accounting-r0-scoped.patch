@@ -1,0 +1,20 @@
+diff --git a/electron/execution.js b/electron/execution.js
+index 7e13d68..79994d9 100644
+--- a/electron/execution.js
++++ b/electron/execution.js
+@@ -87,13 +87,14 @@ async function executeTask({ task, createAgent, recover, checks = [], runCheck,
+           if (controller.signal.aborted) return;
+           verification.push({ command, ok: result.ok, exitCode: result.exitCode, output: result.text.slice(-8000) });
+         }
+-        if (verification.length) break;
+         checkHistory.push({ round, checks: verification.slice() });
++        if (verification.every(c => c.ok)) break;
+         if (round === repairAttempts) { error = "Acceptance check failed"; break; }
+         progress(++steps, `repair ${round + 1}: acceptance checks failed`);
+         completed = false; // previous usage retained
+         const repair = { model: agent.model, phase: "repair", error: null }; attempts.push(repair);
+         const evidence = verification.filter(c => !c.ok).map(c => `${c.command}\n${c.output}`).join("\n\n").slice(-12000);
++        lastUsage = { inTokens: 0, outTokens: 0 };
+         await agent.send(`Acceptance checks failed. Repair the implementation in this existing workspace; preserve the original task and ownership constraints. Do not weaken, delete or bypass tests.\n\n${evidence}`);
+         repair.error = error;
+         if (error || !completed || controller.signal.aborted) break;

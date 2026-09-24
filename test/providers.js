@@ -156,8 +156,8 @@ function fakeLocal() {
   st = await providers.status(g.gw, { candidates, detectLocal: false });
   check("the chain prefers the coder on OpenRouter and keeps catalog order", JSON.stringify(st.chain) === JSON.stringify(["openrouter/cohere/north-mini-code:free", "groq/openai/gpt-oss-120b"]));
   const noPref = providers.suggestChain(["openrouter/x/y:free", "openrouter/openai/gpt-5", "groq/other-model"]);
-  check("without a preferred id it falls back to the :free pattern, then the first listed", JSON.stringify(noPref) === JSON.stringify(["openrouter/x/y:free", "groq/other-model"]));
-  check("the chain is capped", providers.suggestChain(["openrouter/a:free", "ollamacloud/b", "kg/c", "groq/d", "cerebras/e", "nvidia/f", "gemini/g", "mistral/h"]).length === 6);
+  check("without a preferred free id it only accepts an explicit free match", JSON.stringify(noPref) === JSON.stringify(["openrouter/x/y:free"]));
+  check("the chain is capped", providers.suggestChain(["openrouter/a:free", "kg/kilo-auto/free", "groq/openai/gpt-oss-120b"], { max: 2 }).length === 2);
 
   // ── local ──
   const loc = await providers.connectLocal(g.gw, { candidates });
