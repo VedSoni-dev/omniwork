@@ -60,6 +60,7 @@ check("contains / minContains", ok({ contains: { const: 1 } }, [0, 1]) && !ok({ 
 check("nullable (OpenAPI style) admits null", ok({ type: "string", nullable: true }, null));
 check("an unresolvable $ref is reported, not thrown", validate({ $ref: "#/$defs/missing" }, 1).length === 1);
 check("a circular $ref stops instead of recursing forever", validate({ $defs: { a: { $ref: "#/$defs/a" } }, $ref: "#/$defs/a" }, 1).length >= 1);
+check("patterns written without the unicode flag in mind still work", ok({ pattern: "^[\\w\\-]+$" }, "a-b_c") && !ok({ pattern: "^[\\w\\-]+$" }, "a b") && ok({ patternProperties: { "^x\\-": { type: "number" } }, additionalProperties: false }, { "x-a": 1 }));
 check("unknown keywords (format, title) are ignored", ok({ type: "string", format: "email", title: "x" }, "not-an-email"));
 check("boolean schemas", ok(true, 1) && !ok(false, 1));
 check("describe() lists errors for a retry prompt", /\/score: is required/.test(describe(validate(SCORE, { company: "A", flags: [] }))));

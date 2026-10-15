@@ -169,6 +169,18 @@ function handle(m) {
   check("by default the agent's own tools stay (most clients declare none)", s2.result._meta.omniwork.capabilityPolicy === "local" && s2.result._meta.omniwork.tools.includes("run_command"));
   strict.proc.kill();
 
+  // ── the OpenCode engine asks about its own tool call, not a "subagent" ──
+  const eng = acpProcess({ ...env, OMNIWORK_OPENCODE_BIN: path.join(__dirname, "fixtures", "fake-opencode.js") });
+  await eng.rpc("initialize", { protocolVersion: 1, clientCapabilities: {} });
+  const es = await eng.rpc("session/new", { cwd: ws, mcpServers: [], _meta: { model: "opencode/big-pickle" } });
+  eng.setAnswer(() => ({ outcome: { outcome: "selected", optionId: "reject_once" } }));
+  await eng.rpc("session/prompt", { sessionId: es.result.sessionId, prompt: [{ type: "text", text: "PERMISSION then say READY" }] });
+  const engAsk = eng.asked[0];
+  check("an engine permission request names a tool call announced first", engAsk && engAsk.announced);
+  check("…not labelled as a subagent", engAsk && !eng.updates("tool_call").some((n) => /^subagent:/.test(n.params.update.title)));
+  check("…and the refused call is closed out", engAsk && eng.updates("tool_call_update").some((n) => n.params.update.toolCallId === engAsk.toolCall.toolCallId && n.params.update.status === "failed"));
+  eng.proc.kill();
+
   gw.close();
   const dead = acpProcess({ ...env, OMNIWORK_BASE_URL: "http://127.0.0.1:9/v1", OMNIWORK_ACP_ERRORS: "rpc" });
   await dead.rpc("initialize", { protocolVersion: 1, clientCapabilities: {} });

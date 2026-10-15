@@ -30,6 +30,14 @@ function deepEqual(a, b) {
   return false;
 }
 
+// JSON Schema patterns are ECMA-262 regexes, usually written without the
+// unicode flag in mind: `\-` and `\/` are fine without it and a syntax error
+// with it. Prefer `u` (correct for astral characters), fall back to plain.
+function compile(pattern) {
+  try { return new RegExp(pattern, "u"); } catch {}
+  return new RegExp(pattern);
+}
+
 // "#", "#/$defs/x", "#/definitions/x/properties/y" — JSON pointers into the root.
 function resolveRef(root, ref) {
   if (typeof ref !== "string" || !ref.startsWith("#")) throw new Error(`unsupported $ref ${ref} (only local refs)`);
@@ -72,7 +80,7 @@ function check(schema, value, path, root, errors, depth) {
     if (schema.maxLength !== undefined && len > schema.maxLength) err(`must be at most ${schema.maxLength} characters`);
     if (schema.pattern !== undefined) {
       let re = null;
-      try { re = new RegExp(schema.pattern, "u"); } catch { err(`schema pattern ${show(schema.pattern)} is not a valid regular expression`); }
+      try { re = compile(schema.pattern); } catch { err(`schema pattern ${show(schema.pattern)} is not a valid regular expression`); }
       if (re && !re.test(value)) err(`must match ${show(schema.pattern)}`);
     }
   }
@@ -114,7 +122,7 @@ function check(schema, value, path, root, errors, depth) {
       if (!Object.prototype.hasOwnProperty.call(value, r)) errors.push({ path: join(path, r), message: "is required" });
     }
     const props = schema.properties && typeof schema.properties === "object" ? schema.properties : {};
-    const patterns = Object.entries(schema.patternProperties || {}).map(([p, s]) => { try { return [new RegExp(p, "u"), s]; } catch { return null; } }).filter(Boolean);
+    const patterns = Object.entries(schema.patternProperties || {}).map(([p, s]) => { try { return [compile(p), s]; } catch { return null; } }).filter(Boolean);
     for (const k of keys) {
       let matched = false;
       if (Object.prototype.hasOwnProperty.call(props, k)) { matched = true; check(props[k], value[k], join(path, k), root, errors, depth + 1); }

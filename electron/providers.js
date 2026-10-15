@@ -150,7 +150,10 @@ async function diagnoseLocal(l, { timeoutMs = 1500, home, env } = {}) {
   let out;
   try {
     const res = await fetch(`${l.url}/models`, { signal: AbortSignal.timeout(timeoutMs) });
-    if (res.ok) return { running: true, listening: true };
+    if (res.ok) {
+      const data = await res.json().catch(() => ({}));
+      return { running: true, listening: true, models: ((data && data.data) || []).map((m) => m && m.id).filter(Boolean) };
+    }
     out = { running: false, listening: true, reason: `${l.name} answers HTTP ${res.status} at ${l.url}` };
   } catch (e) {
     const code = (e.cause && e.cause.code) || e.name || "";
@@ -270,15 +273,6 @@ function suggestChain(ids, { max = MAX_CHAIN, preferLocal = /^(1|true|yes|on)$/i
   return chain;
 }
 
-async function probeLocal(url, timeoutMs = 1500) {
-  try {
-    const res = await fetch(`${url}/models`, { signal: AbortSignal.timeout(timeoutMs) });
-    if (!res.ok) return null;
-    const data = await res.json();
-    return ((data && data.data) || []).map((m) => m && m.id).filter(Boolean);
-  } catch { return null; }
-}
-
 async function status(gw, { detectLocal = true, candidates = localCandidates() } = {}) {
   const [conns, ids] = await Promise.all([connections(gw), modelIds(gw)]);
   const connected = (id) => conns.some((c) => c.provider === id && c.isActive !== false);
@@ -288,13 +282,11 @@ async function status(gw, { detectLocal = true, candidates = localCandidates() }
   }));
   const local = [];
   for (const l of candidates) {
-    const running = detectLocal ? await probeLocal(l.url) : null;
-    const entry = { id: l.id, name: l.name, url: l.url, connected: connected(l.id), running: running != null, runningModels: running || [], models: modelsFor(l, ids).length };
-    // Explain a local server that's connected or showing signs of trouble.
-    if (detectLocal && running == null) {
-      const d = await diagnoseLocal(l);
-      if (entry.connected || d.listening || d.hints.length) Object.assign(entry, { reason: d.reason, hints: d.hints });
-    }
+    // One request per server: running, or — if it's connected or showing
+    // signs of trouble — why not.
+    const d = detectLocal ? await diagnoseLocal(l) : null;
+    const entry = { id: l.id, name: l.name, url: l.url, connected: connected(l.id), running: Boolean(d && d.running), runningModels: (d && d.models) || [], models: modelsFor(l, ids).length };
+    if (d && !d.running && (entry.connected || d.listening || d.hints.length)) Object.assign(entry, { reason: d.reason, hints: d.hints });
     local.push(entry);
   }
   // The OpenCode engine: free Zen models with no account, if OpenCode is
@@ -368,9 +360,9 @@ async function connectLocal(gw, { candidates = localCandidates(), only = null } 
   const skipped = [];
   for (const l of candidates) {
     if (only && l.id !== only) continue;
-    const running = await probeLocal(l.url);
+    const d = await diagnoseLocal(l);
+    const running = d.running ? d.models : null;
     if (!running) {
-      const d = await diagnoseLocal(l);
       skipped.push({ id: l.id, name: l.name, reason: d.reason || "not running", hints: d.hints || [] });
       continue;
     }

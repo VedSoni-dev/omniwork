@@ -144,7 +144,7 @@ let clientCapabilities = {};
 
 // What "always" remembers: a command is approved as that exact command line;
 // any other tool, for the rest of the session.
-const permissionKey = (name, args = {}) => name === "run_command" ? `run_command\u0000${String(args.command || "")}` : name;
+const permissionKey = (name, args = {}) => (name === "run_command" || name === "bash") && args.command != null ? `${name}\u0000${String(args.command)}` : name;
 
 // ── the client's MCP servers ──────────────────────────────────────
 // session/new hands over the MCP servers the client wants the agent to use.
@@ -349,7 +349,8 @@ function toCompletion(sess) {
   const settings = completionSettings({ model: sess.agent.isEngine ? undefined : sess.agent.model });
   persist(sess);
   try { sess.agent.abort(); } catch {}
-  Object.assign(sess, { kind: "completion", mode: COMPLETION.id, agent: null, completion: settings, abort: null });
+  try { sess.mcp?.stopAll(); } catch {} // nothing can call them any more
+  Object.assign(sess, { kind: "completion", mode: COMPLETION.id, agent: null, mcp: null, completion: settings, abort: null });
 }
 
 async function runCompletion(sess, params) {
@@ -566,6 +567,13 @@ async function runTurn(sess, blocks) {
           break;
 
         case "tool_call": {
+          // Already announced for a permission request: update that call.
+          const prior = tools.get(p.id);
+          if (prior && prior.placeholder && !prior.done) {
+            tools.set(p.id, { ...prior, name: p.name, args: p.args, placeholder: false });
+            up({ sessionUpdate: "tool_call_update", toolCallId: prior.acpId, title: toolTitle(p.name, p.args), kind: TOOL_KIND[p.name] || "other", rawInput: p.args });
+            break;
+          }
           const acpId = `t${++toolSeq}`;
           const diff = diffFor(sess.cwd, p.name, p.args);
           tools.set(p.id, { acpId, name: p.name, args: p.args, diff });
@@ -595,6 +603,7 @@ async function runTurn(sess, blocks) {
         case "tool_result": {
           const t = tools.get(p.id);
           if (!t) break;
+          t.done = true;
           const out = String(p.result ?? "");
           const failed = /^(Error in |Failed to |Unknown tool:|❌ Denied|⏸ Plan mode|Search failed|Browse failed|Install failed)/.test(out);
           up({
@@ -630,7 +639,7 @@ async function runTurn(sess, blocks) {
           } else if (p.kind === "tool_result" && p.payload) {
             // Closes the tool call opened when this subagent's tool asked permission.
             const t = tools.get(p.payload.id);
-            if (t && t.sub) up({ sessionUpdate: "tool_call_update", toolCallId: t.acpId, status: p.payload.ok === false ? "failed" : "completed" });
+            if (t && t.sub && !t.done) { t.done = true; up({ sessionUpdate: "tool_call_update", toolCallId: t.acpId, status: p.payload.ok === false ? "failed" : "completed" }); }
           }
           break;
         }
@@ -668,12 +677,15 @@ async function runTurn(sess, blocks) {
     if (sess.rejected.has(key)) return false;
     if (sess.allowed.has(key)) return true;
     let t = tools.get(callId);
-    if (!t || t.name !== name) {
-      // A subagent's tool call: the client hasn't been told about it yet, and
-      // a permission request must name a tool call it has seen.
-      t = { acpId: `t${++toolSeq}`, name, args, sub: true };
+    if (!t || t.name !== name || t.done) {
+      // A tool call the client hasn't been told about yet — a subagent's, or
+      // the engine asking before it reports the call — and a permission
+      // request must name a tool call the client has seen. The engine's own
+      // tool_call, arriving later with this id, reuses it.
+      const sub = !sess.agent.isEngine;
+      t = { acpId: `t${++toolSeq}`, name, args, sub, placeholder: true };
       tools.set(callId, t);
-      up({ sessionUpdate: "tool_call", toolCallId: t.acpId, title: `subagent: ${toolTitle(name, args)}`, kind: TOOL_KIND[name] || "other", status: "pending", rawInput: args });
+      up({ sessionUpdate: "tool_call", toolCallId: t.acpId, title: `${sub ? "subagent: " : ""}${toolTitle(name, args)}`, kind: TOOL_KIND[name] || "other", status: "pending", rawInput: args });
     }
     const what = name === "run_command" ? "this command" : name;
     const asked = callClient("session/request_permission", {
@@ -706,7 +718,7 @@ async function runTurn(sess, blocks) {
     try { res = await settled; }
     finally { sess.pendingPermissions.delete(deny); }
     const verdict = (ok) => {
-      if (t.sub) up({ sessionUpdate: "tool_call_update", toolCallId: t.acpId, status: ok ? "in_progress" : "failed" });
+      if (t.placeholder) up({ sessionUpdate: "tool_call_update", toolCallId: t.acpId, status: ok ? "in_progress" : "failed" });
       return ok;
     };
     if (!res) return verdict(false);
@@ -814,12 +826,16 @@ const handlers = {
       return { sessionId: id, modes: modesFor(sess), configOptions: await configOptionsFor(sess), _meta: sessionMeta(sess) };
     }
     const strict = ow.honorClientCapabilities === true || /^(1|true|yes|on)$/i.test(process.env.OMNIWORK_ACP_STRICT_CAPABILITIES || "");
-    const sess = await buildSession({
-      id, cwd, mode,
-      model: ow.model ?? meta.model, fallbackModels: ow.fallbackModels ?? meta.fallbackModels ?? meta.fallback_models,
-      mcp: sessionMcp(params.mcpServers), deniedTools: deniedByCapabilities(strict),
-      projectFiles: typeof ow.projectFiles === "boolean" ? ow.projectFiles : undefined,
-    });
+    const mcp = sessionMcp(params.mcpServers);
+    let sess;
+    try {
+      sess = await buildSession({
+        id, cwd, mode,
+        model: ow.model ?? meta.model, fallbackModels: ow.fallbackModels ?? meta.fallbackModels ?? meta.fallback_models,
+        mcp, deniedTools: deniedByCapabilities(strict),
+        projectFiles: typeof ow.projectFiles === "boolean" ? ow.projectFiles : undefined,
+      });
+    } catch (e) { mcp?.stopAll(); throw e; }
     persist(sess);
     setTimeout(() => pushCommands(sess), 0); // after we've returned the sessionId
     return {
@@ -840,11 +856,13 @@ const handlers = {
       let saved = null;
       try { saved = JSON.parse(fs.readFileSync(file, "utf8")); } catch {}
       if (!saved) throw new RpcError(-32602, `unknown session: ${id}`);
-      sess = await buildSession({
-        id, cwd: cwd || checkCwd(saved.cwd), mode: saved.mode, messages: saved.messages,
-        model: saved.model, fallbackModels: saved.fallbackModels, engineSession: saved.engineSession,
-        mcp: sessionMcp(params.mcpServers),
-      });
+      const mcp = sessionMcp(params.mcpServers);
+      try {
+        sess = await buildSession({
+          id, cwd: cwd || checkCwd(saved.cwd), mode: saved.mode, messages: saved.messages,
+          model: saved.model, fallbackModels: saved.fallbackModels, engineSession: saved.engineSession, mcp,
+        });
+      } catch (e) { mcp?.stopAll(); throw e; }
     }
     // ACP requires the whole conversation to be replayed as updates *before* we
     // answer the request. (A completion session keeps none.)
