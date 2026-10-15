@@ -161,16 +161,27 @@ function checkCwd(cwd) {
   return cwd;
 }
 
+// Transcripts hold whatever the agent read and ran: owner-only, like the
+// directory, including those an earlier version wrote world-readable.
+let storeTightened = false;
+function secureStore() {
+  fs.mkdirSync(STORE_DIR, { recursive: true, mode: 0o700 });
+  if (storeTightened) return;
+  storeTightened = true;
+  try { fs.chmodSync(STORE_DIR, 0o700); } catch {}
+  for (const f of fs.readdirSync(STORE_DIR)) { try { fs.chmodSync(path.join(STORE_DIR, f), 0o600); } catch {} }
+}
+
 function persist(sess) {
   if (sess.kind === "completion") return; // tool-free sessions leave no transcript
   try {
-    fs.mkdirSync(STORE_DIR, { recursive: true });
+    secureStore();
     fs.writeFileSync(sessionFile(sess.id), JSON.stringify({
       id: sess.id, cwd: sess.cwd, mode: sess.mode,
       model: sess.agent.model, fallbackModels: sess.agent.fallbackModels,
       engineSession: sess.agent.isEngine ? sess.agent.sessionID : null,
       messages: sess.agent.messages.slice(-200),
-    }));
+    }), { mode: 0o600 });
   } catch (e) { log("persist failed:", e.message); }
 }
 

@@ -454,6 +454,7 @@ encrypted, locally). Pick a specific model in the status bar.
 | `OMNIWORK_GATEWAY_PORT` | `20128` | Gateway port |
 | `OMNIWORK_GATEWAY_OPEN` | off | `1` starts the gateway without requiring the per-install key (the old behaviour; kept for one release). The Host/Origin guard still applies |
 | `OMNIWORK_GATEWAY_ALLOWED_HOSTS` | — | Extra comma-separated `Host` names the gateway accepts, e.g. `host.docker.internal` |
+| `OMNIWORK_GATEWAY_LOGS` | off | `on` lets the gateway write full request and reply bodies to its `call_logs/` (owner-only, kept a day). Off, prompts never touch disk |
 | `OMNIWORK_RUNTIME_DIR` | `~/.omniwork` | Where the gateway key and the running gateway's record (`gateway.json`) live |
 | `OMNIWORK_WORKSPACE` | — | Open a folder on launch |
 | `OMNIWORK_MODEL` | `auto` | Pin a model (MCP + ACP servers) |

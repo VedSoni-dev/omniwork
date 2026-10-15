@@ -1,9 +1,10 @@
 "use strict";
 // Lightweight CI check: the bundled gateway boots and serves its model list —
-// and only to OmniWork: it requires the per-install key, and its guard refuses
-// a foreign Host (DNS rebinding) or a cross-site Origin. Does not call an
-// external model (that needs live free-provider availability; see
-// test/smoke.js for the full end-to-end run).
+// and only to OmniWork: it requires the per-install key, its guard refuses a
+// foreign Host (DNS rebinding) or a cross-site Origin, and prompts it routes
+// leave no body in its call logs. Does not call an external model (that needs
+// live free-provider availability; see test/smoke.js for the full end-to-end
+// run) — a local stand-in plays the upstream provider.
 
 const path = require("node:path");
 const fs = require("node:fs");
@@ -47,6 +48,29 @@ async function main() {
     ["a cross-site Origin is refused", (await request(port, { headers: { ...key, Origin: "https://evil.example" } })).status === 403],
     ["the management API refuses a foreign Host", (await request(port, { path: "/api/providers", headers: { Host: `rebind.evil.example:${port}` } })).status === 403],
   ];
+  // A prompt that really goes upstream — to a local stand-in registered as the
+  // Ollama provider — must not leave its body in call_logs.
+  const upstream = http.createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      if (req.url.includes("/models")) return res.end(JSON.stringify({ data: [{ id: "fixture", object: "model" }] }));
+      res.end(JSON.stringify({ id: "x", object: "chat.completion", model: "fixture", choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }));
+    });
+  });
+  await new Promise((r) => upstream.listen(0, "127.0.0.1", r));
+  const providers = require("../electron/providers");
+  await providers.connectLocal(gateway, { candidates: [{ id: "ollama-local", alias: "ollama", name: "Ollama", url: `http://127.0.0.1:${upstream.address().port}/v1` }] });
+  const marker = "PROMPT-BODY-MARKER-" + Date.now();
+  const sent = await fetch(`${gateway.baseUrl}/chat/completions`, { method: "POST", headers: { ...key, "Content-Type": "application/json" }, body: JSON.stringify({ model: "ollama/fixture", messages: [{ role: "user", content: marker }] }) });
+  await new Promise((r) => setTimeout(r, 3000)); // call logs are written by a worker
+  const store = path.join(dataDir, "omniroute");
+  const files = fs.readdirSync(store, { recursive: true }).map((f) => path.join(store, f)).filter((f) => fs.statSync(f).isFile());
+  checks.push(["a prompt routed upstream reaches the provider", sent.ok]);
+  checks.push(["…and its body is not written to disk", !files.some((f) => /call_logs/.test(f) && fs.readFileSync(f, "utf8").includes(marker))]);
+  if (process.platform !== "win32") checks.push(["everything the gateway wrote is owner-only", files.every((f) => (fs.statSync(f).mode & 0o077) === 0)]);
+  upstream.close();
+
   for (const [name, ok] of checks) console.log(`${ok ? "✓" : "✗"} ${name}`);
 
   gateway.stop();

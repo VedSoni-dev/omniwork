@@ -88,7 +88,13 @@ The practical mitigations, in order of effectiveness:
 - OmniRoute's management API (`/api/*`, used by its dashboard) is not behind the key while the
   dashboard has no password: the guard keeps browsers out, but another account on the same machine
   could still reach it. On a shared machine, set a dashboard password in OmniRoute's settings.
-- Provider API keys are stored encrypted by OmniRoute in its local data directory.
+- Provider API keys are stored by OmniRoute in its local data directory (`storage.sqlite`),
+  readable only by your account. OmniWork does not enable OmniRoute's field encryption, so treat
+  that directory — and any copy or backup of it — as holding your keys.
+- The gateway does not write prompts or replies to disk: OmniWork's requests go through a no-log
+  key. OmniRoute still records per-request metadata (model, token counts, status), kept for a day.
+  `OMNIWORK_GATEWAY_LOGS=on` keeps full bodies in `call_logs/` (owner-only, one day). Everything
+  the gateway writes, and ACP transcripts, are owner-only.
 - Prompts and file contents are sent to whichever model provider `auto` routing selects. Free
   providers vary in their data-retention policies — **do not send secrets or proprietary code
   through free-tier models** without checking the provider's terms.

@@ -78,6 +78,10 @@ const updates = (type) => notes.filter((n) => n.method === "session/update" && n
   check("the model defaults to auto", Boolean(modelOpt) && modelOpt.currentValue === "auto" && modelOpt.options.some((o) => o.value === "auto"));
   check("_meta reports the model and its chain", made.result._meta && made.result._meta.omniwork.model === "auto" && Array.isArray(made.result._meta.omniwork.fallbackModels));
 
+  const store = path.join(dataDir, "acp-sessions");
+  const modeOf = (f) => fs.statSync(f).mode & 0o777;
+  check("transcripts are owner-only", process.platform === "win32" || (modeOf(store) === 0o700 && modeOf(path.join(store, `${sid}.json`)) === 0o600));
+
   const relative = await rpc("session/new", { cwd: "not/absolute", mcpServers: [] });
   check("session/new rejects a relative cwd", relative.error && relative.error.code === -32602);
 

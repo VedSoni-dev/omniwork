@@ -228,9 +228,23 @@ async function findRunningGateway({ port = PORT, key = ensureApiKey(), timeoutMs
   const tries = st ? [{ port: st.port, key: st.key }] : [];
   if (!st || st.port !== port || st.key !== key) tries.push({ port, key });
   for (const t of tries) {
-    if ((await probeKey(t.port, t.key, timeoutMs)) === "ok") return { port: t.port, apiKey: t.key, baseUrl: `http://${HOST}:${t.port}/v1` };
+    if ((await probeKey(t.port, t.key, timeoutMs)) === "ok") return { port: t.port, apiKey: t.key, baseUrl: `http://${HOST}:${t.port}/v1`, recorded: Boolean(st && st.port === t.port && st.key === t.key), dataDir: st && st.port === t.port ? st.dataDir : null };
   }
   return null;
+}
+
+// What the gateway wrote before it ran with a private umask — call logs with
+// full prompts, app logs, database backups — made owner-only. Once per process.
+const tightened = new Set();
+function tightenTree(dir, depth = 0) {
+  if (depth === 0) { if (tightened.has(dir)) return; tightened.add(dir); }
+  let entries = [];
+  try { fs.chmodSync(dir, 0o700); entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+  for (const e of entries) {
+    const p = path.join(dir, e.name);
+    if (e.isDirectory() && depth < 6) tightenTree(p, depth + 1);
+    else if (e.isFile()) { try { fs.chmodSync(p, 0o600); } catch {} }
+  }
 }
 
 // The guard (gateway-guard.js) runs inside the gateway's own Node, which can't
@@ -285,6 +299,13 @@ class Gateway {
     if (!found) return false;
     this.#setPort(found.port);
     this.apiKey = found.apiKey;
+    // A gateway no state file vouches for was started by an older OmniWork:
+    // keyless, logging prompts. Say so rather than inherit it silently.
+    if (!found.recorded && !this._warnedLegacy) {
+      this._warnedLegacy = true;
+      this.status("boot", "Using a gateway started by an older OmniWork — it doesn't require a key and may log prompts. Quit OmniWork everywhere and restart to apply current settings.");
+    }
+    if (found.dataDir) tightenTree(found.dataDir);
     return true;
   }
 
@@ -336,9 +357,10 @@ class Gateway {
       throw new Error("omniroute dist/server.js missing: " + serverEntry);
     }
 
-    // OmniRoute keeps its encrypted store + config here. Per-user app data dir.
+    // OmniRoute keeps its store and logs here. Per-user app data dir, owner-only.
     const gwDataDir = path.join(this.dataDir, "omniroute");
     fs.mkdirSync(gwDataDir, { recursive: true });
+    tightenTree(gwDataDir);
 
     // Nobody healthy answered above, so if we also cannot bind the port then
     // something is sitting on it without serving — a gateway wedged by an
@@ -366,8 +388,17 @@ class Gateway {
     // An explicit environment (child-env.js), not the user's shell: the
     // gateway has no use for their tokens, and must not pick up settings like
     // CORS_ALLOW_ALL meant for something else.
+    // Logging: OmniRoute writes every request's full prompt and reply to
+    // call_logs/ unless the key it came through is marked no-log — so the
+    // per-install key is. OMNIWORK_GATEWAY_LOGS=on keeps the bodies (owner-
+    // only, a day's retention). The defaults come first so a passed-through
+    // variable can tune them; the settings after gatewayEnv() can't be.
+    const keepBodies = /^(1|true|yes|on)$/i.test(process.env.OMNIWORK_GATEWAY_LOGS || "");
     const env = {
+      APP_LOG_TO_FILE: "false",
+      CALL_LOG_RETENTION_DAYS: "1",
       ...gatewayEnv(),
+      ...(keepBodies ? {} : { NO_LOG_API_KEY_IDS: "env-key" }),
       NODE_ENV: "production",
       PORT: String(this.port), // may differ from PORT if the well-known one was blocked
       HOSTNAME: HOST, // bind loopback only

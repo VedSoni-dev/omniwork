@@ -3,6 +3,9 @@
 // sidecar.js, before OmniRoute's server starts. Plain Node, no dependencies:
 // packaged builds copy it out of app.asar, where Node can't read it.
 //
+// Everything the gateway writes — its database, call logs, backups — is
+// owner-only: OmniRoute sets no file modes of its own.
+//
 // OmniRoute has no Host-header allowlist and decides "local" from the bind
 // address, so a page the user has open could reach it by DNS rebinding (a
 // hostname that resolves to 127.0.0.1), and any site could send it
@@ -13,6 +16,11 @@
 //   - an Origin other than the gateway's own (the dashboard's same-origin
 //     calls still pass; a cross-site page's do not).
 const http = require("node:http");
+const { isMainThread } = require("node:worker_threads");
+
+// Process-wide; workers (OmniRoute writes call logs from one) inherit this
+// preload too, and can't call umask.
+if (isMainThread) process.umask(0o077);
 
 const port = Number(process.env.PORT);
 const names = ["127.0.0.1", "localhost", "[::1]",

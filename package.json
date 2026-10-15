@@ -48,6 +48,7 @@
     "test:json-schema": "node test/json-schema.js",
     "test:acp-completion": "node test/acp-completion.js",
     "test:gateway-auth": "node test/gateway-auth.js",
+    "test:logging": "node test/logging.js",
     "mcp": "node electron/mcp-server.js",
     "acp": "node electron/acp-server.js",
     "test:regression": "node scripts/test-regression.js",
