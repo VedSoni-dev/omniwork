@@ -32,6 +32,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Required deterministic regression jobs for CI and release builds.
 
 ### Fixed
+- A gateway 502 or 504 — what an `auto/*` pool returns when every member failed or timed out — now counts as "no model answered": the OpenCode engine fallback runs (desktop excepted until it shares the check), ACP adds the how-to-connect hint, and a failed streaming request against a pool (502/503/504) is no longer retried without streaming, which walked the whole failing pool twice.
 - Failed writes and intermediate commentary no longer masquerade as completed delegations. Summary-only PASS/FAIL grading is replaced by explicit check results or an unverified label.
 - Workers inherit parent permissions, memory, and skills. More than eight tasks are queued rather than silently dropped.
 - Rate-limit cooldowns survive subsequent steps, honor Retry-After, and avoid duplicate streaming retries. Failed exact edits trigger escalation.

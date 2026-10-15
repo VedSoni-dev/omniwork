@@ -662,7 +662,7 @@ async function runTurn(sess, blocks) {
   }
 
   if (failure) {
-    if (/All models failed|Gateway (401|403|429|503)/.test(failure)) failure += "\n\n" + noModelHint();
+    if (isNoModelFailure(failure) || /Gateway 429/.test(failure)) failure += "\n\n" + noModelHint();
     throw new RpcError(-32000, failure);
   }
   return { stopReason };

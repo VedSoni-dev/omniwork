@@ -13,7 +13,7 @@ const { Gateway, findRunningGateway } = require("./sidecar");
 const { ProjectManager } = require("./projects");
 const { BrowserManager } = require("./browser");
 const providers = require("./providers");
-const { Agent } = require("./agent");
+const { Agent, isNoModelFailure } = require("./agent");
 const opencode = require("./opencode-engine");
 
 // Same data dir as the desktop app — headless agents share its installed skills,
@@ -171,11 +171,6 @@ function makeAgent(opts) {
   return opencode.isEngineModel(opts.model) ? new opencode.OpenCodeAgent(opts) : new Agent(opts);
 }
 
-// A turn that ended because no model answered — as opposed to a tool error,
-// a cancel, or a model that answered badly.
-// A rate limit (429) is deliberately not one: it clears by itself, and it
-// must not silently move a pinned paid model's conversation to a free tier.
-const isNoModelFailure = (msg) => /All models failed|Gateway (401|403|404|503)|No choices returned|empty response/.test(String(msg || ""));
 
 // The engine's best free model, when OpenCode is installed; null otherwise.
 async function engineFallbackModel() {

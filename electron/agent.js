@@ -138,6 +138,13 @@ const isModelFailure = (err) => {
   return (s === 400 || s === 422) && MODEL_WORDS.test(String(err.message || ""));
 };
 const failureSignature = (err) => `${err.status || 0}:${String(err.message || "").replace(/^[^:]*: /, "").slice(0, 160)}`;
+
+// A turn that ended because no model answered — as opposed to a tool error,
+// a cancel, or a model that answered badly. 502 and 504 are what a gateway
+// pool returns when every member failed or timed out. A rate limit (429) is
+// deliberately not one: it clears by itself, and it must not silently move a
+// pinned paid model's conversation to a free tier.
+const isNoModelFailure = (msg) => /All models failed|Gateway (401|403|404|502|503|504)\b|No choices returned|empty response/.test(String(msg || ""));
 const tuning = require("./tuning");
 
 class Agent {
@@ -417,9 +424,11 @@ class Agent {
     try { streamed = await this.#requestModel(true, model); }
     catch (err) {
       // Auth and unknown-model rejections don't depend on streaming — don't pay
-      // a second request to learn the same thing. Anything else (a provider that
-      // rejects stream_options, a flaky 5xx) still gets the non-streaming retry.
-      if (this.aborted || [401, 403, 404, 429].includes(err.status)) throw err;
+      // a second request to learn the same thing. Nor does a pool that already
+      // tried every member (502/503/504): retrying would walk it twice. Anything
+      // else (a provider that rejects stream_options) still gets the
+      // non-streaming retry.
+      if (this.aborted || [401, 403, 404, 429, 502, 503, 504].includes(err.status)) throw err;
       streamed = null;
     }
     if (hasContent(streamed)) return streamed;
@@ -728,4 +737,4 @@ class Agent {
   }
 }
 
-module.exports = { Agent, approvalDecision };
+module.exports = { Agent, approvalDecision, isNoModelFailure };
