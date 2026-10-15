@@ -9,14 +9,12 @@
 const os = require("node:os");
 const fs = require("node:fs");
 const path = require("node:path");
-const { Gateway, PORT } = require("./sidecar");
+const { Gateway, findRunningGateway } = require("./sidecar");
 const { ProjectManager } = require("./projects");
 const { BrowserManager } = require("./browser");
 const providers = require("./providers");
-const { Agent } = require("./agent");
+const { Agent, isNoModelFailure } = require("./agent");
 const opencode = require("./opencode-engine");
-
-const HOST = "127.0.0.1";
 
 // Same data dir as the desktop app — headless agents share its installed skills,
 // saved memory, and project registry.
@@ -58,6 +56,26 @@ function externalGateway() {
 let gatewayInfo = null;
 let booting = null;
 
+// Headless servers used to keep their own gateway store in ~/.omniwork, so
+// which provider list was live depended on whether the app or a headless
+// server had started the gateway. One store now; the first time a headless
+// server starts the gateway, an old headless store moves over if the shared
+// one has none. Nothing is deleted: the old files stay where they were.
+function adoptLegacyStore(from, to) {
+  const db = "storage.sqlite";
+  if (path.resolve(from) === path.resolve(to)) return null;
+  if (!fs.existsSync(path.join(from, db))) return null;
+  if (fs.existsSync(path.join(to, db))) {
+    return `another gateway store exists at ${from}; using ${to} (the desktop app's). Connect providers again here if they're missing.`;
+  }
+  fs.mkdirSync(to, { recursive: true, mode: 0o700 });
+  for (const f of [db, db + "-wal", db + "-shm"]) {
+    if (fs.existsSync(path.join(from, f))) { fs.copyFileSync(path.join(from, f), path.join(to, f)); fs.chmodSync(path.join(to, f), 0o600); }
+  }
+  try { fs.writeFileSync(path.join(from, "MOVED.txt"), `This gateway store was copied to ${to} on ${new Date().toISOString()}; OmniWork no longer uses this copy.\n`); } catch {}
+  return `copied the gateway store from ${from} to ${to}`;
+}
+
 // Booting OmniRoute cold takes tens of seconds (Next.js standalone server), and
 // that cost used to land on the caller's first request. Kick it off as soon as a
 // client connects so it overlaps with the host reading our tool list and
@@ -74,19 +92,21 @@ async function ensureGateway(log = () => {}) {
   if (booting) return booting;
 
   booting = (async () => {
-    // Reuse a gateway already running (e.g. the desktop app) before spawning one.
-    try {
-      const res = await fetch(`http://${HOST}:${PORT}/v1/models`, { signal: AbortSignal.timeout(2500) });
-      if (res.ok || res.status === 401) {
-        gatewayInfo = { baseUrl: `http://${HOST}:${PORT}/v1`, apiKey: "omniwork" };
-        log("reusing running gateway");
-        return gatewayInfo;
-      }
-    } catch {}
+    // Reuse a gateway already running (e.g. the desktop app) before spawning
+    // one — at the port and with the key the shared state file names.
+    const running = await findRunningGateway({ timeoutMs: 2500 });
+    if (running) {
+      gatewayInfo = { baseUrl: running.baseUrl, apiKey: running.apiKey };
+      log("reusing running gateway on port", running.port);
+      return gatewayInfo;
+    }
     log("starting bundled gateway…");
-    const dataDir = path.join(os.homedir(), ".omniwork");
-    fs.mkdirSync(dataDir, { recursive: true });
-    const gw = new Gateway({ dataDir, onStatus: (s) => log("gateway", s.state, s.detail || "") });
+    // The desktop app's data dir, so a provider connected in the app is
+    // there for MCP, ACP and the CLI too (and the other way round).
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    const moved = adoptLegacyStore(path.join(os.homedir(), ".omniwork", "omniroute"), path.join(DATA_DIR, "omniroute"));
+    if (moved) log(moved);
+    const gw = new Gateway({ dataDir: DATA_DIR, onStatus: (s) => log("gateway", s.state, s.detail || "") });
     await gw.start();
     gatewayInfo = { baseUrl: gw.baseUrl, apiKey: gw.apiKey };
     return gatewayInfo;
@@ -155,6 +175,13 @@ async function resolveModelsLive(gw, opts = {}) {
   await listModels(gw); // Pinned models need context metadata too.
   const decided = opts.fallbackModels != null || process.env.OMNIWORK_MODEL_FALLBACKS != null;
   if (!decided) r.fallbackModels = (await defaultFallbacks(gw)).filter((m) => m !== r.model);
+  // OMNIWORK_PREFER_LOCAL=1: when nothing more specific than `auto` was asked
+  // for, a connected local model goes first, with the cloud chain behind it.
+  const isLocal = (id) => providers.LOCAL.some((l) => id.startsWith(l.alias + "/"));
+  if (!decided && r.model === "auto" && /^(1|true|yes|on)$/i.test(process.env.OMNIWORK_PREFER_LOCAL || "")) {
+    const local = r.fallbackModels.find(isLocal);
+    if (local) { r.fallbackModels = [...r.fallbackModels.filter((m) => m !== local), "auto"]; r.model = local; }
+  }
   return { ...r, modelContexts: modelCache.contexts, contextTokens: modelCache.contexts?.[r.model] };
 }
 
@@ -174,11 +201,6 @@ function makeAgent(opts) {
   return opencode.isEngineModel(opts.model) ? new opencode.OpenCodeAgent(opts) : new Agent(opts);
 }
 
-// A turn that ended because no model answered — as opposed to a tool error,
-// a cancel, or a model that answered badly.
-// A rate limit (429) is deliberately not one: it clears by itself, and it
-// must not silently move a pinned paid model's conversation to a free tier.
-const isNoModelFailure = (msg) => /All models failed|Gateway (401|403|404|503)|No choices returned|empty response/.test(String(msg || ""));
 
 // The engine's best free model, when OpenCode is installed; null otherwise.
 async function engineFallbackModel() {
@@ -194,7 +216,7 @@ async function engineFallbackModel() {
 
 
 module.exports = {
-  DATA_DIR, SKILLS_DIR, GLOBAL_MEMORY_DIR,
+  DATA_DIR, SKILLS_DIR, GLOBAL_MEMORY_DIR, adoptLegacyStore,
   browser, projects, agentEnv,
   ensureGateway, prewarmGateway,
   resolveModels, resolveModelsLive, listModels, defaultFallbacks, invalidateModels, noModelHint, providers,

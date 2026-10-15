@@ -607,7 +607,8 @@ class OpenCodeAgent {
       else if (this.approver) {
         const name = p.permission || "tool";
         const args = { ...(p.metadata || {}), patterns: p.patterns };
-        response = (await this.approver(p.id, name, args, null)) ? "once" : "reject";
+        // The tool call's own id, so a client can match the prompt to it.
+        response = (await this.approver((p.tool && p.tool.callID) || p.id, name, args, null)) ? "once" : "reject";
       }
     } catch {}
     await this.engine.replyPermission(sid, p.id, response, this.workspace).catch(() => {});

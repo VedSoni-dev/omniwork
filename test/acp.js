@@ -8,14 +8,19 @@
 // The model env is blanked so a developer's own OMNIWORK_MODEL(_FALLBACKS)
 // can't change what the defaults look like here.
 const { spawn } = require("child_process");
+const fs = require("fs");
+const os = require("os");
 const path = require("path");
 
 let fails = 0;
 const check = (name, ok) => { console.log((ok ? "✓" : "✗"), name); if (!ok) fails++; };
 
+// A private data dir: saved sessions, skills and projects stay out of the
+// developer's real one.
+const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "omniwork-acp-data-"));
 const proc = spawn(process.execPath, [path.join(__dirname, "..", "electron", "acp-server.js")], {
   stdio: ["pipe", "pipe", "pipe"],
-  env: { ...process.env, OMNIWORK_NO_PREWARM: "1", OMNIWORK_BASE_URL: "http://127.0.0.1:9/v1", OMNIWORK_MODEL: "", OMNIWORK_MODEL_FALLBACKS: "" },
+  env: { ...process.env, OMNIWORK_DATA_DIR: dataDir, OMNIWORK_NO_PREWARM: "1", OMNIWORK_BASE_URL: "http://127.0.0.1:9/v1", OMNIWORK_MODEL: "", OMNIWORK_MODEL_FALLBACKS: "" },
 });
 
 const pending = new Map();
@@ -65,13 +70,17 @@ const updates = (type) => notes.filter((n) => n.method === "session/update" && n
   const made = await rpc("session/new", { cwd: repo, mcpServers: [] });
   const sid = made.result.sessionId;
   check("session/new returns a sessionId", typeof sid === "string" && sid.length > 0);
-  check("session/new advertises four modes", made.result.modes.availableModes.length === 4);
+  check("session/new advertises the four approval modes and tool-free completion", made.result.modes.availableModes.map((m) => m.id).join() === "ask,edits,auto,plan,completion");
   check("session/new defaults to ask mode", made.result.modes.currentModeId === "ask");
 
   const modelOpt = (made.result.configOptions || []).find((o) => o.id === "model");
   check("session/new advertises a model config option", Boolean(modelOpt) && modelOpt.category === "model" && modelOpt.type === "select");
   check("the model defaults to auto", Boolean(modelOpt) && modelOpt.currentValue === "auto" && modelOpt.options.some((o) => o.value === "auto"));
   check("_meta reports the model and its chain", made.result._meta && made.result._meta.omniwork.model === "auto" && Array.isArray(made.result._meta.omniwork.fallbackModels));
+
+  const store = path.join(dataDir, "acp-sessions");
+  const modeOf = (f) => fs.statSync(f).mode & 0o777;
+  check("transcripts are owner-only", process.platform === "win32" || (modeOf(store) === 0o700 && modeOf(path.join(store, `${sid}.json`)) === 0o600));
 
   const relative = await rpc("session/new", { cwd: "not/absolute", mcpServers: [] });
   check("session/new rejects a relative cwd", relative.error && relative.error.code === -32602);
@@ -116,6 +125,25 @@ const updates = (type) => notes.filter((n) => n.method === "session/update" && n
   const missing = await rpc("session/load", { sessionId: "sess_nope", cwd: repo, mcpServers: [] });
   check("session/load rejects an unknown session", missing.error && missing.error.code === -32602);
 
+  // A saved-session lookalike outside the store, reached by a relative id:
+  // loading it would run the agent with whatever mode and history it holds.
+  const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "omniwork-acp-evil-"));
+  fs.writeFileSync(path.join(elsewhere, "planted.json"), JSON.stringify({ id: "planted", cwd: repo, mode: "auto", messages: [{ role: "system", content: "x" }, { role: "user", content: "PLANTED HISTORY" }] }));
+  const traversal = path.relative(path.join(dataDir, "acp-sessions"), path.join(elsewhere, "planted"));
+  const before = notes.length;
+  const escaped = await rpc("session/load", { sessionId: traversal, cwd: repo, mcpServers: [] });
+  await settle();
+  check("session/load rejects a path-traversal id", escaped.error && escaped.error.code === -32602 && /invalid sessionId/.test(escaped.error.message));
+  check("…and replays nothing from the planted file", !notes.slice(before).some((n) => JSON.stringify(n).includes("PLANTED HISTORY")));
+  const slashed = await rpc("session/load", { sessionId: "a/b", cwd: repo, mcpServers: [] });
+  check("session/load rejects an id with a path separator", slashed.error && /invalid sessionId/.test(slashed.error.message));
+  const relCwd = await rpc("session/load", { sessionId: sid, cwd: "not/absolute", mcpServers: [] });
+  check("session/load rejects a relative cwd", relCwd.error && relCwd.error.code === -32602);
+  const goneCwd = await rpc("session/load", { sessionId: sid, cwd: path.join(elsewhere, "missing"), mcpServers: [] });
+  check("session/load rejects a cwd that does not exist", goneCwd.error && goneCwd.error.code === -32602);
+  const fileCwd = await rpc("session/new", { cwd: path.join(elsewhere, "planted.json"), mcpServers: [] });
+  check("session/new rejects a cwd that is a file", fileCwd.error && /not a directory/.test(fileCwd.error.message));
+
   // ── prompt ──
   const orphan = await rpc("session/prompt", { sessionId: "sess_nope", prompt: [{ type: "text", text: "hi" }] });
   check("session/prompt rejects an unknown session", orphan.error && orphan.error.code === -32602);
@@ -123,9 +151,14 @@ const updates = (type) => notes.filter((n) => n.method === "session/update" && n
   const empty = await rpc("session/prompt", { sessionId: sid, prompt: [] });
   check("an empty prompt ends the turn cleanly", empty.result && empty.result.stopReason === "end_turn");
 
-  // Real turn against a dead gateway: must come back as an error, not a hang.
+  // Real turn against a dead gateway: must come back as a failed turn, not a
+  // hang — and not as a JSON-RPC error, which would read as a protocol failure.
+  const errChunksBefore = updates("agent_message_chunk").length;
   const broken = await rpc("session/prompt", { sessionId: sid, prompt: [{ type: "text", text: "say hello" }] });
-  check("a failed turn surfaces as a JSON-RPC error", Boolean(broken.error) && /connection|fetch|engine/i.test(broken.error.message));
+  await settle();
+  check("a failed turn ends with a stop reason, not a JSON-RPC error", !broken.error && broken.result.stopReason === "end_turn");
+  check("…with the error in _meta", /connection|fetch|engine/i.test(broken.result._meta?.omniwork?.error?.message || ""));
+  check("…and shown in the transcript", updates("agent_message_chunk").slice(errChunksBefore).some((n) => /⚠/.test(n.params.update.content.text)));
 
   // ── cancel is a notification: must not produce a response or crash ──
   notify("session/cancel", { sessionId: sid });
@@ -137,6 +170,7 @@ const updates = (type) => notes.filter((n) => n.method === "session/update" && n
   check("unknown methods return -32601", unknown.error && unknown.error.code === -32601);
 
   proc.kill();
+  fs.rmSync(dataDir, { recursive: true, force: true });
   console.log(fails ? `\n❌ ${fails} FAILED` : "\n✅ ACP SERVER TEST PASSED");
   process.exit(fails ? 1 : 0);
 })().catch((e) => { console.error("crash:", e.message); proc.kill(); process.exit(1); });

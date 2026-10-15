@@ -140,7 +140,7 @@ function apDiff(preview) {
 }
 function addApproval(callId, name, args, preview) {
   stopThinking(); endStream();
-  const label = { run_command: "run a command", write_file: "write a file", edit_file: "edit a file" }[name] || (name.startsWith("mcp__") ? "call " + name.slice(5).replace("__", " · ") : name);
+  const label = { run_command: "run a command", write_file: "write a file", edit_file: "edit a file", web_fetch: "fetch a URL", web_search: "search the web", browse_page: "open a web page", open_url: "open a URL in your browser", save_memory: "save a memory", save_skill: "save a skill", install_skills: "install skills", spawn_subagents: "start subagents" }[name] || (name.startsWith("mcp__") ? "call " + name.slice(5).replace("__", " · ") : name);
   let detailHtml;
   if (preview && preview.kind === "diff") detailHtml = `<div class="ap-path dim">${esc(preview.path || "")}</div>${apDiff(preview)}`;
   else { const detail = name === "run_command" ? args.command : (args.path || args.url || JSON.stringify(args).slice(0, 200)); detailHtml = esc(String(detail || "")); }

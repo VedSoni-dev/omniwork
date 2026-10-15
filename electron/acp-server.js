@@ -7,7 +7,8 @@
 // drive: OpenClaw, acpx, Zed, Neovim — the harness owns the UI, OmniWork does
 // the work on free models via the bundled OmniRoute gateway.
 //
-// Wire it into acpx (~/.acpx/config.json or <repo>/.acpxrc.json):
+// Wire it into acpx (~/.acpx/config.json or <repo>/.acpxrc.json) — pin a
+// version you've reviewed (omniwork-acp@<version>) to upgrade deliberately:
 //   { "agents": { "omniwork": { "argv": ["npx", "-y", "omniwork-acp"] } } }
 // …or OpenClaw (openclaw.json):
 //   plugins.entries.acpx.config.agents.omniwork = { command: "npx", args: ["-y","omniwork-acp"] }
@@ -23,6 +24,9 @@ const path = require("node:path");
 const { ensureShellPath } = require("./shell-path");
 const { agentEnv, ensureGateway, prewarmGateway, resolveModels, resolveModelsLive, listModels, invalidateModels, noModelHint, providers, makeAgent, isNoModelFailure, engineFallbackModel, opencode, DATA_DIR, SKILLS_DIR } = require("./headless");
 const skillsApi = require("./skills");
+const { previewEdit } = require("./tools");
+const { complete, CompletionError } = require("./complete");
+const { MCPManager } = require("./mcp");
 
 ensureShellPath(); // ACP clients can launch us with a minimal environment too
 
@@ -34,15 +38,21 @@ const STORE_DIR = path.join(DATA_DIR, "acp-sessions");
 // OmniWork's approval modes, as ACP session modes. `ask` is the default: the
 // whole point of ACP is that the client owns the permission boundary, so we let
 // it prompt rather than silently running commands in someone's editor.
-const MODES = [
+const AGENT_MODES = [
   { id: "ask", name: "Ask", description: "Ask before file edits and commands." },
   { id: "edits", name: "Accept edits", description: "Auto-accept file edits; ask before commands." },
   { id: "auto", name: "Auto", description: "Run everything without asking." },
   { id: "plan", name: "Plan", description: "Explore and design only — no changes." },
 ];
+// Not an approval mode: a session with no agent at all (see completion
+// sessions below). Entering it is one-way.
+const COMPLETION = { id: "completion", name: "Completion (tool-free)", description: "One request in, one completion out: no tools, no workspace, no memory or skills, and the system prompt is used verbatim. Nothing is written to disk. A session can't leave this mode." };
+const MODES = [...AGENT_MODES, COMPLETION];
+const isAgentMode = (id) => AGENT_MODES.some((m) => m.id === id);
 const DEFAULT_MODE = MODES.some((m) => m.id === process.env.OMNIWORK_ACP_MODE)
   ? process.env.OMNIWORK_ACP_MODE
   : "ask";
+const DEFAULT_AGENT_MODE = isAgentMode(DEFAULT_MODE) ? DEFAULT_MODE : "ask";
 
 const AUTH_METHODS = [
   { id: "openrouter", name: "Connect OpenRouter (free models)", description: "Opens your browser to create a free OpenRouter key — 20 free models, 18 with tool calling. No key to paste." },
@@ -81,18 +91,11 @@ function toolTitle(name, args = {}) {
 // ACP renders `diff` tool content natively, so edits show up as real diffs in the
 // client instead of "Wrote 412 bytes". Computed at tool_call time — before the
 // write lands — because that's the only moment the old content still exists.
+// previewEdit applies the tools' confinement: a path the write would refuse
+// (a symlink out of the workspace) never has its contents sent to the client.
 function diffFor(workspace, name, args = {}) {
-  if (name !== "write_file" && name !== "edit_file") return null;
-  try {
-    if (!args.path) return null;
-    const abs = path.resolve(workspace, args.path);
-    const old = fs.existsSync(abs) ? fs.readFileSync(abs, "utf8") : null;
-    if (name === "write_file") return [{ type: "diff", path: abs, oldText: old, newText: String(args.content ?? "") }];
-    if (old != null && args.old_string != null && old.includes(args.old_string)) {
-      return [{ type: "diff", path: abs, oldText: old, newText: old.replace(args.old_string, args.new_string ?? "") }];
-    }
-  } catch {}
-  return null;
+  const p = previewEdit(workspace, name, args);
+  return p ? [{ type: "diff", path: p.path, oldText: p.oldText, newText: p.newText }] : null;
 }
 
 function locationsFor(workspace, args = {}) {
@@ -136,34 +139,115 @@ class RpcError extends Error {
   constructor(code, message) { super(message); this.code = code; }
 }
 
+// What the client said it can do, from `initialize`.
+let clientCapabilities = {};
+
+// What "always" remembers: a command is approved as that exact command line;
+// any other tool, for the rest of the session.
+const permissionKey = (name, args = {}) => (name === "run_command" || name === "bash") && args.command != null ? `${name}\u0000${String(args.command)}` : name;
+
+// ── the client's MCP servers ──────────────────────────────────────
+// session/new hands over the MCP servers the client wants the agent to use.
+// This agent speaks stdio MCP (http/sse aren't advertised, so they're refused
+// rather than silently dropped). They start in the background — first runs
+// may download a package — and their tools join the agent's as they connect.
+function sessionMcp(list) {
+  if (list == null) return null;
+  if (!Array.isArray(list)) throw new RpcError(-32602, "mcpServers must be an array");
+  if (!list.length) return null;
+  const confs = {};
+  for (const sv of list) {
+    if (!sv || typeof sv !== "object") throw new RpcError(-32602, "invalid MCP server entry");
+    if (sv.type && sv.type !== "stdio" || sv.url) throw new RpcError(-32602, `MCP server "${sv.name}": only stdio servers are supported (mcpCapabilities http/sse are false)`);
+    if (typeof sv.command !== "string" || !sv.command) throw new RpcError(-32602, `MCP server "${sv.name}": command is required`);
+    const name = String(sv.name || "mcp").replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 40) || "mcp";
+    if (confs[name]) throw new RpcError(-32602, `duplicate MCP server name: ${name}`);
+    const env = {};
+    for (const e of Array.isArray(sv.env) ? sv.env : []) if (e && typeof e.name === "string") env[e.name] = String(e.value ?? "");
+    confs[name] = { command: sv.command, args: Array.isArray(sv.args) ? sv.args.map(String) : [], env };
+  }
+  const mcp = MCPManager.ephemeral(confs);
+  for (const server of mcp.servers.values()) server.start().catch(() => {});
+  return mcp;
+}
+
+// Tools for capabilities the client didn't declare, when it asks for that
+// (`_meta.omniwork.honorClientCapabilities`, or OMNIWORK_ACP_STRICT_CAPABILITIES=1).
+// The default runs OmniWork's own tools whatever the client declares —
+// clientCapabilities say what the client can do for the agent, and most
+// clients declare none — so strict mode is how a client that hosts no
+// filesystem or terminal keeps the agent from touching them.
+function deniedByCapabilities(strict) {
+  if (!strict) return null;
+  const fsCaps = clientCapabilities.fs || {};
+  const denied = [];
+  if (!fsCaps.readTextFile) denied.push("read_file", "list_dir");
+  if (!fsCaps.writeTextFile) denied.push("write_file", "edit_file");
+  if (!clientCapabilities.terminal) denied.push("run_command");
+  return denied;
+}
+
 // ── sessions ──────────────────────────────────────────────────────
 const sessions = new Map();
 let sessionSeq = 0;
 let msgReplaySeq = 0;
 
-function sessionFile(id) { return path.join(STORE_DIR, id + ".json"); }
+// Session ids name files under STORE_DIR, and session/load takes them from the
+// client: only the shape this server mints is accepted, so an id can never
+// carry a path ("../../somewhere/else") out of the store.
+const SESSION_ID = /^[A-Za-z0-9_-]{1,64}$/;
+function sessionFile(id) {
+  if (typeof id !== "string" || !SESSION_ID.test(id)) throw new RpcError(-32602, "invalid sessionId");
+  return path.join(STORE_DIR, id + ".json");
+}
+
+// A working directory from the client: absolute, and an existing directory.
+function checkCwd(cwd) {
+  if (typeof cwd !== "string" || !path.isAbsolute(cwd)) throw new RpcError(-32602, "cwd must be an absolute path");
+  let stat = null;
+  try { stat = fs.statSync(cwd); } catch {}
+  if (!stat) throw new RpcError(-32602, `cwd does not exist: ${cwd}`);
+  if (!stat.isDirectory()) throw new RpcError(-32602, `cwd is not a directory: ${cwd}`);
+  return cwd;
+}
+
+// Transcripts hold whatever the agent read and ran: owner-only, like the
+// directory, including those an earlier version wrote world-readable.
+let storeTightened = false;
+function secureStore() {
+  fs.mkdirSync(STORE_DIR, { recursive: true, mode: 0o700 });
+  if (storeTightened) return;
+  storeTightened = true;
+  try { fs.chmodSync(STORE_DIR, 0o700); } catch {}
+  for (const f of fs.readdirSync(STORE_DIR)) { try { fs.chmodSync(path.join(STORE_DIR, f), 0o600); } catch {} }
+}
 
 function persist(sess) {
+  if (sess.kind === "completion") return; // tool-free sessions leave no transcript
   try {
-    fs.mkdirSync(STORE_DIR, { recursive: true });
+    secureStore();
     fs.writeFileSync(sessionFile(sess.id), JSON.stringify({
       id: sess.id, cwd: sess.cwd, mode: sess.mode,
       model: sess.agent.model, fallbackModels: sess.agent.fallbackModels,
       engineSession: sess.agent.isEngine ? sess.agent.sessionID : null,
       messages: sess.agent.messages.slice(-200),
-    }));
+    }), { mode: 0o600 });
   } catch (e) { log("persist failed:", e.message); }
 }
 
-async function buildSession({ id, cwd, mode, messages, model, fallbackModels, engineSession }) {
+async function buildSession({ id, cwd, mode, messages, model, fallbackModels, engineSession, mcp = null, deniedTools = null, projectFiles }) {
   const selected = resolveModels({ model, fallbackModels });
   const gw = opencode.isEngineModel(selected.model) ? { baseUrl: "http://127.0.0.1", apiKey: "" } : await ensureGateway(log);
   const models = opencode.isEngineModel(selected.model) ? selected : await resolveModelsLive(gw, { model, fallbackModels });
   const sess = {
-    id, cwd, mode: mode || DEFAULT_MODE,
+    id, cwd, mode: isAgentMode(mode) ? mode : DEFAULT_AGENT_MODE,
     sink: () => {},                 // replaced per turn
     approve: async () => false,     // replaced per turn
     pendingPermissions: new Set(),
+    allowed: new Set(),   // permission keys answered "always allow"
+    rejected: new Set(),  // …and "never allow"
+    mcp, deniedTools,
+    projectFiles,         // false: leave out the repository's instruction files and skills
     agent: null,
   };
   sess.gw = gw;
@@ -189,6 +273,9 @@ function attachAgent(sess, model, fallbackModels, { messages = null, sessionID =
     canSpawn: true,
     approvalMode: sess.mode,
     approver: (callId, name, args, preview) => sess.approve(callId, name, args, preview),
+    mcp: sess.mcp,
+    deniedTools: sess.deniedTools,
+    projectFiles: sess.projectFiles,
     emit: (type, payload) => sess.sink(type, payload),
     ...agentEnv(sess.cwd),
   });
@@ -196,9 +283,111 @@ function attachAgent(sess, model, fallbackModels, { messages = null, sessionID =
   return sess.agent;
 }
 
+// ── completion sessions ───────────────────────────────────────────
+// `completion` mode runs electron/complete.js: one request in, one completion
+// out. Such a session never has an agent, so no tool exists to offer, call or
+// approve; it keeps no history and is never written to disk. session/new
+// reports `_meta.omniwork.toolFree: true` and an empty tool list, so a client
+// can check before it sends untrusted text — and the mode can't be left, so a
+// check made once holds for the session's lifetime.
+//
+// Settings come from `_meta.omniwork` on session/new (and per prompt on
+// session/prompt): model, fallbackModels, system, schema, temperature,
+// maxTokens, timeoutMs, numCtx. Completion never falls back to a model the
+// client didn't name: a document meant for a local model must not reach a
+// cloud provider because the local server hiccuped.
+function positive(v, name) {
+  if (v == null) return undefined;
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) throw new RpcError(-32602, `${name} must be a positive number`);
+  return Math.floor(n);
+}
+
+function completionSettings(o = {}, base = {}) {
+  const s = { ...base };
+  if (o.model != null) s.model = String(o.model).trim() || s.model;
+  const fb = o.fallbackModels ?? o.fallback_models;
+  if (fb != null) {
+    if (!Array.isArray(fb) || fb.some((m) => typeof m !== "string")) throw new RpcError(-32602, "fallbackModels must be an array of model ids");
+    s.fallbackModels = fb.map((m) => m.trim()).filter(Boolean);
+  }
+  if (o.system != null) {
+    if (typeof o.system !== "string") throw new RpcError(-32602, "system must be a string");
+    s.system = o.system;
+  }
+  if (o.schema != null) {
+    if (typeof o.schema !== "object" || Array.isArray(o.schema)) throw new RpcError(-32602, "schema must be a JSON Schema object");
+    s.schema = o.schema;
+  }
+  if (o.temperature != null) {
+    const t = Number(o.temperature);
+    if (!Number.isFinite(t) || t < 0 || t > 2) throw new RpcError(-32602, "temperature must be between 0 and 2");
+    s.temperature = t;
+  }
+  for (const [key, alias] of [["maxTokens", "max_tokens"], ["timeoutMs", "timeout_ms"], ["numCtx", "num_ctx"]]) {
+    const v = positive(o[key] ?? o[alias], alias);
+    if (v) s[key] = v;
+  }
+  s.model = s.model || resolveModels({ fallbackModels: [] }).model;
+  s.fallbackModels = (s.fallbackModels || []).filter((m) => m !== s.model);
+  for (const m of [s.model, ...s.fallbackModels]) {
+    if (opencode.isEngineModel(m)) throw new RpcError(-32602, `${m} runs on the OpenCode engine, which always carries tools — pick a gateway or local model for completion`);
+  }
+  return s;
+}
+
+function newCompletionSession(id, cwd, settings) {
+  const sess = { id, cwd, kind: "completion", mode: COMPLETION.id, agent: null, completion: settings, abort: null };
+  sessions.set(id, sess);
+  return sess;
+}
+
+// An agent session becoming tool-free. Its conversation so far stays saved as
+// it was; from here on nothing is.
+function toCompletion(sess) {
+  if (sess.running) throw new RpcError(-32000, "cannot change the mode while a prompt is running");
+  const settings = completionSettings({ model: sess.agent.isEngine ? undefined : sess.agent.model });
+  persist(sess);
+  try { sess.agent.abort(); } catch {}
+  try { sess.mcp?.stopAll(); } catch {} // nothing can call them any more
+  Object.assign(sess, { kind: "completion", mode: COMPLETION.id, agent: null, mcp: null, completion: settings, abort: null });
+}
+
+async function runCompletion(sess, params) {
+  const perPrompt = (params._meta && params._meta.omniwork) || {};
+  const settings = completionSettings(perPrompt, sess.completion);
+  let blocks = (Array.isArray(params.prompt) ? params.prompt : []).filter((b) => b && typeof b === "object");
+  let system = settings.system;
+  // No system prompt configured: the first text block is it, the rest is input.
+  if (system == null) {
+    const i = blocks.findIndex((b) => b.type === "text");
+    if (i >= 0 && blocks.length > 1) { system = String(blocks[i].text || ""); blocks = blocks.filter((_, j) => j !== i); }
+  }
+  const { text, images } = decodePrompt(blocks);
+  if (!text && !images.length) return { stopReason: "end_turn", _meta: { omniwork: { ok: false, error: "empty prompt", toolFree: true } } };
+  const user = images.length ? [{ type: "text", text }, ...images.map((url) => ({ type: "image_url", image_url: { url } }))] : text;
+
+  const ctl = new AbortController();
+  sess.abort = ctl;
+  let r;
+  try {
+    r = await complete({ ...settings, system: system || "", user, gateway: () => ensureGateway(log), signal: ctl.signal });
+  } catch (e) {
+    if (e instanceof CompletionError && e.cancelled) return { stopReason: "cancelled", _meta: { omniwork: { ok: false, error: "cancelled", attempts: e.attempts || [], toolFree: true } } };
+    if (e instanceof CompletionError) throw new RpcError(-32602, e.message);
+    throw e;
+  } finally { sess.abort = null; }
+  if (r.ok && r.text) notify("session/update", { sessionId: sess.id, update: { sessionUpdate: "agent_message_chunk", messageId: `c${Date.now().toString(36)}`, content: { type: "text", text: r.text } } });
+  // A model failure is not a protocol failure: the turn ends with a stop
+  // reason and the details in _meta, never as a JSON-RPC error.
+  const stopReason = !r.ok ? "refusal" : r.finishReason === "length" && !r.valid ? "max_tokens" : "end_turn";
+  return { stopReason, _meta: { omniwork: r } };
+}
+
 // Skills become ACP slash commands, so `/deep-research` in the client's prompt
 // box is the same skill the desktop app exposes.
 function pushCommands(sess) {
+  if (sess.kind === "completion") return; // no skills in a tool-free session
   let list = [];
   try { list = skillsApi.listSkills(SKILLS_DIR, sess.cwd) || []; } catch {}
   notify("session/update", {
@@ -225,6 +414,15 @@ function pushCommands(sess) {
 const MAX_MODEL_OPTIONS = 300;
 
 async function modelOption(sess) {
+  if (sess.kind === "completion") {
+    const { model, fallbackModels } = sess.completion;
+    return {
+      id: "model", name: "Model", category: "model", type: "select",
+      description: "Model the completion runs on. Completion only falls back to models you named.",
+      currentValue: model,
+      options: [...new Set([model, ...fallbackModels])].map((id) => ({ value: id, name: id, ...(fallbackModels.includes(id) ? { description: `Fallback #${fallbackModels.indexOf(id) + 1}` } : {}) })),
+    };
+  }
   const current = sess.agent.model;
   const chain = sess.agent.fallbackModels;
   let catalog = [];
@@ -251,17 +449,61 @@ async function modelOption(sess) {
   };
 }
 
-async function configOptionsFor(sess) { return [await modelOption(sess)]; }
+// The mode as a config option too (modes are giving way to config options).
+function modeOption(sess) {
+  const options = sess.kind === "completion" ? [COMPLETION] : MODES;
+  return {
+    id: "mode", name: "Mode", category: "mode", type: "select",
+    description: "How the session runs: an approval mode for the agent, or tool-free completion (one-way).",
+    currentValue: sess.mode, options: options.map((m) => ({ value: m.id, name: m.name, description: m.description })),
+  };
+}
 
-// What a scripted harness reads instead of parsing the option list.
+const modesFor = (sess) => ({ currentModeId: sess.mode, availableModes: sess.kind === "completion" ? [COMPLETION] : MODES });
+
+async function configOptionsFor(sess) { return [await modelOption(sess), modeOption(sess)]; }
+
+// What a scripted harness reads instead of parsing the option list — including
+// what the model can do: `toolFree` and the tools it is offered.
 function sessionMeta(sess) {
-  return { omniwork: { model: sess.agent.model, fallbackModels: sess.agent.fallbackModels } };
+  if (sess.kind === "completion") {
+    const c = sess.completion;
+    return { omniwork: { mode: COMPLETION.id, toolFree: true, tools: [], model: c.model, fallbackModels: c.fallbackModels, persisted: false } };
+  }
+  const tools = sess.agent.isEngine ? null : sess.agent.toolSchema().map((t) => t.function.name);
+  return { omniwork: {
+    mode: sess.mode, toolFree: false, tools, ...(sess.agent.isEngine ? { engine: "opencode" } : {}),
+    model: sess.agent.model, fallbackModels: sess.agent.fallbackModels,
+    capabilityPolicy: sess.deniedTools ? "strict" : "local",
+    ...(sess.mcp ? { mcpServers: sess.mcp.list().map(({ name, status, error }) => ({ name, status, ...(error ? { error } : {}) })) } : {}),
+  } };
+}
+
+async function setMode(sess, modeId) {
+  if (!MODES.some((m) => m.id === modeId)) throw new RpcError(-32602, `unknown mode: ${modeId}`);
+  if (sess.kind === "completion") {
+    if (modeId !== COMPLETION.id) throw new RpcError(-32602, "a completion session stays tool-free for its lifetime — start a new session for agent work");
+    return;
+  }
+  if (modeId === COMPLETION.id) toCompletion(sess);
+  else {
+    sess.mode = modeId;
+    sess.agent.approvalMode = modeId;
+    persist(sess);
+  }
+  notify("session/update", { sessionId: sess.id, update: { sessionUpdate: "current_mode_update", currentModeId: sess.mode } });
 }
 
 async function setModel(sess, modelId) {
   const id = String(modelId == null ? "" : modelId).trim();
   if (!id) throw new RpcError(-32602, "model id is required");
   if (sess.running) throw new RpcError(-32000, "cannot change the model while a prompt is running");
+  if (sess.kind === "completion") {
+    sess.completion = completionSettings({ model: id }, sess.completion);
+    const configOptions = await configOptionsFor(sess);
+    notify("session/update", { sessionId: sess.id, update: { sessionUpdate: "config_option_update", configOptions } });
+    return configOptions;
+  }
   if (!opencode.isEngineModel(id)) sess.gw = await ensureGateway(log);
   const catalog = opencode.isEngineModel(id) ? [] : await listModels(sess.gw).catch(() => []);
   if (!opencode.isEngineModel(id)) {
@@ -325,6 +567,13 @@ async function runTurn(sess, blocks) {
           break;
 
         case "tool_call": {
+          // Already announced for a permission request: update that call.
+          const prior = tools.get(p.id);
+          if (prior && prior.placeholder && !prior.done) {
+            tools.set(p.id, { ...prior, name: p.name, args: p.args, placeholder: false });
+            up({ sessionUpdate: "tool_call_update", toolCallId: prior.acpId, title: toolTitle(p.name, p.args), kind: TOOL_KIND[p.name] || "other", rawInput: p.args });
+            break;
+          }
           const acpId = `t${++toolSeq}`;
           const diff = diffFor(sess.cwd, p.name, p.args);
           tools.set(p.id, { acpId, name: p.name, args: p.args, diff });
@@ -354,8 +603,9 @@ async function runTurn(sess, blocks) {
         case "tool_result": {
           const t = tools.get(p.id);
           if (!t) break;
+          t.done = true;
           const out = String(p.result ?? "");
-          const failed = /^(Error in |Failed to |❌ Denied|⏸ Plan mode|Search failed|Browse failed|Install failed)/.test(out);
+          const failed = /^(Error in |Failed to |Unknown tool:|❌ Denied|⏸ Plan mode|Search failed|Browse failed|Install failed)/.test(out);
           up({
             sessionUpdate: "tool_call_update", toolCallId: t.acpId,
             status: failed ? "failed" : "completed",
@@ -386,6 +636,10 @@ async function runTurn(sess, blocks) {
           } else if (p.kind === "done") {
             const t = tools.get("sub:" + p.subId);
             if (t) up({ sessionUpdate: "tool_call_update", toolCallId: t.acpId, status: "completed" });
+          } else if (p.kind === "tool_result" && p.payload) {
+            // Closes the tool call opened when this subagent's tool asked permission.
+            const t = tools.get(p.payload.id);
+            if (t && t.sub && !t.done) { t.done = true; up({ sessionUpdate: "tool_call_update", toolCallId: t.acpId, status: p.payload.ok === false ? "failed" : "completed" }); }
           }
           break;
         }
@@ -415,22 +669,40 @@ async function runTurn(sess, blocks) {
     } catch (e) { log("sink error:", e.message); }
   };
 
-  sess.approve = async (callId, name, args) => {
-    const t = tools.get(callId);
+  // A permission answer applies to this call, or — "always" — to this tool
+  // for the rest of the session (a command: that exact command). It never
+  // changes the session's mode.
+  sess.approve = async (callId, name, args = {}) => {
+    const key = permissionKey(name, args);
+    if (sess.rejected.has(key)) return false;
+    if (sess.allowed.has(key)) return true;
+    let t = tools.get(callId);
+    if (!t || t.name !== name || t.done) {
+      // A tool call the client hasn't been told about yet — a subagent's, or
+      // the engine asking before it reports the call — and a permission
+      // request must name a tool call the client has seen. The engine's own
+      // tool_call, arriving later with this id, reuses it.
+      const sub = !sess.agent.isEngine;
+      t = { acpId: `t${++toolSeq}`, name, args, sub, placeholder: true };
+      tools.set(callId, t);
+      up({ sessionUpdate: "tool_call", toolCallId: t.acpId, title: `${sub ? "subagent: " : ""}${toolTitle(name, args)}`, kind: TOOL_KIND[name] || "other", status: "pending", rawInput: args });
+    }
+    const what = name === "run_command" ? "this command" : name;
     const asked = callClient("session/request_permission", {
       sessionId: sid,
       toolCall: {
-        toolCallId: t ? t.acpId : callId,
+        toolCallId: t.acpId,
         title: toolTitle(name, args),
         kind: TOOL_KIND[name] || "other",
         status: "pending",
         rawInput: args,
-        ...(t && t.diff ? { content: t.diff } : {}),
+        ...(t.diff ? { content: t.diff } : {}),
       },
       options: [
         { optionId: "allow_once", name: "Allow", kind: "allow_once" },
-        { optionId: "allow_always", name: "Allow, don't ask again", kind: "allow_always" },
+        { optionId: "allow_always", name: `Always allow ${what} in this session`, kind: "allow_always" },
         { optionId: "reject_once", name: "Reject", kind: "reject_once" },
+        { optionId: "reject_always", name: `Never allow ${what} in this session`, kind: "reject_always" },
       ],
     });
     // A well-behaved client answers `cancelled` on session/cancel, but a turn
@@ -445,19 +717,22 @@ async function runTurn(sess, blocks) {
     let res;
     try { res = await settled; }
     finally { sess.pendingPermissions.delete(deny); }
-    if (!res) return false;
-
+    const verdict = (ok) => {
+      if (t.placeholder) up({ sessionUpdate: "tool_call_update", toolCallId: t.acpId, status: ok ? "in_progress" : "failed" });
+      return ok;
+    };
+    if (!res) return verdict(false);
     const outcome = res.outcome;
-    if (!outcome || outcome.outcome !== "selected") return false;
-    if (outcome.optionId === "allow_always") {
-      // "don't ask again" only makes sense as a real mode change — otherwise the
-      // next call prompts again and the client looks broken.
-      sess.mode = "auto";
-      sess.agent.approvalMode = "auto";
-      up({ sessionUpdate: "current_mode_update", currentModeId: "auto" });
-      return true;
+    // `cancelled` means the client is cancelling the turn: don't run the tool,
+    // and stop.
+    if (!outcome || outcome.outcome === "cancelled") { try { sess.agent.abort(); } catch {} return verdict(false); }
+    if (outcome.outcome !== "selected") return verdict(false);
+    switch (outcome.optionId) {
+      case "allow_always": sess.allowed.add(key); return verdict(true);
+      case "allow_once": return verdict(true);
+      case "reject_always": sess.rejected.add(key); return verdict(false);
+      default: return verdict(false);
     }
-    return outcome.optionId === "allow_once";
   };
 
   try {
@@ -483,8 +758,14 @@ async function runTurn(sess, blocks) {
   }
 
   if (failure) {
-    if (/All models failed|Gateway (401|403|429|503)/.test(failure)) failure += "\n\n" + noModelHint();
-    throw new RpcError(-32000, failure);
+    const noModel = isNoModelFailure(failure);
+    const message = noModel || /Gateway 429/.test(failure) ? `${failure}\n\n${noModelHint()}` : failure;
+    // OMNIWORK_ACP_ERRORS=rpc keeps the old JSON-RPC error for one release.
+    if (/^rpc$/i.test(process.env.OMNIWORK_ACP_ERRORS || "")) throw new RpcError(-32000, message);
+    // A model failure is not a protocol failure: say it in the transcript and
+    // end the turn, with the details where a client can read them.
+    up({ sessionUpdate: "agent_message_chunk", messageId: `err${Date.now().toString(36)}`, content: { type: "text", text: `\n⚠ ${message}\n` } });
+    return { stopReason: "end_turn", _meta: { omniwork: { error: { message: failure, noModel } } } };
   }
   return { stopReason };
 }
@@ -492,7 +773,10 @@ async function runTurn(sess, blocks) {
 // ── method handlers ───────────────────────────────────────────────
 const handlers = {
   async initialize(params) {
-    prewarmGateway(log); // overlap the OmniRoute boot with the client's setup
+    clientCapabilities = (params && params.clientCapabilities && typeof params.clientCapabilities === "object") ? params.clientCapabilities : {};
+    // Overlap the OmniRoute boot with the client's setup — unless this server
+    // only does tool-free completion, which may never need the gateway.
+    if (DEFAULT_MODE !== COMPLETION.id) prewarmGateway(log);
     const wanted = Number(params && params.protocolVersion);
     return {
       protocolVersion: Number.isFinite(wanted) && wanted < PROTOCOL_VERSION ? wanted : PROTOCOL_VERSION,
@@ -502,10 +786,12 @@ const handlers = {
         // OmniWork's tools do their own filesystem and process work, so we never
         // call back into the client's fs/* or terminal/*.
         mcpCapabilities: { http: false, sse: false },
+        // Tool-free completion: `_meta.omniwork.mode: "completion"` on session/new.
+        _meta: { omniwork: { completionMode: true } },
       },
       agentInfo: { name: "omniwork", title: "OmniWork", version: VERSION },
-      // Not required — the gateway is local and keyless — but the way an ACP
-      // client can give OmniWork a free provider that actually stays up.
+      // Not required — OmniWork reaches its own gateway itself — but the way an
+      // ACP client can give OmniWork a free provider that actually stays up.
       authMethods: AUTH_METHODS,
     };
   },
@@ -521,26 +807,40 @@ const handlers = {
     const result = await providers.connect(gw, methodId, { install: true, onUrl: (url) => log("open this URL to connect OpenRouter:", url) });
     invalidateModels();
     const chain = providers.suggestChain(await listModels(gw));
-    for (const sess of sessions.values()) sess.agent.fallbackModels = chain.filter((m) => m !== sess.agent.model);
+    // Agent sessions only: completion never falls back to a model it wasn't given.
+    for (const sess of sessions.values()) if (sess.agent) sess.agent.fallbackModels = chain.filter((m) => m !== sess.agent.model);
     log("connected", methodId, JSON.stringify(result).slice(0, 200));
     return {};
   },
 
   async "session/new"(params) {
-    const cwd = params && params.cwd;
-    if (!cwd || !path.isAbsolute(cwd)) throw new RpcError(-32602, "cwd must be an absolute path");
-    if (!fs.existsSync(cwd)) throw new RpcError(-32602, `cwd does not exist: ${cwd}`);
+    const cwd = checkCwd(params && params.cwd);
     const id = `sess_${Date.now().toString(36)}_${++sessionSeq}`;
     const meta = (params && params._meta) || {};
-    const sess = await buildSession({
-      id, cwd, mode: DEFAULT_MODE,
-      model: meta.model, fallbackModels: meta.fallbackModels ?? meta.fallback_models,
-    });
+    const ow = (meta.omniwork && typeof meta.omniwork === "object") ? meta.omniwork : {};
+    const mode = ow.mode ?? meta.mode ?? DEFAULT_MODE;
+    if (!MODES.some((m) => m.id === mode)) throw new RpcError(-32602, `unknown mode: ${mode}`);
+    if (mode === COMPLETION.id) {
+      if (Array.isArray(params.mcpServers) && params.mcpServers.length) throw new RpcError(-32602, "a completion session offers no tools, so it takes no MCP servers");
+      const sess = newCompletionSession(id, cwd, completionSettings({ ...ow, model: ow.model ?? meta.model, fallbackModels: ow.fallbackModels ?? ow.fallback_models ?? meta.fallbackModels ?? meta.fallback_models }));
+      return { sessionId: id, modes: modesFor(sess), configOptions: await configOptionsFor(sess), _meta: sessionMeta(sess) };
+    }
+    const strict = ow.honorClientCapabilities === true || /^(1|true|yes|on)$/i.test(process.env.OMNIWORK_ACP_STRICT_CAPABILITIES || "");
+    const mcp = sessionMcp(params.mcpServers);
+    let sess;
+    try {
+      sess = await buildSession({
+        id, cwd, mode,
+        model: ow.model ?? meta.model, fallbackModels: ow.fallbackModels ?? meta.fallbackModels ?? meta.fallback_models,
+        mcp, deniedTools: deniedByCapabilities(strict),
+        projectFiles: typeof ow.projectFiles === "boolean" ? ow.projectFiles : undefined,
+      });
+    } catch (e) { mcp?.stopAll(); throw e; }
     persist(sess);
     setTimeout(() => pushCommands(sess), 0); // after we've returned the sessionId
     return {
       sessionId: id,
-      modes: { currentModeId: sess.mode, availableModes: MODES },
+      modes: modesFor(sess),
       configOptions: await configOptionsFor(sess),
       _meta: sessionMeta(sess),
     };
@@ -548,21 +848,25 @@ const handlers = {
 
   async "session/load"(params) {
     const id = params && params.sessionId;
-    const cwd = params && params.cwd;
     if (!id) throw new RpcError(-32602, "sessionId is required");
+    const file = sessionFile(id);
+    const cwd = params && params.cwd != null ? checkCwd(params.cwd) : null;
     let sess = sessions.get(id);
     if (!sess) {
       let saved = null;
-      try { saved = JSON.parse(fs.readFileSync(sessionFile(id), "utf8")); } catch {}
+      try { saved = JSON.parse(fs.readFileSync(file, "utf8")); } catch {}
       if (!saved) throw new RpcError(-32602, `unknown session: ${id}`);
-      sess = await buildSession({
-        id, cwd: cwd || saved.cwd, mode: saved.mode, messages: saved.messages,
-        model: saved.model, fallbackModels: saved.fallbackModels, engineSession: saved.engineSession,
-      });
+      const mcp = sessionMcp(params.mcpServers);
+      try {
+        sess = await buildSession({
+          id, cwd: cwd || checkCwd(saved.cwd), mode: saved.mode, messages: saved.messages,
+          model: saved.model, fallbackModels: saved.fallbackModels, engineSession: saved.engineSession, mcp,
+        });
+      } catch (e) { mcp?.stopAll(); throw e; }
     }
     // ACP requires the whole conversation to be replayed as updates *before* we
-    // answer the request.
-    for (const m of sess.agent.messages) {
+    // answer the request. (A completion session keeps none.)
+    for (const m of sess.agent ? sess.agent.messages : []) {
       if (m.role !== "user" && m.role !== "assistant") continue;
       const text = typeof m.content === "string"
         ? m.content
@@ -579,7 +883,7 @@ const handlers = {
     }
     pushCommands(sess);
     return {
-      modes: { currentModeId: sess.mode, availableModes: MODES },
+      modes: modesFor(sess),
       configOptions: await configOptionsFor(sess),
       _meta: sessionMeta(sess),
     };
@@ -590,19 +894,14 @@ const handlers = {
     if (!sess) throw new RpcError(-32602, `unknown session: ${params && params.sessionId}`);
     if (sess.running) throw new RpcError(-32000, "a prompt is already running in this session");
     sess.running = true;
-    try { return await runTurn(sess, params.prompt); }
+    try { return sess.kind === "completion" ? await runCompletion(sess, params) : await runTurn(sess, params.prompt); }
     finally { sess.running = false; }
   },
 
   async "session/set_mode"(params) {
     const sess = sessions.get(params && params.sessionId);
     if (!sess) throw new RpcError(-32602, `unknown session: ${params && params.sessionId}`);
-    const modeId = params && params.modeId;
-    if (!MODES.some((m) => m.id === modeId)) throw new RpcError(-32602, `unknown mode: ${modeId}`);
-    sess.mode = modeId;
-    sess.agent.approvalMode = modeId;
-    persist(sess);
-    notify("session/update", { sessionId: sess.id, update: { sessionUpdate: "current_mode_update", currentModeId: modeId } });
+    await setMode(sess, params && params.modeId);
     return {};
   },
 
@@ -610,8 +909,14 @@ const handlers = {
     const sess = sessions.get(params && params.sessionId);
     if (!sess) throw new RpcError(-32602, `unknown session: ${params && params.sessionId}`);
     const configId = params && params.configId;
-    if (configId !== "model") throw new RpcError(-32602, `unknown config option: ${configId}`);
-    return { configOptions: await setModel(sess, params.value) };
+    if (configId === "model") return { configOptions: await setModel(sess, params.value) };
+    if (configId === "mode") {
+      await setMode(sess, params.value);
+      const configOptions = await configOptionsFor(sess);
+      notify("session/update", { sessionId: sess.id, update: { sessionUpdate: "config_option_update", configOptions } });
+      return { configOptions };
+    }
+    throw new RpcError(-32602, `unknown config option: ${configId}`);
   },
 
   // The pre-config-option way to pick a model; some clients still speak it.
@@ -627,6 +932,7 @@ const notifications = {
   "session/cancel"(params) {
     const sess = sessions.get(params && params.sessionId);
     if (!sess) return;
+    if (sess.kind === "completion") { sess.abort?.abort(); return; }
     sess.agent.abort();
     for (const deny of sess.pendingPermissions) { try { deny(); } catch {} }
   },
@@ -675,4 +981,5 @@ process.stdin.on("data", (chunk) => {
   }
 });
 process.stdin.on("end", () => process.exit(0));
+process.on("exit", () => { for (const sess of sessions.values()) { try { sess.mcp?.stopAll(); } catch {} } });
 log(`OmniWork ACP agent ready (stdio, protocol v${PROTOCOL_VERSION}, mode ${DEFAULT_MODE})`);

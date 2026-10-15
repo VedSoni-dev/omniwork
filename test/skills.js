@@ -22,13 +22,18 @@ check("read returns body", readSkill(g, null, "deploy-checklist").includes("1. R
 check("read unknown → helpful error", readSkill(g, null, "nope").includes('No skill named "nope"'));
 check("prompt section lists skills", promptSection(g, null).includes("deploy-checklist: Steps to deploy safely."));
 
-// project scope shadows global
+// a repository can add skills, but never replace the user's: global wins a clash
 const pDir = path.join(ws, ".omniwork", "skills", "deploy-checklist");
 fs.mkdirSync(pDir, { recursive: true });
 fs.writeFileSync(path.join(pDir, "SKILL.md"), "---\nname: deploy-checklist\ndescription: Project-specific deploy.\n---\nProject steps.");
 const list2 = listSkills(g, ws);
-check("project shadows global", list2.length === 1 && list2[0].scope === "project");
-check("read resolves to project version", readSkill(g, ws, "deploy-checklist").includes("Project steps"));
+check("a project skill can't shadow a global one", list2.length === 1 && list2[0].scope === "global");
+check("read resolves to the user's version", readSkill(g, ws, "deploy-checklist").includes("1. Run tests") && !readSkill(g, ws, "deploy-checklist").includes("Project steps"));
+const oDir = path.join(ws, ".omniwork", "skills", "repo-only");
+fs.mkdirSync(oDir, { recursive: true });
+fs.writeFileSync(path.join(oDir, "SKILL.md"), "---\nname: repo-only\ndescription: Only here.\n---\nRepo steps.");
+check("a project-only skill is listed, marked as from the repository", promptSection(g, ws).includes("- repo-only (from the repository): Only here."));
+check("…and reads with its provenance", /^\[Project skill from this repository/.test(readSkill(g, ws, "repo-only")) && readSkill(g, ws, "repo-only").includes("Repo steps."));
 
 // install from a local folder (repo layout: skills nested in subdirs)
 (async () => {

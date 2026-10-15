@@ -210,6 +210,16 @@ class MCPManager {
   }
 
   stopAll() { for (const s of this.servers.values()) s.stop(); this.servers.clear(); }
+
+  // Servers handed over by someone else (an ACP client's session/new) rather
+  // than read from mcp.json: started here, never written to the config.
+  static ephemeral(confs) {
+    const m = new MCPManager(require("node:os").tmpdir());
+    m.loadConfig = () => ({});
+    m.saveConfig = () => {};
+    for (const [name, conf] of Object.entries(confs)) m.servers.set(name, new MCPServer(name, conf));
+    return m;
+  }
 }
 
 module.exports = { MCPManager, MCPServer };

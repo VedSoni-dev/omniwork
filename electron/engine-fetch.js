@@ -5,16 +5,20 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
-const os = require("node:os");
-const { Readable } = require("node:stream");
+const crypto = require("node:crypto");
+const { Readable, Transform } = require("node:stream");
 const { pipeline } = require("node:stream/promises");
 
-// The version to fetch. Kept in sync with package.json's omniroute dependency.
-function omnirouteVersion() {
-  try {
-    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
-    return (pkg.dependencies.omniroute || "").replace(/^[^0-9]*/, "") || "3.8.48";
-  } catch { return "3.8.48"; }
+// What to fetch, and the hash it must have: package.json's `omniworkEngine`,
+// copied from package-lock.json (test/engine-fetch.js keeps the two in sync).
+// package-lock.json itself doesn't ship with the app; package.json does. The
+// engine is code the gateway runs with the user's privileges, so a download
+// that doesn't match is never unpacked.
+function pinnedEngine() {
+  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
+  const pin = pkg.omniworkEngine && pkg.omniworkEngine.omniroute;
+  if (!pin || !pin.version || !pin.integrity) throw new Error("package.json has no pinned engine (omniworkEngine.omniroute) — refusing to download one unverified");
+  return { version: pin.version, integrity: pin.integrity, url: `https://registry.npmjs.org/omniroute/-/omniroute-${pin.version}.tgz` };
 }
 
 function engineDir(dataDir) { return path.join(dataDir, "engine", "omniroute"); }
@@ -24,11 +28,13 @@ function engineReady(dir) {
   return fs.existsSync(path.join(dir, "dist", "server.js"));
 }
 
-// Download + extract omniroute's dist/ into <dataDir>/engine/omniroute.
-async function downloadEngine(dataDir, onProgress) {
+// Download + verify + extract omniroute's dist/ into <dataDir>/engine/omniroute.
+// `entry` ({ version, integrity, url }) is for tests.
+async function downloadEngine(dataDir, onProgress, { entry = null } = {}) {
   const tar = require("tar"); // small, battle-tested; bundled in both builds
-  const ver = omnirouteVersion();
-  const url = `https://registry.npmjs.org/omniroute/-/omniroute-${ver}.tgz`;
+  const { version: ver, integrity, url } = entry || pinnedEngine();
+  const [algo, expected] = String(integrity).split("-", 2);
+  if (!/^sha(256|384|512)$/.test(algo) || !expected) throw new Error("unusable engine integrity string");
   const dir = engineDir(dataDir);
   fs.mkdirSync(dir, { recursive: true });
 
@@ -36,20 +42,29 @@ async function downloadEngine(dataDir, onProgress) {
   const res = await fetch(url);
   if (!res.ok || !res.body) throw new Error(`engine download failed: HTTP ${res.status}`);
 
-  // Stream the .tgz straight through tar's extractor. strip:1 drops the leading
-  // "package/" dir. Only extract what the standalone server needs.
-  onProgress && onProgress({ phase: "extract", detail: "Unpacking engine…" });
-  await pipeline(
-    Readable.fromWeb(res.body),
-    tar.x({
+  // To a file first, hashing as it arrives: nothing is unpacked until the
+  // whole archive matches the pinned hash.
+  const archive = path.join(path.dirname(dir), `omniroute-${ver}.tgz.part`);
+  const hash = crypto.createHash(algo);
+  try {
+    await pipeline(Readable.fromWeb(res.body), new Transform({ transform(chunk, _e, cb) { hash.update(chunk); cb(null, chunk); } }), fs.createWriteStream(archive));
+    if (hash.digest("base64") !== expected) throw new Error(`engine download failed its integrity check (${algo} mismatch for omniroute ${ver}) — not installed`);
+
+    // strip:1 drops the leading "package/" dir. Only extract what the
+    // standalone server needs.
+    onProgress && onProgress({ phase: "extract", detail: "Verified. Unpacking engine…" });
+    await tar.x({
+      file: archive,
       cwd: dir,
       strip: 1,
       filter: (p) => {
         const rel = p.replace(/^package\//, "");
         return rel.startsWith("dist/") || rel === "package.json" || rel.startsWith("open-sse/") || rel.startsWith("scripts/");
       },
-    })
-  );
+    });
+  } finally {
+    fs.rmSync(archive, { force: true });
+  }
 
   if (!engineReady(dir)) throw new Error("engine extracted but dist/server.js missing");
 
@@ -87,4 +102,4 @@ function copyNativeSqlite(engineRoot) {
   }
 }
 
-module.exports = { engineDir, engineReady, downloadEngine };
+module.exports = { engineDir, engineReady, downloadEngine, pinnedEngine };

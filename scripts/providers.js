@@ -49,6 +49,8 @@ async function main(argv) {
       console.log(result.added.length
         ? `Registered: ${result.added.map((a) => `${a.name} (${a.models.length} models)`).join(", ")}`
         : `No local model server is running (checked ${result.skipped.map((s) => s.name).join(", ")}).`);
+      // Why not, where there's more to say than "nothing listening".
+      for (const s of result.skipped.filter((x) => x.hints && x.hints.length)) console.log(`${s.name}: ${s.reason}.\n  ${s.hints.join("\n  ")}`);
     } else {
       console.log(`Connected ${result.name} — ${result.models} models now routable.`);
     }

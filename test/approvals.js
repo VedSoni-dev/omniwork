@@ -42,6 +42,11 @@ const tick = () => new Promise((r) => setImmediate(r));
   check("stop() aborts the agent", sess.agent.aborted === true);
   check("memo cleared on stop", sess.pendingApproval === null);
 
+  // an unrecognised mode from the UI must not widen the session to auto
+  sm.setApprovalMode("ask");
+  const kept = sm.setApprovalMode("yolo");
+  check("an unknown approval mode keeps the current one", kept === "ask" && sm.sessions.get(s.id).agent.approvalMode === "ask");
+
   console.log(fails ? `\n❌ ${fails} FAILED` : "\n✅ APPROVALS TEST PASSED");
   process.exit(fails ? 1 : 0);
 })();

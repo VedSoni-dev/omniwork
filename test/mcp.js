@@ -35,10 +35,16 @@ const rpc = (method, params) => new Promise((resolve, reject) => {
 (async () => {
   const init = await rpc("initialize", {});
   check("initialize returns server info", init.result.serverInfo.name === "omniwork");
+  const v1 = await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "0" } });
+  check("a protocol version the server speaks is echoed back", v1.result.protocolVersion === "2025-06-18");
+  const v2 = await rpc("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "t", version: "0" } });
+  check("…including the oldest", v2.result.protocolVersion === "2024-11-05");
+  const v3 = await rpc("initialize", { protocolVersion: "2099-01-01", capabilities: {}, clientInfo: { name: "t", version: "0" } });
+  check("an unknown version gets the newest the server speaks", v3.result.protocolVersion === "2025-11-25");
 
   const list = await rpc("tools/list", {});
   const names = list.result.tools.map((t) => t.name).sort();
-  check("legacy and durable job tools are listed", names.length === 17 && ["jobs_submit", "jobs_wait", "jobs_get", "jobs_list", "jobs_cancel", "jobs_read", "jobs_apply", "jobs_status", "delegate", "delegate_parallel"].every(n => names.includes(n)));
+  check("legacy and durable job tools are listed", names.length === 18 && ["jobs_submit", "jobs_wait", "jobs_get", "jobs_list", "jobs_cancel", "jobs_read", "jobs_apply", "jobs_status", "delegate", "delegate_parallel"].every(n => names.includes(n)));
   const connectTool = list.result.tools.find((t) => t.name === "connect_provider");
   check("connect_provider warns that openrouter opens the browser", /OPENS THE USER'S BROWSER/.test(connectTool.description));
   check("connect_provider takes no API key — a model must never be able to plant one", !("api_key" in connectTool.inputSchema.properties) && /takes no API key/.test(connectTool.description));
