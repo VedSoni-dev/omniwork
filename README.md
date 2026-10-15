@@ -368,7 +368,7 @@ Locally built `.app`s are unsigned — same right-click → Open dance as above.
 │    ├─ SessionManager → N parallel agents                  │
 │    │      └─ each agent: tools + MCP + subagents          │
 │    └─ spawns OmniRoute sidecar (bundled Node)             │
-│           localhost:20128  ◄── free models, no key        │
+│           localhost:20128  ◄── per-install key required   │
 └───────────────────────────┬───────────────────────────────┘
                             │
               OmniRoute ──► 278+ providers (free tier default)
@@ -379,7 +379,12 @@ Locally built `.app`s are unsigned — same right-click → Open dance as above.
 
 - On boot, `electron/sidecar.js` runs OmniRoute's prebuilt server on a **bundled Node** runtime
   (Electron's own Node can't boot it) and health-checks `localhost:20128/v1`. If a healthy gateway
-  is already on the port, it adopts that one instead of starting a second.
+  is already running — on 20128, or wherever `~/.omniwork/gateway.json` says it moved — it adopts
+  that one instead of starting a second.
+- The gateway only serves OmniWork: it requires the per-install key in `~/.omniwork/gateway-key.txt`
+  (owner-only; also recorded with the port in `~/.omniwork/gateway.json`), and a guard inside it
+  refuses any `Host` other than its loopback address and any cross-site `Origin`. To call it from
+  your own tool, send `Authorization: Bearer $(cat ~/.omniwork/gateway-key.txt)`.
 - `electron/agent.js` runs an OpenAI-compatible tool-use loop; `spawn_subagents` fans out; MCP
   tools merge in namespaced as `mcp__<server>__<tool>`.
 - `electron/sessions.js` runs many agents in parallel; `electron/mcp.js` is the MCP client;
@@ -398,6 +403,9 @@ encrypted, locally). Pick a specific model in the status bar.
 | Env | Default | Purpose |
 |-----|---------|---------|
 | `OMNIWORK_GATEWAY_PORT` | `20128` | Gateway port |
+| `OMNIWORK_GATEWAY_OPEN` | off | `1` starts the gateway without requiring the per-install key (the old behaviour; kept for one release). The Host/Origin guard still applies |
+| `OMNIWORK_GATEWAY_ALLOWED_HOSTS` | — | Extra comma-separated `Host` names the gateway accepts, e.g. `host.docker.internal` |
+| `OMNIWORK_RUNTIME_DIR` | `~/.omniwork` | Where the gateway key and the running gateway's record (`gateway.json`) live |
 | `OMNIWORK_WORKSPACE` | — | Open a folder on launch |
 | `OMNIWORK_MODEL` | `auto` | Pin a model (MCP + ACP servers) |
 | `OMNIWORK_MODEL_FALLBACKS` | connected providers | Comma-separated models to try, in order, when the model fails (MCP + ACP servers). Unset: built from connected free providers; set empty to disable |

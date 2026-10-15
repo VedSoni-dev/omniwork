@@ -13,6 +13,7 @@ const { spawn } = require("node:child_process");
 const net = require("node:net");
 const path = require("node:path");
 const fs = require("node:fs");
+const os = require("node:os");
 const crypto = require("node:crypto");
 const { gatewayEnv } = require("./child-env");
 
@@ -173,37 +174,89 @@ function quarantineStorage(dir, now = Date.now()) {
   return path.join(dir, backup);
 }
 
-// A stable local key we keep for future use (provider dashboard, etc.). The
-// gateway serves localhost openly, so requests don't require it, but we persist
-// one so the app has a consistent identity.
-function ensureApiKey(dataDir) {
-  const keyFile = path.join(dataDir, "gateway-key.txt");
+// ── shared runtime state ──────────────────────────────────────────
+// One place every OmniWork entry point (desktop, MCP, ACP, CLI, job service)
+// finds the running gateway: the port it is on — which moves when 20128 is
+// taken — and the key it was started with. Owner-only, like the key itself.
+function runtimeDir() { return process.env.OMNIWORK_RUNTIME_DIR || path.join(os.homedir(), ".omniwork"); }
+const stateFile = () => path.join(runtimeDir(), "gateway.json");
+
+function writePrivate(file, text) {
+  const dir = path.dirname(file);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try { fs.chmodSync(dir, 0o700); } catch {}
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, text, { mode: 0o600 });
+  fs.renameSync(tmp, file);
+}
+
+function readGatewayState() {
   try {
-    if (fs.existsSync(keyFile)) {
-      const k = fs.readFileSync(keyFile, "utf8").trim();
-      if (k) return k;
-    }
+    const st = JSON.parse(fs.readFileSync(stateFile(), "utf8"));
+    return Number.isInteger(st.port) && st.port > 0 && st.port < 65536 && typeof st.key === "string" && st.key ? st : null;
+  } catch { return null; }
+}
+
+// The per-install key every OmniWork client sends, and the only one the
+// gateway it starts accepts (REQUIRE_API_KEY): another local account, or a
+// web page, can reach a loopback port but cannot read this file.
+function ensureApiKey() {
+  const keyFile = path.join(runtimeDir(), "gateway-key.txt");
+  try {
+    const k = fs.readFileSync(keyFile, "utf8").trim();
+    if (k) { try { fs.chmodSync(keyFile, 0o600); } catch {} return k; }
   } catch {}
   const key = "ow-" + crypto.randomBytes(24).toString("hex");
-  try {
-    fs.mkdirSync(dataDir, { recursive: true });
-    fs.writeFileSync(keyFile, key, "utf8");
-  } catch {}
+  try { writePrivate(keyFile, key); } catch {}
   return key;
+}
+
+// "ok" when the gateway on `port` serves this key, "rejected" when something
+// answers but refuses it (a gateway started with another key), else "down".
+async function probeKey(port, key, timeoutMs = 2000) {
+  try {
+    const res = await fetch(`http://${HOST}:${port}/v1/models`, { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(timeoutMs) });
+    return res.ok ? "ok" : res.status === 401 || res.status === 403 ? "rejected" : "down";
+  } catch { return "down"; }
+}
+
+// A running gateway this process can use: the one the state file names, else
+// whatever answers on `port` with our own key (an older OmniWork's gateway
+// doesn't check keys). Returns { port, apiKey, baseUrl } or null.
+async function findRunningGateway({ port = PORT, key = ensureApiKey(), timeoutMs = 2000 } = {}) {
+  const st = readGatewayState();
+  const tries = st ? [{ port: st.port, key: st.key }] : [];
+  if (!st || st.port !== port || st.key !== key) tries.push({ port, key });
+  for (const t of tries) {
+    if ((await probeKey(t.port, t.key, timeoutMs)) === "ok") return { port: t.port, apiKey: t.key, baseUrl: `http://${HOST}:${t.port}/v1` };
+  }
+  return null;
+}
+
+// The guard (gateway-guard.js) runs inside the gateway's own Node, which can't
+// read app.asar — so it is copied next to the gateway's data each start.
+function installGuard(dataDir) {
+  const src = fs.readFileSync(path.join(__dirname, "gateway-guard.js"), "utf8");
+  const dest = path.join(dataDir, "gateway-guard.js");
+  let cur = null;
+  try { cur = fs.readFileSync(dest, "utf8"); } catch {}
+  if (cur !== src) writePrivate(dest, src);
+  return dest;
 }
 
 class Gateway {
   // `omniDir` and `healthTimeoutMs` exist for tests: a stand-in server and a
   // short deadline instead of the bundled engine's 90s.
-  constructor({ dataDir, onStatus, omniDir = null, healthTimeoutMs = 90000 }) {
+  constructor({ dataDir, onStatus, omniDir = null, healthTimeoutMs = 90000, patienceMs = 20_000 }) {
     this.dataDir = dataDir;
     this.omniDirOverride = omniDir;
     this.healthTimeoutMs = healthTimeoutMs;
+    this.patienceMs = patienceMs;
     this.notice = null;        // shown with the ready status (e.g. a storage reset)
     this.storageReset = null;  // { at, backup } when corrupt storage was set aside
     this.nodeBinary = resolveNodeBinary();
     this.onStatus = onStatus || (() => {});
-    this.apiKey = ensureApiKey(dataDir);
+    this.apiKey = ensureApiKey();
     this.proc = null;
     this.ready = false;
     this.adopted = false; // true when we reused a gateway we didn't spawn
@@ -222,20 +275,26 @@ class Gateway {
     this.onStatus({ state, detail, baseUrl: this.baseUrl });
   }
 
-  // Is something already serving the gateway on our port? Happens when a previous
-  // run left the sidecar behind, or when the MCP server booted one first. Adopting
-  // it beats failing on EADDRINUSE or racing a second copy onto the same DB.
-  async #adoptRunning() {
-    return probeGateway(this.port, 2000);
+  // Is something already serving the gateway? Happens when a previous run left
+  // the sidecar behind, or when the MCP server booted one first. Adopting it
+  // beats failing on EADDRINUSE or racing a second copy onto the same DB. Uses
+  // the port and key the shared state file names, so a gateway that had to
+  // move off the well-known port is still found, with the key it accepts.
+  async #adoptRunning(timeoutMs = 2000) {
+    const found = await findRunningGateway({ port: this.port, key: this.apiKey, timeoutMs });
+    if (!found) return false;
+    this.#setPort(found.port);
+    this.apiKey = found.apiKey;
+    return true;
   }
 
   // Something already holds the port. Give it a chance to be a gateway that was
   // simply slower to come up than the 2s startup probe allowed.
-  async #probePatiently(port, budgetMs) {
+  async #probePatiently(budgetMs) {
     const until = Date.now() + budgetMs;
     while (Date.now() < until) {
       if (this._stopped) return false;
-      if (await probeGateway(port, 3000)) return true;
+      if (await this.#adoptRunning(3000)) return true;
       await sleep(1000);
     }
     return false;
@@ -289,7 +348,7 @@ class Gateway {
     if (!(await portAvailable(this.port))) {
       this.status("boot", "Port in use — looking for a healthy gateway…");
       // It may simply have been slower to boot than the 2s startup probe.
-      if (await this.#probePatiently(this.port, 20_000)) {
+      if (await this.#probePatiently(this.patienceMs)) {
         this.ready = true;
         this.adopted = true; // not ours to kill on shutdown
         this.status("ready", "OmniRoute · free models");
@@ -318,7 +377,14 @@ class Gateway {
       // Skip outbound startup syncs — faster, quieter, works offline.
       ARENA_ELO_SYNC_ENABLED: "false",
       PRICING_SYNC_ENABLED: "false",
+      // Only OmniWork's own clients: every request needs the per-install key.
+      // OMNIWORK_GATEWAY_OPEN=1 keeps the keyless gateway for one release.
+      OMNIROUTE_API_KEY: this.apiKey,
+      REQUIRE_API_KEY: /^(1|true|yes|on)$/i.test(process.env.OMNIWORK_GATEWAY_OPEN || "") ? "false" : "true",
+      // Extra Host names the guard accepts (e.g. host.docker.internal).
+      OMNIWORK_GATEWAY_ALLOWED_HOSTS: process.env.OMNIWORK_GATEWAY_ALLOWED_HOSTS || "",
     };
+    const guard = installGuard(this.dataDir);
 
     // Corrupt gateway storage (e.g. after a hard kill) makes the server listen
     // but never turn healthy. If the first boot fails, set the database aside
@@ -330,10 +396,13 @@ class Gateway {
       // mid-restart when the app quits). Spawning now would strand a gateway on
       // the port with nobody left to kill it.
       if (this._stopped) throw new Error("gateway start aborted by shutdown");
-      this.#spawnServer(serverEntry, omniDir, env);
+      this.#spawnServer(serverEntry, omniDir, env, guard);
       try {
         await this.#waitHealthy();
         if (this._stopped) { this.#killProc(); throw new Error("gateway start aborted by shutdown"); }
+        try {
+          writePrivate(stateFile(), JSON.stringify({ version: 1, port: this.port, pid: this.proc.pid, ownerPid: process.pid, key: this.apiKey, dataDir: gwDataDir, startedAt: new Date().toISOString() }));
+        } catch (e) { this.status("boot", `Could not record the gateway for other OmniWork processes: ${e.message}`); }
 
         this.#watchdog();
         return this.baseUrl;
@@ -355,7 +424,7 @@ class Gateway {
     }
   }
 
-  #spawnServer(serverEntry, omniDir, env) {
+  #spawnServer(serverEntry, omniDir, env, guard) {
     this._exited = false;
     // Never pipe to us in normal runs: the gateway is meant to outlive this
     // process (see #adoptRunning), and a detached child writing to a pipe whose
@@ -371,7 +440,7 @@ class Gateway {
 
     // detached: gives the child its own process group so stop() can take down
     // any workers Next.js spawned, not just the parent.
-    this.proc = spawn(this.nodeBinary, [serverEntry], {
+    this.proc = spawn(this.nodeBinary, ["--require", guard, serverEntry], {
       cwd: path.join(omniDir, "dist"),
       env,
       stdio,
@@ -455,6 +524,9 @@ class Gateway {
     // spawning a gateway we would then have no handle on.
     this._stopped = true;
     clearInterval(this._watch);
+    // The state file names our process: other OmniWork processes must not try it.
+    const pid = !this.adopted && this.proc ? this.proc.pid : null;
+    if (pid && readGatewayState()?.pid === pid) { try { fs.rmSync(stateFile(), { force: true }); } catch {} }
     this.#killProc();
   }
 
@@ -485,4 +557,4 @@ class Gateway {
   }
 }
 
-module.exports = { Gateway, PORT, BASE_URL, probeGateway, portAvailable, freePort, checkStorage, quarantineStorage, storageBackups };
+module.exports = { Gateway, PORT, BASE_URL, probeGateway, portAvailable, freePort, checkStorage, quarantineStorage, storageBackups, findRunningGateway, readGatewayState, ensureApiKey };

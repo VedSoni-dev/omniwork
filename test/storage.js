@@ -26,6 +26,8 @@ try { ({ DatabaseSync } = require("node:sqlite")); } catch {}
   // Never the well-known port: a real gateway may be running there.
   process.env.OMNIWORK_GATEWAY_PORT = String(await freePort());
   process.env.OMNIWORK_NODE = process.execPath;
+  // …and never the real ~/.omniwork for the key and the running-gateway record.
+  process.env.OMNIWORK_RUNTIME_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "omniwork-storage-rt-"));
   const { Gateway, checkStorage, quarantineStorage, storageBackups } = require("../electron/sidecar");
 
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "omniwork-storage-"));
@@ -130,6 +132,7 @@ http.createServer((req, res) => { if (healthy) { res.writeHead(200, { "content-t
   }
 
   fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(process.env.OMNIWORK_RUNTIME_DIR, { recursive: true, force: true });
   console.log(fails ? `\n❌ ${fails} FAILED` : "\n✅ GATEWAY STORAGE TEST PASSED");
   process.exit(fails ? 1 : 0);
 })().catch((e) => { console.error("crash:", e.stack); process.exit(1); });

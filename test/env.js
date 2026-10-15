@@ -73,6 +73,7 @@ const SECRETS = {
   const net = require("node:net");
   process.env.OMNIWORK_GATEWAY_PORT = String(await new Promise((r) => { const sv = net.createServer(); sv.listen(0, "127.0.0.1", () => { const { port } = sv.address(); sv.close(() => r(port)); }); }));
   process.env.OMNIWORK_NODE = process.execPath;
+  process.env.OMNIWORK_RUNTIME_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "omniwork-env-rt-"));
   process.env.CORS_ALLOW_ALL = "true";
   const { Gateway } = require("../electron/sidecar");
   const omniDir = fs.mkdtempSync(path.join(os.tmpdir(), "omniwork-env-omni-"));
@@ -93,6 +94,7 @@ require("http").createServer((q, r) => { r.writeHead(200); r.end('{"data":[]}');
   await new Promise((r) => setTimeout(r, 300));
   fs.rmSync(omniDir, { recursive: true, force: true });
   fs.rmSync(gwData, { recursive: true, force: true });
+  fs.rmSync(process.env.OMNIWORK_RUNTIME_DIR, { recursive: true, force: true });
 
   fs.rmSync(workspace, { recursive: true, force: true });
   fs.rmSync(home, { recursive: true, force: true });

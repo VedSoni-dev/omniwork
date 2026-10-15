@@ -9,14 +9,12 @@
 const os = require("node:os");
 const fs = require("node:fs");
 const path = require("node:path");
-const { Gateway, PORT } = require("./sidecar");
+const { Gateway, findRunningGateway } = require("./sidecar");
 const { ProjectManager } = require("./projects");
 const { BrowserManager } = require("./browser");
 const providers = require("./providers");
 const { Agent } = require("./agent");
 const opencode = require("./opencode-engine");
-
-const HOST = "127.0.0.1";
 
 // Same data dir as the desktop app — headless agents share its installed skills,
 // saved memory, and project registry.
@@ -74,15 +72,14 @@ async function ensureGateway(log = () => {}) {
   if (booting) return booting;
 
   booting = (async () => {
-    // Reuse a gateway already running (e.g. the desktop app) before spawning one.
-    try {
-      const res = await fetch(`http://${HOST}:${PORT}/v1/models`, { signal: AbortSignal.timeout(2500) });
-      if (res.ok || res.status === 401) {
-        gatewayInfo = { baseUrl: `http://${HOST}:${PORT}/v1`, apiKey: "omniwork" };
-        log("reusing running gateway");
-        return gatewayInfo;
-      }
-    } catch {}
+    // Reuse a gateway already running (e.g. the desktop app) before spawning
+    // one — at the port and with the key the shared state file names.
+    const running = await findRunningGateway({ timeoutMs: 2500 });
+    if (running) {
+      gatewayInfo = { baseUrl: running.baseUrl, apiKey: running.apiKey };
+      log("reusing running gateway on port", running.port);
+      return gatewayInfo;
+    }
     log("starting bundled gateway…");
     const dataDir = path.join(os.homedir(), ".omniwork");
     fs.mkdirSync(dataDir, { recursive: true });

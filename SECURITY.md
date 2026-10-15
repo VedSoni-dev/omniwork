@@ -76,6 +76,14 @@ The practical mitigations, in order of effectiveness:
 ### Network and data
 
 - The gateway binds **loopback only** (`127.0.0.1:20128`). It is not reachable from your network.
+- It only serves OmniWork. Every request needs the per-install key in `~/.omniwork/gateway-key.txt`
+  (owner-only), so web pages and other accounts on the machine can't use your providers through
+  `/v1`. A guard inside the gateway refuses any `Host` header other than its loopback address
+  (which defeats DNS rebinding) and any cross-site `Origin`. `OMNIWORK_GATEWAY_OPEN=1` drops the
+  key requirement for one release.
+- OmniRoute's management API (`/api/*`, used by its dashboard) is not behind the key while the
+  dashboard has no password: the guard keeps browsers out, but another account on the same machine
+  could still reach it. On a shared machine, set a dashboard password in OmniRoute's settings.
 - Provider API keys are stored encrypted by OmniRoute in its local data directory.
 - Prompts and file contents are sent to whichever model provider `auto` routing selects. Free
   providers vary in their data-retention policies — **do not send secrets or proprietary code
