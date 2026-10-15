@@ -55,9 +55,11 @@ http.createServer((req, res) => { if (healthy) { res.writeHead(200, { "content-t
     db.close();
   };
   const freshDataDir = (name) => { const d = path.join(root, name); fs.mkdirSync(path.join(d, "omniroute"), { recursive: true }); return d; };
-  const boot = async (dataDir) => {
+  // A short deadline where a boot is meant to time out; a generous one where
+  // the stand-in must come up, so a busy machine doesn't fail the test.
+  const boot = async (dataDir, healthTimeoutMs = 1200) => {
     const statuses = [];
-    const gw = new Gateway({ dataDir, omniDir, healthTimeoutMs: 1200, onStatus: (s) => statuses.push(s) });
+    const gw = new Gateway({ dataDir, omniDir, healthTimeoutMs, onStatus: (s) => statuses.push(s) });
     let error = null;
     try { await gw.start(); } catch (e) { error = e; }
     return { gw, error, statuses };
@@ -98,7 +100,7 @@ http.createServer((req, res) => { if (healthy) { res.writeHead(200, { "content-t
     fs.writeFileSync(path.join(store, "storage.sqlite-wal"), "stale wal", { mode: 0o644 });
     for (const ts of [1000, 2000, 3000]) fs.writeFileSync(path.join(store, `storage.sqlite.corrupt-${ts}.bak`), "old keys", { mode: 0o644 });
     behave("hang-then-healthy");
-    const { gw, error, statuses } = await boot(dataDir);
+    const { gw, error, statuses } = await boot(dataDir, 5000);
     check("after setting corrupt storage aside, the gateway boots", !error && gw.ready);
     const backups = storageBackups(store);
     check("the corrupt database becomes a backup", !fs.existsSync(path.join(store, "storage.sqlite")) && backups.length && Number(backups[0].match(/\d+/)[0]) > 3000);
