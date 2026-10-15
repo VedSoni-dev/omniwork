@@ -70,7 +70,7 @@ const updates = (type) => notes.filter((n) => n.method === "session/update" && n
   const made = await rpc("session/new", { cwd: repo, mcpServers: [] });
   const sid = made.result.sessionId;
   check("session/new returns a sessionId", typeof sid === "string" && sid.length > 0);
-  check("session/new advertises four modes", made.result.modes.availableModes.length === 4);
+  check("session/new advertises the four approval modes and tool-free completion", made.result.modes.availableModes.map((m) => m.id).join() === "ask,edits,auto,plan,completion");
   check("session/new defaults to ask mode", made.result.modes.currentModeId === "ask");
 
   const modelOpt = (made.result.configOptions || []).find((o) => o.id === "model");

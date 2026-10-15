@@ -68,6 +68,10 @@ channel.
 
 The practical mitigations, in order of effectiveness:
 
+0. When the task is to *read* untrusted text — score a document, extract fields, summarise a
+   page — don't give it an agent at all: use tool-free completion (ACP `completion` mode, the MCP
+   `complete` tool, or `npm run complete`). The request carries no tools, so there is nothing for
+   injected text to call.
 1. Use approval mode when the agent will touch untrusted content
 2. Point the workspace at a specific project, not your home directory
 3. Only connect MCP servers you trust — they run as local subprocesses with your privileges

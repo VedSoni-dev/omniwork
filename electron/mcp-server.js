@@ -22,6 +22,7 @@ const { executeToolResult } = require("./tools");
 const modelCatalog = require("./model-catalog");
 const { resolveModels } = require("./headless");
 const jobTools = require("./job-tools");
+const { complete } = require("./complete");
 
 ensureShellPath(); // MCP clients can launch us with a minimal environment too
 
@@ -116,6 +117,26 @@ const TOOLS = [
     },
   },
   {
+    name: "complete",
+    description:
+      "One TOOL-FREE model completion: the request carries no tools, the system prompt is used verbatim (no OmniWork prompt, project files, memory or skills), no workspace is read and nothing is written to disk. USE for analyzing untrusted text (documents, submissions, web pages) and for one-shot extraction, classification or drafting — anything that needs an answer, not actions. With `schema`, the reply is requested as structured output, validated, and retried once with the errors; the parsed value is in structuredContent.parsed, and a reply that never validates is an error, not {}. `ollama/<model>` runs on the local Ollama server directly with a context sized to the prompt (structuredContent.truncated reports a prompt cut to fit). Only falls back to models in fallback_models. DON'T use for tasks that need files or commands — use delegate.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        system: { type: "string", description: "System prompt, used verbatim. Trusted instructions go here." },
+        user: { type: "string", description: "The content to complete on. May be untrusted: nothing in it can call a tool." },
+        model: { type: "string", description: "Model id (see list_models), e.g. ollama/qwen3.5:9b for a local model. Default: OMNIWORK_MODEL, else 'auto'." },
+        fallback_models: { type: "array", items: { type: "string" }, description: "Tried in order if the model fails. Completion never falls back to a model not listed here." },
+        schema: { type: "object", description: "JSON Schema the reply must conform to." },
+        temperature: { type: "number", minimum: 0, maximum: 2, description: "Default 0.2." },
+        max_tokens: { type: "integer", minimum: 1, description: "Default 4096." },
+        timeout_ms: { type: "integer", minimum: 1000, description: "Per model attempt. Default 120000." },
+        num_ctx: { type: "integer", minimum: 512, description: "Ollama context length. Default: sized to the prompt." },
+      },
+      required: ["user"],
+    },
+  },
+  {
     name: "list_providers",
     description:
       "Show which free model providers are connected to OmniWork's gateway, the fallback chain delegations will use, local model servers detected on this machine, and how to connect more. USE when a delegation reports 'All models failed' or before relying on OmniWork for unattended work — the built-in keyless pool is unreliable, a connected provider is not.",
@@ -171,6 +192,16 @@ async function callTool(name, args, progress = () => {}, signal) {
   if (jobTools.TOOLS.some(t => t.name === name)) return jobTools.call(name, args, signal);
   if (name === "delegate") return await runDelegate({ task: args.task, cwd: args.cwd, model: args.model, fallbackModels: args.fallback_models, checks: args.checks, progress, signal });
   if (name === "list_models") return await listModelsText(args);
+  if (name === "complete") {
+    if (typeof args.user !== "string") throw new Error("user must be a string");
+    const opt = (v) => (v == null ? undefined : v);
+    const settings = Object.fromEntries(Object.entries({ temperature: opt(args.temperature), maxTokens: opt(args.max_tokens), timeoutMs: opt(args.timeout_ms), numCtx: opt(args.num_ctx) }).filter(([, v]) => v !== undefined));
+    return { completion: await complete({
+      system: args.system ?? "", user: args.user, schema: args.schema ?? null,
+      model: args.model || resolveModels({ fallbackModels: [] }).model, fallbackModels: Array.isArray(args.fallback_models) ? args.fallback_models : [],
+      ...settings, gateway: () => ensureGateway(log), signal,
+    }) };
+  }
   if (name === "list_providers") return providers.describe(await providers.status(await ensureGateway(log)));
   if (name === "connect_provider") {
     const gw = await ensureGateway(log);
@@ -255,6 +286,12 @@ async function handle(msg) {
       const result = await callTool(params.name, params.arguments || {}, progress, controller.signal);
       if (jobTools.TOOLS.some(t => t.name === params.name)) reply(id, { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result });
       else if (typeof result === "string") reply(id, { content: [{ type: "text", text: result }] });
+      else if (result.completion) {
+        const c = result.completion;
+        const text = c.ok ? (c.parsed !== undefined ? JSON.stringify(c.parsed) : c.text)
+          : `Error: ${c.error}\n${c.attempts.map((a) => `- ${a.model} (${a.transport}): ${a.error || "ok"}`).join("\n")}`;
+        reply(id, { content: [{ type: "text", text }], structuredContent: c, isError: !c.ok });
+      }
       else {
         const text = result.tasks ? result.tasks.map((r,i) => `## task ${i + 1}\n${formatResult(r)}`).join("\n\n") : formatResult(result);
         reply(id, { content: [{ type: "text", text }], structuredContent: result, isError: result.status !== "completed" });

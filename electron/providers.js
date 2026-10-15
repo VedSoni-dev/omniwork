@@ -84,6 +84,23 @@ const LOCAL = [
   { id: "vllm", alias: "vllm", name: "vLLM", url: "http://127.0.0.1:8000/v1" },
 ];
 
+// Where a local server listens: its default address, or the one its own
+// environment variable names. OLLAMA_HOST is parsed the way the Ollama CLI
+// parses it: "host", "host:port", or a URL ("http://host" means port 80); a
+// wildcard bind address means this machine.
+const LOCAL_HOST_ENV = { "ollama-local": "OLLAMA_HOST", "lm-studio": "LMSTUDIO_HOST", "llama-cpp": "LLAMA_CPP_HOST", vllm: "VLLM_HOST" };
+function localUrl(l, env = process.env) {
+  const raw = String(env[LOCAL_HOST_ENV[l.id]] || "").trim();
+  if (!raw) return l.url;
+  const schemed = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw);
+  let u;
+  try { u = new URL(schemed ? raw : `http://${raw}`); } catch { return l.url; }
+  if (!schemed && !u.port) u.port = new URL(l.url).port;
+  if (["0.0.0.0", "[::]", ""].includes(u.hostname)) u.hostname = "127.0.0.1";
+  const p = u.pathname.replace(/\/+$/, "");
+  return `${u.protocol}//${u.host}${/\/v1$/.test(p) ? p : p + "/v1"}`;
+}
+
 const MAX_CHAIN = 6;
 
 // ── gateway management API ────────────────────────────────────────
@@ -417,4 +434,4 @@ function describe(st) {
   return lines.join("\n");
 }
 
-module.exports = { CATALOG, LOCAL, status, describe, connect, connectWithKey, connectOpenRouter, connectLocal, removeProvider, suggestChain, connections, modelIds, waitForModels, defaultOpen };
+module.exports = { CATALOG, LOCAL, localUrl, status, describe, connect, connectWithKey, connectOpenRouter, connectLocal, removeProvider, suggestChain, connections, modelIds, waitForModels, defaultOpen };

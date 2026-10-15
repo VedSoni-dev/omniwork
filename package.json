@@ -20,6 +20,7 @@
     "setup": "node scripts/setup.js",
     "connect": "node scripts/connect.js",
     "providers": "node scripts/providers.js",
+    "complete": "node scripts/complete.js",
     "test:boot": "node test/boot.js",
     "test:smoke": "node test/smoke.js",
     "test:confine": "node test/confine.js",
@@ -43,6 +44,9 @@
     "test:tuning": "node test/tuning.js",
     "test:sidecar": "node test/sidecar.js",
     "test:storage": "node test/storage.js",
+    "test:complete": "node test/complete.js",
+    "test:json-schema": "node test/json-schema.js",
+    "test:acp-completion": "node test/acp-completion.js",
     "test:gateway-auth": "node test/gateway-auth.js",
     "mcp": "node electron/mcp-server.js",
     "acp": "node electron/acp-server.js",
@@ -57,6 +61,7 @@
     "omniwork-mcp": "electron/mcp-server.js",
     "omniwork-acp": "electron/acp-server.js",
     "omniwork-providers": "scripts/providers.js",
+    "omniwork-complete": "scripts/complete.js",
     "omniwork-jobs": "scripts/jobs.js"
   },
   "dependencies": {
