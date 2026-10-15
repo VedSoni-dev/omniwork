@@ -173,7 +173,8 @@ async function ollamaRequest({ base, model, messages, schema, temperature, maxTo
   try { show = await ollamaShow(base, model, signal); }
   catch (e) {
     if (e instanceof CompletionError) throw e;
-    throw new CompletionError(`Ollama is not answering at ${base} (${e.cause?.code || e.message}). Start it with \`ollama serve\`, or set OLLAMA_HOST if it listens elsewhere.`, { transportDown: true });
+    const hints = providers.ollamaHints();
+    throw new CompletionError(`Ollama is not answering at ${base} (${e.cause?.code || e.message}). Start it with \`ollama serve\`, or set OLLAMA_HOST if it listens elsewhere.${hints.map((h) => `\n${h}`).join("")}`, { transportDown: true });
   }
   const { numCtx, fits } = contextFor(promptChars, maxTokens, show.contextLength, requested);
   const body = {

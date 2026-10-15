@@ -152,6 +152,13 @@ async function resolveModelsLive(gw, opts = {}) {
   await listModels(gw); // Pinned models need context metadata too.
   const decided = opts.fallbackModels != null || process.env.OMNIWORK_MODEL_FALLBACKS != null;
   if (!decided) r.fallbackModels = (await defaultFallbacks(gw)).filter((m) => m !== r.model);
+  // OMNIWORK_PREFER_LOCAL=1: when nothing more specific than `auto` was asked
+  // for, a connected local model goes first, with the cloud chain behind it.
+  const isLocal = (id) => providers.LOCAL.some((l) => id.startsWith(l.alias + "/"));
+  if (!decided && r.model === "auto" && /^(1|true|yes|on)$/i.test(process.env.OMNIWORK_PREFER_LOCAL || "")) {
+    const local = r.fallbackModels.find(isLocal);
+    if (local) { r.fallbackModels = [...r.fallbackModels.filter((m) => m !== local), "auto"]; r.model = local; }
+  }
   return { ...r, modelContexts: modelCache.contexts, contextTokens: modelCache.contexts?.[r.model] };
 }
 

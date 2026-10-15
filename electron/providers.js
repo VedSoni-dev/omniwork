@@ -14,6 +14,9 @@
 // fallback chain the ACP/MCP servers and the desktop app use.
 
 const crypto = require("node:crypto");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const http = require("node:http");
 const { spawn } = require("node:child_process");
 const opencode = require("./opencode-engine");
@@ -99,6 +102,64 @@ function localUrl(l, env = process.env) {
   if (["0.0.0.0", "[::]", ""].includes(u.hostname)) u.hostname = "127.0.0.1";
   const p = u.pathname.replace(/\/+$/, "");
   return `${u.protocol}//${u.host}${/\/v1$/.test(p) ? p : p + "/v1"}`;
+}
+
+// The local servers to look for, at the addresses their env vars name.
+const localCandidates = (env = process.env) => LOCAL.map((l) => ({ ...l, url: localUrl(l, env) }));
+
+// ── why a local server isn't usable ───────────────────────────────
+// "Not running" is rarely the whole story. Ollama in particular can be
+// installed and launched yet crash-loop — say its models folder is a link to
+// a drive that isn't mounted — and say so only in its own log. These turn
+// that into a sentence a user can act on.
+function readTail(file, bytes = 64 * 1024) {
+  let fd;
+  try {
+    fd = fs.openSync(file, "r");
+    const size = fs.fstatSync(fd).size;
+    const start = Math.max(0, size - bytes);
+    const buf = Buffer.alloc(size - start);
+    fs.readSync(fd, buf, 0, buf.length, start);
+    return buf.toString("utf8");
+  } catch { return ""; } finally { if (fd !== undefined) try { fs.closeSync(fd); } catch {} }
+}
+
+const tilde = (p, home) => (p.startsWith(home + path.sep) ? "~" + p.slice(home.length) : p);
+
+function ollamaHints({ home = os.homedir(), env = process.env, bigLogBytes = 100 * 1024 * 1024 } = {}) {
+  const hints = [];
+  const models = env.OLLAMA_MODELS || path.join(home, ".ollama", "models");
+  try {
+    if (fs.lstatSync(models).isSymbolicLink()) {
+      const target = path.resolve(path.dirname(models), fs.readlinkSync(models));
+      if (!fs.existsSync(target)) hints.push(`Ollama's models folder ${tilde(models, home)} links to ${target}, which doesn't exist — is that drive connected? Reconnect it, or point OLLAMA_MODELS at a folder that exists, then restart Ollama.`);
+    }
+  } catch {}
+  const log = path.join(home, ".ollama", "logs", "server.log");
+  const errors = readTail(log).split("\n").filter((l) => /\b(error|panic|fatal|failed|cannot)\b|level=ERROR/i.test(l)).slice(-3);
+  if (errors.length) hints.push(`Last errors in ${tilde(log, home)}:\n  ${errors.map((l) => l.trim().slice(0, 300)).join("\n  ")}`);
+  try {
+    const size = fs.statSync(log).size;
+    if (size > bigLogBytes) hints.push(`${tilde(log, home)} is ${Math.round(size / 1e6)} MB — Ollama is probably crash-looping (restarting and logging over and over).`);
+  } catch {}
+  return hints;
+}
+
+// { running, listening, reason, hints } for one local candidate.
+async function diagnoseLocal(l, { timeoutMs = 1500, home, env } = {}) {
+  let out;
+  try {
+    const res = await fetch(`${l.url}/models`, { signal: AbortSignal.timeout(timeoutMs) });
+    if (res.ok) return { running: true, listening: true };
+    out = { running: false, listening: true, reason: `${l.name} answers HTTP ${res.status} at ${l.url}` };
+  } catch (e) {
+    const code = (e.cause && e.cause.code) || e.name || "";
+    out = code === "ECONNREFUSED" ? { running: false, listening: false, reason: `nothing is listening at ${l.url}` }
+      : /Timeout|Abort/i.test(code) ? { running: false, listening: true, reason: `${l.url} accepted the connection but didn't answer within ${timeoutMs} ms` }
+      : { running: false, listening: false, reason: `${l.url}: ${code || e.message}` };
+  }
+  out.hints = l.id === "ollama-local" ? ollamaHints({ home, env }) : [];
+  return out;
 }
 
 const MAX_CHAIN = 6;
@@ -192,9 +253,11 @@ function modelsFor(p, ids) {
 // model it exposes right now — the preferred ids first, then anything the
 // provider's free pattern matches, then whatever it lists. Local servers
 // close the chain. Capped so a turn that hits every failure still ends.
-function suggestChain(ids, { max = MAX_CHAIN } = {}) {
+// OMNIWORK_PREFER_LOCAL=1 puts local servers first: the private choice for
+// work that shouldn't leave the machine when it doesn't have to.
+function suggestChain(ids, { max = MAX_CHAIN, preferLocal = /^(1|true|yes|on)$/i.test(process.env.OMNIWORK_PREFER_LOCAL || "") } = {}) {
   const chain = [];
-  for (const p of [...CATALOG, ...LOCAL]) {
+  for (const p of preferLocal ? [...LOCAL, ...CATALOG] : [...CATALOG, ...LOCAL]) {
     const have = modelsFor(p, ids);
     if (!have.length) continue;
     const pick = (p.prefer || []).find((m) => have.includes(m))
@@ -216,7 +279,7 @@ async function probeLocal(url, timeoutMs = 1500) {
   } catch { return null; }
 }
 
-async function status(gw, { detectLocal = true, candidates = LOCAL } = {}) {
+async function status(gw, { detectLocal = true, candidates = localCandidates() } = {}) {
   const [conns, ids] = await Promise.all([connections(gw), modelIds(gw)]);
   const connected = (id) => conns.some((c) => c.provider === id && c.isActive !== false);
   const providers = CATALOG.map((p) => ({
@@ -226,7 +289,13 @@ async function status(gw, { detectLocal = true, candidates = LOCAL } = {}) {
   const local = [];
   for (const l of candidates) {
     const running = detectLocal ? await probeLocal(l.url) : null;
-    local.push({ id: l.id, name: l.name, url: l.url, connected: connected(l.id), running: running != null, runningModels: running || [], models: modelsFor(l, ids).length });
+    const entry = { id: l.id, name: l.name, url: l.url, connected: connected(l.id), running: running != null, runningModels: running || [], models: modelsFor(l, ids).length };
+    // Explain a local server that's connected or showing signs of trouble.
+    if (detectLocal && running == null) {
+      const d = await diagnoseLocal(l);
+      if (entry.connected || d.listening || d.hints.length) Object.assign(entry, { reason: d.reason, hints: d.hints });
+    }
+    local.push(entry);
   }
   // The OpenCode engine: free Zen models with no account, if OpenCode is
   // installed. Listing them starts its server once per process.
@@ -294,13 +363,17 @@ async function connectWithKey(gw, providerId, apiKey, { verify = true } = {}) {
   return { provider: p.id, name: p.name, models: have.length, chain: suggestChain(ids) };
 }
 
-async function connectLocal(gw, { candidates = LOCAL, only = null } = {}) {
+async function connectLocal(gw, { candidates = localCandidates(), only = null } = {}) {
   const added = [];
   const skipped = [];
   for (const l of candidates) {
     if (only && l.id !== only) continue;
     const running = await probeLocal(l.url);
-    if (!running) { skipped.push({ id: l.id, name: l.name, reason: "not running" }); continue; }
+    if (!running) {
+      const d = await diagnoseLocal(l);
+      skipped.push({ id: l.id, name: l.name, reason: d.reason || "not running", hints: d.hints || [] });
+      continue;
+    }
     const conn = await addConnection(gw, { provider: l.id, name: l.name, apiKey: "local", baseUrl: l.url });
     await retire(gw, await twinsOf(gw, l.id, conn && conn.id));
     added.push({ id: l.id, name: l.name, url: l.url, models: running });
@@ -430,8 +503,14 @@ function describe(st) {
   lines.push("");
   lines.push(running.length
     ? `Local model servers running: ${running.map((l) => `${l.name}${l.connected ? " (connected)" : ` — ${l.runningModels.length} models, not connected yet`}`).join("; ")}`
-    : "Local model servers: none running (Ollama on :11434, LM Studio on :1234, llama.cpp on :8080, vLLM on :8000 are auto-detected).");
+    : "Local model servers: none running (Ollama on :11434 or OLLAMA_HOST, LM Studio on :1234, llama.cpp on :8080, vLLM on :8000 are auto-detected).");
+  for (const l of st.local.filter((x) => !x.running && x.reason)) {
+    lines.push(`${l.name} isn't usable: ${l.reason}.${(l.hints || []).map((h) => `\n  ${h}`).join("")}`);
+  }
+  if (st.local.some((l) => l.id === "ollama-local" && (l.running || l.connected))) {
+    lines.push("Ollama's context is 4,096 tokens on most machines unless OLLAMA_CONTEXT_LENGTH is set before `ollama serve` — longer prompts are cut from the start. Agent turns through the gateway can't raise it; tool-free completion (`npm run complete`) sets it per request.");
+  }
   return lines.join("\n");
 }
 
-module.exports = { CATALOG, LOCAL, localUrl, status, describe, connect, connectWithKey, connectOpenRouter, connectLocal, removeProvider, suggestChain, connections, modelIds, waitForModels, defaultOpen };
+module.exports = { CATALOG, LOCAL, localUrl, localCandidates, diagnoseLocal, ollamaHints, status, describe, connect, connectWithKey, connectOpenRouter, connectLocal, removeProvider, suggestChain, connections, modelIds, waitForModels, defaultOpen };

@@ -231,7 +231,7 @@ async function callTool(name, args, progress = () => {}, signal) {
     const head = result.added
       ? (result.added.length
         ? `Registered local: ${result.added.map((a) => `${a.name} (${a.models.length} models)`).join(", ")}.`
-        : `No local model server is running (${result.skipped.map((s) => s.name).join(", ")} checked).`)
+        : `No local model server is running (${result.skipped.map((s) => s.name).join(", ")} checked).${result.skipped.filter((x) => x.hints && x.hints.length).map((x) => `\n${x.name}: ${x.reason}.\n  ${x.hints.join("\n  ")}`).join("")}`)
       : `Connected ${result.name} — ${result.models} models now routable.`;
     return `${head}${url ? `\n(sign-in URL was ${url})` : ""}\nFallback chain now: ${st.chain.length ? st.chain.join(" → ") : "(empty)"}`;
   }

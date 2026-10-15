@@ -373,6 +373,10 @@ and the reasons in `_meta`, not a JSON-RPC error. The mode is one-way: an agent 
 into it, a completion session can never leave it. `OMNIWORK_ACP_MODE=completion` makes every new
 session a completion session. OpenCode engine models can't be used — they always carry tools.
 
+For structured output on a local model, a ~9–12B instruct model is a reasonable start on a 16 GB
+machine, and larger ones fit in 32 GB — but run your own schema-validation check on a handful of
+real inputs before relying on one; JSON reliability varies a lot between models.
+
 ## Build from source
 
 Requires **Node.js 22+** (24 recommended).
@@ -457,6 +461,8 @@ encrypted, locally). Pick a specific model in the status bar.
 | `OMNIWORK_GATEWAY_PORT` | `20128` | Gateway port |
 | `OMNIWORK_GATEWAY_OPEN` | off | `1` starts the gateway without requiring the per-install key (the old behaviour; kept for one release). The Host/Origin guard still applies |
 | `OMNIWORK_GATEWAY_ALLOWED_HOSTS` | — | Extra comma-separated `Host` names the gateway accepts, e.g. `host.docker.internal` |
+| `OMNIWORK_PREFER_LOCAL` | off | `1` puts connected local servers first in the fallback chain, and makes the first one the primary model wherever `auto` would have been (headless servers) |
+| `OLLAMA_HOST`, `LMSTUDIO_HOST`, `LLAMA_CPP_HOST`, `VLLM_HOST` | default ports | Where OmniWork looks for each local server (`OLLAMA_HOST` is parsed as the Ollama CLI parses it) |
 | `OMNIWORK_KEYLESS_OPENCODE` | off | `on` leaves OmniRoute's keyless "OpenCode Free" provider enabled. By default it is blocked once per gateway store: it only worked by impersonating the OpenCode client, which upstream now refuses. OpenCode's free Zen models run through the real OpenCode binary instead (`opencode/…`) |
 | `OMNIWORK_GATEWAY_LOGS` | off | `on` lets the gateway write full request and reply bodies to its `call_logs/` (owner-only, kept a day). Off, prompts never touch disk |
 | `OMNIWORK_RUNTIME_DIR` | `~/.omniwork` | Where the gateway key and the running gateway's record (`gateway.json`) live |
