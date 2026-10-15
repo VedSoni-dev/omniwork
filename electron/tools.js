@@ -5,6 +5,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
+const { commandEnv, inheritsCommandEnv } = require("./child-env");
 
 const MAX_READ_BYTES = 400 * 1024; // don't blow up context on huge files
 const MAX_OUTPUT_CHARS = 48000;
@@ -172,8 +173,10 @@ function truncate(s) {
   return s.slice(0, head) + `\n… [truncated ${s.length - MAX_OUTPUT_CHARS} chars]\n` + s.slice(-tail);
 }
 
-// Prefer the user's login shell so commands see the same aliases, PATH and
-// toolchain they'd get in Terminal. macOS defaults to zsh; bash is the fallback.
+// The user's shell, so commands behave as they would in Terminal, with the
+// environment from child-env.js. Not a login shell: that would re-source the
+// profile and re-export the secrets commandEnv() leaves out. macOS defaults to
+// zsh; bash is the fallback.
 function userShell() {
   if (process.platform === "win32") return "powershell.exe";
   const sh = process.env.SHELL;
@@ -185,9 +188,9 @@ async function runCommand(workspace, command, onChunk, signal) {
   return new Promise((resolve) => {
     const isWin = process.platform === "win32";
     const shell = userShell();
-    const args = isWin ? ["-NoProfile", "-Command", command] : ["-lc", command];
+    const args = isWin ? ["-NoProfile", "-Command", command] : [inheritsCommandEnv() ? "-lc" : "-c", command];
     if (signal?.aborted) return resolve({ text: "Command cancelled", ok: false, exitCode: null });
-    const child = spawn(shell, args, { cwd: workspace, env: process.env, detached: !isWin });
+    const child = spawn(shell, args, { cwd: workspace, env: commandEnv(workspace), detached: !isWin });
     let killTimer;
     const kill = (hard = false) => {
       try {

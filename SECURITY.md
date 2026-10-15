@@ -26,8 +26,13 @@ contents through the same check.
 
 ### What is not confined
 
-**`run_command` is not sandboxed.** It runs in your login shell with your full user privileges,
-starting in the workspace directory. Nothing stops a command from leaving that directory,
+**`run_command` is not sandboxed.** It runs in your shell with your full user privileges,
+starting in the workspace directory. It does not inherit OmniWork's environment: commands get
+`PATH`, home and temp directories, locale, proxy and CA settings, and toolchain locations, but
+not tokens or keys from your shell (`GITHUB_TOKEN`, `AWS_*`, provider keys, database URLs), and
+the shell is not a login shell, so your profile is not re-sourced. Add variables a project needs
+with `OMNIWORK_COMMAND_ENV_PASSTHROUGH=NAME,NAME`. This narrows what a command is *handed*; it
+does not stop a command from reading files in your home folder. Nothing stops a command from leaving that directory,
 reading files elsewhere in your home folder, installing packages, making network requests, or
 deleting data. Workspace confinement applies to the *file tools* only — it is not a sandbox, and
 it is not a security boundary against shell commands.

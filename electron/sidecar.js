@@ -14,6 +14,7 @@ const net = require("node:net");
 const path = require("node:path");
 const fs = require("node:fs");
 const crypto = require("node:crypto");
+const { gatewayEnv } = require("./child-env");
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -303,8 +304,11 @@ class Gateway {
       this.status("boot", `Port ${PORT} is blocked — starting on ${alt}…`);
     }
 
+    // An explicit environment (child-env.js), not the user's shell: the
+    // gateway has no use for their tokens, and must not pick up settings like
+    // CORS_ALLOW_ALL meant for something else.
     const env = {
-      ...process.env,
+      ...gatewayEnv(),
       NODE_ENV: "production",
       PORT: String(this.port), // may differ from PORT if the well-known one was blocked
       HOSTNAME: HOST, // bind loopback only
@@ -315,8 +319,6 @@ class Gateway {
       ARENA_ELO_SYNC_ENABLED: "false",
       PRICING_SYNC_ENABLED: "false",
     };
-    // Ensure no stray Electron-as-node flag leaks into the child.
-    delete env.ELECTRON_RUN_AS_NODE;
 
     // Corrupt gateway storage (e.g. after a hard kill) makes the server listen
     // but never turn healthy. If the first boot fails, set the database aside

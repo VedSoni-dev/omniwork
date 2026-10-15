@@ -405,6 +405,10 @@ encrypted, locally). Pick a specific model in the status bar.
 | `OMNIWORK_BASE_URL` | — | Run headless servers against another OpenAI-compatible endpoint |
 | `OMNIWORK_API_KEY` | `omniwork` | Key for `OMNIWORK_BASE_URL` |
 | `OMNIWORK_ACP_MODE` | `ask` | Starting approval mode for ACP sessions |
+| `OMNIWORK_COMMAND_ENV_PASSTHROUGH` | — | Comma-separated variables `run_command` may see beyond the safe defaults (e.g. `GITHUB_TOKEN`) |
+| `OMNIWORK_COMMAND_ENV` | — | `inherit` gives commands the full environment and a login shell again (kept for one release) |
+| `OMNIWORK_GATEWAY_ENV_PASSTHROUGH` | — | Comma-separated variables to forward to the gateway (e.g. an OmniRoute setting) |
+| `OMNIWORK_GATEWAY_ENV` | — | `inherit` forwards the full environment to the gateway again, minus `CORS_*` (kept for one release) |
 | `OMNIWORK_AUTO_PERSIST` | off | `1` lets `auto` mode save global memory and skills without asking (the earlier behaviour; kept for one release) |
 | `OMNIWORK_DELEGATE_TIMEOUT_MS` | `600000` | Backstop before a stalled delegate returns partial work |
 | `OMNIWORK_NODE` | — | Node binary used to run the gateway in dev |
