@@ -247,6 +247,36 @@ function tightenTree(dir, depth = 0) {
   }
 }
 
+// ── keyless OpenCode ──────────────────────────────────────────────
+// OmniRoute's built-in "OpenCode Free" provider reaches OpenCode Zen's free
+// tier with no key by presenting itself as the OpenCode client. Upstream now
+// refuses that ("only from within OpenCode", 403), and impersonating another
+// product's client isn't something OmniWork should do — its free Zen models
+// run through the real OpenCode binary instead (`opencode/…`, the engine). So
+// the header synthesis is off, and the keyless provider is blocked once per
+// gateway store — never again if the user re-enables it in the dashboard.
+// The keyed providers (opencode-zen, opencode-go) are untouched.
+// OMNIWORK_KEYLESS_OPENCODE=on leaves the provider alone.
+async function blockKeylessOpenCode(baseUrl, apiKey, gwDataDir) {
+  if (/^(1|true|yes|on)$/i.test(process.env.OMNIWORK_KEYLESS_OPENCODE || "")) return "skipped";
+  const marker = path.join(gwDataDir, "omniwork-policy.json");
+  let policy = {};
+  try { policy = JSON.parse(fs.readFileSync(marker, "utf8")); } catch {}
+  if (policy.keylessOpenCodeBlocked) return "done before";
+  const url = baseUrl.replace(/\/v1$/, "") + "/api/settings";
+  const headers = { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` };
+  const res = await fetch(url, { headers, signal: AbortSignal.timeout(5000) });
+  if (!res.ok) throw new Error(`settings HTTP ${res.status}`);
+  const current = (await res.json()).blockedProviders;
+  const blocked = Array.isArray(current) ? current : [];
+  if (!blocked.includes("opencode") && !blocked.includes("oc")) {
+    const patched = await fetch(url, { method: "PATCH", headers, body: JSON.stringify({ blockedProviders: [...blocked, "opencode"] }), signal: AbortSignal.timeout(5000) });
+    if (!patched.ok) throw new Error(`settings HTTP ${patched.status}`);
+  }
+  writePrivate(marker, JSON.stringify({ ...policy, keylessOpenCodeBlocked: new Date().toISOString() }));
+  return "blocked";
+}
+
 // The guard (gateway-guard.js) runs inside the gateway's own Node, which can't
 // read app.asar — so it is copied next to the gateway's data each start.
 function installGuard(dataDir) {
@@ -397,6 +427,8 @@ class Gateway {
     const env = {
       APP_LOG_TO_FILE: "false",
       CALL_LOG_RETENTION_DAYS: "1",
+      // Don't present the gateway as OpenCode's own client (see blockKeylessOpenCode).
+      OPENCODE_SYNTHESIZE_CLI_HEADERS: "false",
       ...gatewayEnv(),
       ...(keepBodies ? {} : { NO_LOG_API_KEY_IDS: "env-key" }),
       NODE_ENV: "production",
@@ -434,6 +466,8 @@ class Gateway {
         try {
           writePrivate(stateFile(), JSON.stringify({ version: 1, port: this.port, pid: this.proc.pid, ownerPid: process.pid, key: this.apiKey, dataDir: gwDataDir, startedAt: new Date().toISOString() }));
         } catch (e) { this.status("boot", `Could not record the gateway for other OmniWork processes: ${e.message}`); }
+        try { await blockKeylessOpenCode(this.baseUrl, this.apiKey, gwDataDir); }
+        catch (e) { this.status("boot", `Could not turn off keyless OpenCode routing: ${e.message}`); }
 
         this.#watchdog();
         return this.baseUrl;

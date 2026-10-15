@@ -144,6 +144,34 @@ const failureSignature = (err) => `${err.status || 0}:${String(err.message || ""
 // pool returns when every member failed or timed out. A rate limit (429) is
 // deliberately not one: it clears by itself, and it must not silently move a
 // pinned paid model's conversation to a free tier.
+// OmniRoute explains a failed pool — its size, how many members it tried,
+// which it left out and why — in the error body (or x-omniroute-combo-*
+// headers). Kept on the error and summarised in its message, so the user sees
+// "pool of 3; 3 tried; 2 deprecated, 1 needs a key" rather than a bare 502.
+function gatewayDiagnostics(body, headers) {
+  try { const d = JSON.parse(body).diagnostics; if (d && typeof d === "object") return d; } catch {}
+  const size = headers.get("x-omniroute-combo-pool-size");
+  if (size == null) return null;
+  return {
+    poolSize: Number(size), attempted: Number(headers.get("x-omniroute-combo-attempted")),
+    excluded: String(headers.get("x-omniroute-combo-excluded") || "").split(",").filter(Boolean).map((e) => ({ reason: e.split(":").pop() })),
+    terminalReason: headers.get("x-omniroute-combo-terminal-reason") || undefined,
+  };
+}
+function describeDiagnostics(d) {
+  if (!d) return "";
+  const parts = [];
+  if (Number.isFinite(d.poolSize)) parts.push(`pool of ${d.poolSize}`);
+  if (Number.isFinite(d.attempted)) parts.push(`${d.attempted} tried`);
+  const reasons = new Map();
+  for (const e of Array.isArray(d.excluded) ? d.excluded : []) { const r = String(e && e.reason || "excluded"); reasons.set(r, (reasons.get(r) || 0) + 1); }
+  if (reasons.size) parts.push([...reasons].map(([r, n]) => `${n} ${r}`).join(", "));
+  if (d.terminalReason && !/^all_models_failed$/.test(d.terminalReason)) parts.push(String(d.terminalReason).slice(0, 80));
+  return parts.join("; ");
+}
+// Nothing in the pool could even be tried: no provider serves it.
+const emptyPool = (status, body, d) => (d && d.poolSize === 0) || ([404, 503].includes(status) && /no executable targets|ALL_TARGETS_SKIPPED|ALL_ACCOUNTS_INACTIVE/i.test(body));
+
 const isNoModelFailure = (msg) => /All models failed|Gateway (401|403|404|502|503|504)\b|No choices returned|empty response/.test(String(msg || ""));
 const tuning = require("./tuning");
 
@@ -463,6 +491,13 @@ class Agent {
       const delay = retry && (/^\d+(\.\d+)?$/.test(retry) ? Number(retry) * 1000 : Date.parse(retry) - Date.now());
       if (Number.isFinite(delay) && delay > 0) err.retryAfterMs = Math.min(delay, 300_000);
       if (res.status === 429) this.onRateLimit?.(err.retryAfterMs || 60000);
+      err.diagnostics = gatewayDiagnostics(body, res.headers);
+      if (/^auto(\/|$)/.test(model) && emptyPool(res.status, body, err.diagnostics)) {
+        err.message = `Gateway ${res.status}: no connected model provider can serve ${model} — connect a local model (npm run providers connect local) or add a provider key (npm run providers).`;
+      } else {
+        const why = describeDiagnostics(err.diagnostics);
+        if (why) err.message += ` (${why})`;
+      }
       throw err;
     }
     const ctype = res.headers.get("content-type") || "";

@@ -47,6 +47,8 @@ async function main() {
     ["a foreign Host is refused (DNS rebinding)", (await request(port, { headers: { ...key, Host: `rebind.evil.example:${port}` } })).status === 403],
     ["a cross-site Origin is refused", (await request(port, { headers: { ...key, Origin: "https://evil.example" } })).status === 403],
     ["the management API refuses a foreign Host", (await request(port, { path: "/api/providers", headers: { Host: `rebind.evil.example:${port}` } })).status === 403],
+    ["keyless OpenCode (client impersonation) is blocked", ((await (await fetch(`${gateway.baseUrl.replace(/\/v1$/, "")}/api/settings`, { headers: key })).json()).blockedProviders || []).includes("opencode")],
+    ["…so no keyless oc/ model is routable", !(data.data || []).some((m) => /^oc\//.test(m.id))],
   ];
   // A prompt that really goes upstream — to a local stand-in registered as the
   // Ollama provider — must not leave its body in call_logs.
