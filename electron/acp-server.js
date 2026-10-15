@@ -234,7 +234,7 @@ function persist(sess) {
   } catch (e) { log("persist failed:", e.message); }
 }
 
-async function buildSession({ id, cwd, mode, messages, model, fallbackModels, engineSession, mcp = null, deniedTools = null }) {
+async function buildSession({ id, cwd, mode, messages, model, fallbackModels, engineSession, mcp = null, deniedTools = null, projectFiles }) {
   const selected = resolveModels({ model, fallbackModels });
   const gw = opencode.isEngineModel(selected.model) ? { baseUrl: "http://127.0.0.1", apiKey: "" } : await ensureGateway(log);
   const models = opencode.isEngineModel(selected.model) ? selected : await resolveModelsLive(gw, { model, fallbackModels });
@@ -246,6 +246,7 @@ async function buildSession({ id, cwd, mode, messages, model, fallbackModels, en
     allowed: new Set(),   // permission keys answered "always allow"
     rejected: new Set(),  // …and "never allow"
     mcp, deniedTools,
+    projectFiles,         // false: leave out the repository's instruction files and skills
     agent: null,
   };
   sess.gw = gw;
@@ -273,6 +274,7 @@ function attachAgent(sess, model, fallbackModels, { messages = null, sessionID =
     approver: (callId, name, args, preview) => sess.approve(callId, name, args, preview),
     mcp: sess.mcp,
     deniedTools: sess.deniedTools,
+    projectFiles: sess.projectFiles,
     emit: (type, payload) => sess.sink(type, payload),
     ...agentEnv(sess.cwd),
   });
@@ -815,6 +817,7 @@ const handlers = {
       id, cwd, mode,
       model: ow.model ?? meta.model, fallbackModels: ow.fallbackModels ?? meta.fallbackModels ?? meta.fallback_models,
       mcp: sessionMcp(params.mcpServers), deniedTools: deniedByCapabilities(strict),
+      projectFiles: typeof ow.projectFiles === "boolean" ? ow.projectFiles : undefined,
     });
     persist(sess);
     setTimeout(() => pushCommands(sess), 0); // after we've returned the sessionId

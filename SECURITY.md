@@ -73,7 +73,11 @@ The practical mitigations, in order of effectiveness:
    `complete` tool, or `npm run complete`). The request carries no tools, so there is nothing for
    injected text to call.
 1. Use approval mode when the agent will touch untrusted content
-2. Point the workspace at a specific project, not your home directory
+2. Point the workspace at a specific project, not your home directory. A repository's own
+   instruction files (`AGENTS.md`, `CLAUDE.md`, `.cursorrules`, …) and `.omniwork/skills` reach the
+   model as labelled, lower-trust project context, never with the authority of your instructions
+   (a repository skill can't replace one you installed). For a repository you don't trust, leave
+   them out entirely: `OMNIWORK_PROJECT_FILES=off`, or `_meta.omniwork.projectFiles: false` on ACP.
 3. Only connect MCP servers you trust — they run as local subprocesses with your privileges
 4. Prefer a VM or container for genuinely untrusted repositories
 

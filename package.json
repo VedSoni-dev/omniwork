@@ -25,6 +25,7 @@
     "test:smoke": "node test/smoke.js",
     "test:confine": "node test/confine.js",
     "test:env": "node test/env.js",
+    "test:project-context": "node test/project-context.js",
     "test:cowork": "node test/cowork.js",
     "test:features": "node test/features.js",
     "test:persist": "node test/persist.js",
