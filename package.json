@@ -47,6 +47,7 @@
     "test:complete": "node test/complete.js",
     "test:json-schema": "node test/json-schema.js",
     "test:acp-completion": "node test/acp-completion.js",
+    "test:acp-permissions": "node test/acp-permissions.js",
     "test:gateway-auth": "node test/gateway-auth.js",
     "test:logging": "node test/logging.js",
     "test:engine-fallback": "node test/engine-fallback.js",

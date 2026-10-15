@@ -289,7 +289,10 @@ What the harness gets:
 |---|---|
 | **Streaming output** | Text, reasoning, and per-tool status as they happen |
 | **Native diffs** | `write_file` / `edit_file` arrive as ACP diffs, not "wrote 412 bytes" |
-| **Permission prompts** | Every gated tool call becomes `session/request_permission` — "allow always" flips the session to auto |
+| **Permission prompts** | Every gated tool call becomes `session/request_permission`, for a tool call the client has already been shown (subagents' too). "Always allow" / "never allow" apply to that tool — a command, to that exact command — for the session; they never change its mode. Answering `cancelled` stops the turn |
+| **Your MCP servers** | stdio `mcpServers` from `session/new` are started for that session and their tools join the agent's (http/sse are refused, not dropped) |
+| **What the model can do** | `session/new` reports `_meta.omniwork.toolFree` and the tool list. `_meta.omniwork.honorClientCapabilities: true` (or `OMNIWORK_ACP_STRICT_CAPABILITIES=1`) drops file and shell tools for capabilities the client didn't declare |
+| **Failures** | A model failure ends the turn (`stopReason: "end_turn"`) with the error shown and in `_meta.omniwork.error` — not a JSON-RPC error. `OMNIWORK_ACP_ERRORS=rpc` keeps the old behaviour for one release |
 | **The Agent Deck** | `spawn_subagents` shows up as *N* live parallel tool calls, not one opaque block |
 | **Skills as slash commands** | Installed skills are published via `available_commands_update` |
 | **Modes** | `ask` (default), `edits`, `auto`, `plan` — switch with `acpx omniwork set-mode plan` — plus tool-free [`completion`](#tool-free-completion-for-untrusted-text-) |
@@ -463,7 +466,9 @@ encrypted, locally). Pick a specific model in the status bar.
 | `OMNIWORK_ENGINE_FALLBACK` | on | `off` keeps a turn that no gateway model could serve as an error instead of finishing it on the OpenCode engine |
 | `OMNIWORK_BASE_URL` | — | Run headless servers against another OpenAI-compatible endpoint |
 | `OMNIWORK_API_KEY` | `omniwork` | Key for `OMNIWORK_BASE_URL` |
-| `OMNIWORK_ACP_MODE` | `ask` | Starting approval mode for ACP sessions |
+| `OMNIWORK_ACP_MODE` | `ask` | Starting approval mode for ACP sessions (`completion` makes every session tool-free) |
+| `OMNIWORK_ACP_STRICT_CAPABILITIES` | off | `1` drops file and shell tools for capabilities the ACP client didn't declare |
+| `OMNIWORK_ACP_ERRORS` | — | `rpc` returns model failures as JSON-RPC errors again (kept for one release) |
 | `OMNIWORK_COMMAND_ENV_PASSTHROUGH` | — | Comma-separated variables `run_command` may see beyond the safe defaults (e.g. `GITHUB_TOKEN`) |
 | `OMNIWORK_COMMAND_ENV` | — | `inherit` gives commands the full environment and a login shell again (kept for one release) |
 | `OMNIWORK_GATEWAY_ENV_PASSTHROUGH` | — | Comma-separated variables to forward to the gateway (e.g. an OmniRoute setting) |

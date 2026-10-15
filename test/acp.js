@@ -151,9 +151,14 @@ const updates = (type) => notes.filter((n) => n.method === "session/update" && n
   const empty = await rpc("session/prompt", { sessionId: sid, prompt: [] });
   check("an empty prompt ends the turn cleanly", empty.result && empty.result.stopReason === "end_turn");
 
-  // Real turn against a dead gateway: must come back as an error, not a hang.
+  // Real turn against a dead gateway: must come back as a failed turn, not a
+  // hang — and not as a JSON-RPC error, which would read as a protocol failure.
+  const errChunksBefore = updates("agent_message_chunk").length;
   const broken = await rpc("session/prompt", { sessionId: sid, prompt: [{ type: "text", text: "say hello" }] });
-  check("a failed turn surfaces as a JSON-RPC error", Boolean(broken.error) && /connection|fetch|engine/i.test(broken.error.message));
+  await settle();
+  check("a failed turn ends with a stop reason, not a JSON-RPC error", !broken.error && broken.result.stopReason === "end_turn");
+  check("…with the error in _meta", /connection|fetch|engine/i.test(broken.result._meta?.omniwork?.error?.message || ""));
+  check("…and shown in the transcript", updates("agent_message_chunk").slice(errChunksBefore).some((n) => /⚠/.test(n.params.update.content.text)));
 
   // ── cancel is a notification: must not produce a response or crash ──
   notify("session/cancel", { sessionId: sid });

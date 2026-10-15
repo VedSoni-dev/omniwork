@@ -84,7 +84,8 @@ function rpcClient(file, env) {
     await acp2.rpc("initialize", { protocolVersion: 1, clientCapabilities: {} });
     const made2 = await acp2.rpc("session/new", { cwd: workspace, mcpServers: [], _meta: { omniwork: { mode: "auto" } } });
     const failed = await acp2.rpc("session/prompt", { sessionId: made2.result.sessionId, prompt: [{ type: "text", text: "say READY" }] });
-    check("without the engine, a 502 comes with the how-to-connect hint", failed.error && /Gateway 502/.test(failed.error.message) && /No model answered/.test(failed.error.message));
+    const shown = acp2.updates("agent_message_chunk").map((u) => u.params.update.content.text).join("");
+    check("without the engine, a 502 ends the turn with the how-to-connect hint", !failed.error && failed.result._meta.omniwork.error.noModel === true && /Gateway 502/.test(shown) && /No model answered/.test(shown));
     acp2.proc.kill();
     gw.close();
   }

@@ -176,8 +176,9 @@ const isNoModelFailure = (msg) => /All models failed|Gateway (401|403|404|502|50
 const tuning = require("./tuning");
 
 class Agent {
-  constructor({ baseUrl, apiKey, model, fallbackModels = [], workspace, emit, mcp, memory = null, skillsDir = null, browser = null, canSpawn = true, depth = 0, approvalMode = "auto", approver = null, streaming = true, utilityModel, tiers, sessionId, contextTokens, modelContexts, beforeRequest, onRateLimit, maxSteps = MAX_STEPS, maxOutputTokens, allowedTools } = {}) {
+  constructor({ baseUrl, apiKey, model, fallbackModels = [], workspace, emit, mcp, memory = null, skillsDir = null, browser = null, canSpawn = true, depth = 0, approvalMode = "auto", approver = null, streaming = true, utilityModel, tiers, sessionId, contextTokens, modelContexts, beforeRequest, onRateLimit, maxSteps = MAX_STEPS, maxOutputTokens, allowedTools, deniedTools } = {}) {
     this.allowedTools = allowedTools ? new Set(allowedTools) : null;
+    this.deniedTools = deniedTools ? new Set(deniedTools) : null; // never offered, never run
     this.beforeRequest = beforeRequest; this.onRateLimit = onRateLimit; this.maxSteps = maxSteps; this.maxOutputTokens = maxOutputTokens;
     this.baseUrl = baseUrl.replace(/\/$/, "");
     this.apiKey = apiKey;
@@ -299,8 +300,10 @@ class Agent {
     const kn = this.memory && this.memory.knowledgeDir ? [KNOWLEDGE_TOOL] : [];
     const sk = this.skillsDir ? [skills.USE_SKILL_TOOL, skills.SAVE_SKILL_TOOL, skills.INSTALL_SKILLS_TOOL] : [];
     const web = this.browser ? [require("./browser").WEB_SEARCH_TOOL, require("./browser").BROWSE_TOOL] : [];
-    return [...TOOL_SCHEMA, OUTPUT_TOOL, ...sub, ...mem, ...kn, ...sk, ...web, ...extra].filter(t => !this.allowedTools || this.allowedTools.has(t.function.name));
+    return [...TOOL_SCHEMA, OUTPUT_TOOL, ...sub, ...mem, ...kn, ...sk, ...web, ...extra].filter(t => this.#offered(t.function.name));
   }
+
+  #offered(name) { return (!this.allowedTools || this.allowedTools.has(name)) && !(this.deniedTools && this.deniedTools.has(name)); }
 
   // Aborting must also kill in-flight network work — a flag alone leaves the
   // user waiting out a slow or hung stream before Esc "takes".
@@ -587,6 +590,7 @@ class Agent {
           baseUrl: this.baseUrl, apiKey: this.apiKey, model: this.model, fallbackModels: this.fallbackModels,
           utilityModel: this.utilityOverride, tiers: this.tiers,
           approvalMode: this.approvalMode, approver: this.approver, memory: this.memory, skillsDir: this.skillsDir, modelContexts: this.modelContexts,
+          deniedTools: this.deniedTools ? [...this.deniedTools] : undefined,
           workspace: this.workspace, mcp: this.mcp, browser: this.browser, canSpawn: false, depth: this.depth + 1,
           // Nobody reads a subagent's token-by-token output — only its tool
           // labels and final summary. Skipping the stream attempt halves the
@@ -694,9 +698,9 @@ class Agent {
 
         // Approval gate (top-level agents only): mode decides per tool.
         const isMcp = !!(this.mcp && this.mcp.isMcpTool(name));
-        const decision = this.allowedTools && !this.allowedTools.has(name) ? "block" : approvalDecision(this.approvalMode, name, isMcp, parsedArgs);
+        const decision = !this.#offered(name) ? "block" : approvalDecision(this.approvalMode, name, isMcp, parsedArgs);
         if (decision === "block") {
-          const blocked = this.allowedTools && !this.allowedTools.has(name) ? `Error in ${name}: tool is not available for this worker.`
+          const blocked = !this.#offered(name) ? `Error in ${name}: tool is not available ${this.deniedTools && this.deniedTools.has(name) ? "in this session" : "for this worker"}.`
             : !APPROVAL_MODES.includes(this.approvalMode) ? `Error in ${name}: approval mode "${this.approvalMode}" is not recognized, so no tool runs. Use one of: ${APPROVAL_MODES.join(", ")}.`
             : this.approvalMode === "plan" && !isMcp && (EDIT_TOOLS.has(name) || PERSIST_TOOLS.has(name)) ? "⏸ Plan mode — changes are disabled. Present your plan instead; the user can switch modes to execute it."
             : `Unknown tool: ${name}`;
