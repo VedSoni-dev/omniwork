@@ -90,6 +90,88 @@ function resolveBundledOmniroute() {
   return fs.existsSync(path.join(dir, "dist", "server.js")) ? dir : null;
 }
 
+// ── gateway storage ───────────────────────────────────────────────
+// storage.sqlite holds every provider connection the user made, so it is only
+// set aside when it is provably corrupt. A boot that times out — a slow disk, a
+// cold Next.js start, a port race — says nothing about the database.
+const STORAGE = "storage.sqlite";
+const KEEP_BACKUPS = 2;
+
+// "ok" | "corrupt" | "unknown". Asks SQLite itself (quick_check, read-only)
+// through the gateway's Node binary: Electron's embedded Node has no
+// node:sqlite. Only SQLITE_CORRUPT / SQLITE_NOTADB count as corrupt; anything
+// that can't be decided keeps the file.
+const CHECK_SCRIPT = `
+let DatabaseSync;
+try { ({ DatabaseSync } = require("node:sqlite")); } catch { process.exit(3); }
+try {
+  const db = new DatabaseSync(process.argv[1], { readOnly: true });
+  const rows = db.prepare("PRAGMA quick_check").all();
+  db.close();
+  process.stdout.write(rows.length === 1 && Object.values(rows[0])[0] === "ok" ? "ok" : "corrupt");
+} catch (e) {
+  const code = (e.errcode || 0) & 0xff;
+  process.stdout.write(code === 11 || code === 26 || /malformed|not a database/i.test(e.message) ? "corrupt" : "unknown");
+}`;
+
+function runCheck(nodeBinary, file, flags) {
+  return new Promise((resolve) => {
+    let out = "";
+    let child;
+    try { child = spawn(nodeBinary, [...flags, "-e", CHECK_SCRIPT, file], { stdio: ["ignore", "pipe", "ignore"], timeout: 15_000 }); }
+    catch { return resolve(null); }
+    child.stdout.on("data", (d) => { out += d; });
+    child.on("error", () => resolve(null));
+    child.on("close", (code) => resolve(code === 3 ? null : (["ok", "corrupt"].includes(out) ? out : "unknown")));
+  });
+}
+
+// Without node:sqlite, only a file that isn't SQLite at all is decided.
+function headerVerdict(file) {
+  try {
+    const size = fs.statSync(file).size;
+    if (size === 0) return "unknown";
+    if (size < 100) return "corrupt";
+    const head = Buffer.alloc(16);
+    const fd = fs.openSync(file, "r");
+    try { fs.readSync(fd, head, 0, 16, 0); } finally { fs.closeSync(fd); }
+    return head.toString("latin1") === "SQLite format 3\0" ? "unknown" : "corrupt";
+  } catch { return "unknown"; }
+}
+
+async function checkStorage(file, nodeBinary = resolveNodeBinary()) {
+  if (!fs.existsSync(file)) return "unknown";
+  // Older Node 22 releases ship node:sqlite behind a flag.
+  const verdict = (await runCheck(nodeBinary, file, [])) || (await runCheck(nodeBinary, file, ["--experimental-sqlite"]));
+  return verdict || headerVerdict(file);
+}
+
+// Backups hold provider keys: owner-only, and only the newest few are kept.
+function storageBackups(dir) {
+  let names = [];
+  try { names = fs.readdirSync(dir); } catch {}
+  return names.filter((n) => /^storage\.sqlite\.corrupt-\d+\.bak$/.test(n)).sort((a, b) => Number(b.match(/\d+/)[0]) - Number(a.match(/\d+/)[0]));
+}
+
+function protectBackups(dir) {
+  for (const n of storageBackups(dir)) for (const f of [n, n + "-wal", n + "-shm"]) {
+    try { fs.chmodSync(path.join(dir, f), 0o600); } catch {}
+  }
+}
+
+// Moves the database aside with its WAL and shared-memory files — a WAL left
+// behind would be replayed into the fresh database — then prunes old backups.
+function quarantineStorage(dir, now = Date.now()) {
+  const backup = `${STORAGE}.corrupt-${now}.bak`;
+  for (const [from, to] of [[STORAGE, backup], [STORAGE + "-wal", backup + "-wal"], [STORAGE + "-shm", backup + "-shm"]]) {
+    try { fs.renameSync(path.join(dir, from), path.join(dir, to)); fs.chmodSync(path.join(dir, to), 0o600); } catch {}
+  }
+  for (const old of storageBackups(dir).slice(KEEP_BACKUPS)) {
+    for (const f of [old, old + "-wal", old + "-shm"]) fs.rmSync(path.join(dir, f), { force: true });
+  }
+  return path.join(dir, backup);
+}
+
 // A stable local key we keep for future use (provider dashboard, etc.). The
 // gateway serves localhost openly, so requests don't require it, but we persist
 // one so the app has a consistent identity.
@@ -110,8 +192,14 @@ function ensureApiKey(dataDir) {
 }
 
 class Gateway {
-  constructor({ dataDir, onStatus }) {
+  // `omniDir` and `healthTimeoutMs` exist for tests: a stand-in server and a
+  // short deadline instead of the bundled engine's 90s.
+  constructor({ dataDir, onStatus, omniDir = null, healthTimeoutMs = 90000 }) {
     this.dataDir = dataDir;
+    this.omniDirOverride = omniDir;
+    this.healthTimeoutMs = healthTimeoutMs;
+    this.notice = null;        // shown with the ready status (e.g. a storage reset)
+    this.storageReset = null;  // { at, backup } when corrupt storage was set aside
     this.nodeBinary = resolveNodeBinary();
     this.onStatus = onStatus || (() => {});
     this.apiKey = ensureApiKey(dataDir);
@@ -166,7 +254,7 @@ class Gateway {
     }
 
     // Full build: engine is bundled. Lite build: download it to the data dir once.
-    let omniDir = resolveBundledOmniroute();
+    let omniDir = this.omniDirOverride || resolveBundledOmniroute();
     if (!omniDir) {
       const { engineDir, engineReady, downloadEngine } = require("./engine-fetch");
       const ed = engineDir(this.dataDir);
@@ -231,8 +319,10 @@ class Gateway {
     delete env.ELECTRON_RUN_AS_NODE;
 
     // Corrupt gateway storage (e.g. after a hard kill) makes the server listen
-    // but never turn healthy. If the first boot times out, quarantine the DB
-    // and try once more with a fresh one.
+    // but never turn healthy. If the first boot fails, set the database aside
+    // only when SQLite itself says it is corrupt; otherwise retry once with the
+    // storage untouched. Either way it is one retry, as before.
+    protectBackups(gwDataDir);
     for (let attempt = 0; ; attempt++) {
       // stop() may have landed while we were awaiting above (the watchdog can be
       // mid-restart when the app quits). Spawning now would strand a gateway on
@@ -248,14 +338,17 @@ class Gateway {
       } catch (e) {
         // #killProc, not stop(): this is a retry, not a shutdown, so it must not
         // latch the abort flag that stop() sets.
-        this.#killProc();
-        const db = path.join(gwDataDir, "storage.sqlite");
-        if (!this._stopped && attempt === 0 && fs.existsSync(db)) {
-          this.status("boot", "Recovering gateway storage…");
-          try { fs.renameSync(db, db + ".corrupt-" + Date.now() + ".bak"); } catch {}
-          continue;
+        await this.#killProc({ wait: true });
+        const db = path.join(gwDataDir, STORAGE);
+        if (this._stopped || attempt > 0) throw e;
+        if (fs.existsSync(db) && (await checkStorage(db, this.nodeBinary)) === "corrupt") {
+          const backup = quarantineStorage(gwDataDir);
+          this.storageReset = { at: new Date().toISOString(), backup };
+          this.notice = `Gateway storage was corrupt and has been reset — reconnect your providers. The old database is at ${backup}.`;
+          this.status("boot", this.notice);
+        } else {
+          this.status("boot", "Gateway was slow to start — retrying…");
         }
-        throw e;
       }
     }
   }
@@ -321,7 +414,7 @@ class Gateway {
     if (this._watch.unref) this._watch.unref();
   }
 
-  async #waitHealthy(timeoutMs = 90000) {
+  async #waitHealthy(timeoutMs = this.healthTimeoutMs) {
     const started = Date.now();
     const url = `http://${HOST}:${this.port}/v1/models`;
     let sick = 0; // listening but 5xx — broken storage, not "still booting"
@@ -334,10 +427,11 @@ class Gateway {
         // and then never answers parks this fetch for undici's 300s default —
         // and the loop's own deadline is only checked between iterations, so it
         // never gets to fire.
-        const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+        const left = timeoutMs - (Date.now() - started);
+        const res = await fetch(url, { signal: AbortSignal.timeout(Math.max(250, Math.min(5000, left))) });
         if (res.ok || res.status === 401) {
           this.ready = true;
-          this.status("ready", "OmniRoute · free models");
+          this.status("ready", this.notice ? "OmniRoute · free models · storage was reset — reconnect providers" : "OmniRoute · free models");
           return;
         }
         if (res.status >= 500 && ++sick >= 5) break;
@@ -363,13 +457,16 @@ class Gateway {
   }
 
   // Tear down the child process without signalling shutdown intent, so start()
-  // can reuse it between retry attempts.
-  #killProc() {
+  // can reuse it between retry attempts. `wait` resolves once it has exited
+  // (or the SIGKILL grace has passed): a retry that spawns while the old
+  // process still holds the port or the database races it.
+  #killProc({ wait = false } = {}) {
     const proc = this.proc;
     this.proc = null;
     this.ready = false;
     // We adopted someone else's gateway — leave it running for its owner.
-    if (this.adopted || !proc || proc.killed || proc.exitCode !== null) return;
+    if (this.adopted || !proc || proc.killed || proc.exitCode !== null || proc.signalCode !== null) return Promise.resolve();
+    const exited = new Promise((resolve) => proc.once("exit", resolve));
 
     // Signal the whole process group (see `detached` in start()) so Next.js
     // workers go down with the parent instead of orphaning onto the port.
@@ -382,7 +479,8 @@ class Gateway {
     // held open waiting on this timer.
     const t = setTimeout(() => { if (proc.exitCode === null) signal("SIGKILL"); }, 3000);
     if (t.unref) t.unref();
+    return wait ? Promise.race([exited, sleep(4000)]) : Promise.resolve();
   }
 }
 
-module.exports = { Gateway, PORT, BASE_URL, probeGateway, portAvailable, freePort };
+module.exports = { Gateway, PORT, BASE_URL, probeGateway, portAvailable, freePort, checkStorage, quarantineStorage, storageBackups };

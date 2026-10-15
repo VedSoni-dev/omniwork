@@ -41,6 +41,7 @@
     "test:opencode": "node test/opencode.js",
     "test:tuning": "node test/tuning.js",
     "test:sidecar": "node test/sidecar.js",
+    "test:storage": "node test/storage.js",
     "mcp": "node electron/mcp-server.js",
     "acp": "node electron/acp-server.js",
     "test:regression": "node scripts/test-regression.js",
