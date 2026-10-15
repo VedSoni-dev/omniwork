@@ -56,6 +56,26 @@ function externalGateway() {
 let gatewayInfo = null;
 let booting = null;
 
+// Headless servers used to keep their own gateway store in ~/.omniwork, so
+// which provider list was live depended on whether the app or a headless
+// server had started the gateway. One store now; the first time a headless
+// server starts the gateway, an old headless store moves over if the shared
+// one has none. Nothing is deleted: the old files stay where they were.
+function adoptLegacyStore(from, to) {
+  const db = "storage.sqlite";
+  if (path.resolve(from) === path.resolve(to)) return null;
+  if (!fs.existsSync(path.join(from, db))) return null;
+  if (fs.existsSync(path.join(to, db))) {
+    return `another gateway store exists at ${from}; using ${to} (the desktop app's). Connect providers again here if they're missing.`;
+  }
+  fs.mkdirSync(to, { recursive: true, mode: 0o700 });
+  for (const f of [db, db + "-wal", db + "-shm"]) {
+    if (fs.existsSync(path.join(from, f))) { fs.copyFileSync(path.join(from, f), path.join(to, f)); fs.chmodSync(path.join(to, f), 0o600); }
+  }
+  try { fs.writeFileSync(path.join(from, "MOVED.txt"), `This gateway store was copied to ${to} on ${new Date().toISOString()}; OmniWork no longer uses this copy.\n`); } catch {}
+  return `copied the gateway store from ${from} to ${to}`;
+}
+
 // Booting OmniRoute cold takes tens of seconds (Next.js standalone server), and
 // that cost used to land on the caller's first request. Kick it off as soon as a
 // client connects so it overlaps with the host reading our tool list and
@@ -81,9 +101,12 @@ async function ensureGateway(log = () => {}) {
       return gatewayInfo;
     }
     log("starting bundled gateway…");
-    const dataDir = path.join(os.homedir(), ".omniwork");
-    fs.mkdirSync(dataDir, { recursive: true });
-    const gw = new Gateway({ dataDir, onStatus: (s) => log("gateway", s.state, s.detail || "") });
+    // The desktop app's data dir, so a provider connected in the app is
+    // there for MCP, ACP and the CLI too (and the other way round).
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    const moved = adoptLegacyStore(path.join(os.homedir(), ".omniwork", "omniroute"), path.join(DATA_DIR, "omniroute"));
+    if (moved) log(moved);
+    const gw = new Gateway({ dataDir: DATA_DIR, onStatus: (s) => log("gateway", s.state, s.detail || "") });
     await gw.start();
     gatewayInfo = { baseUrl: gw.baseUrl, apiKey: gw.apiKey };
     return gatewayInfo;
@@ -193,7 +216,7 @@ async function engineFallbackModel() {
 
 
 module.exports = {
-  DATA_DIR, SKILLS_DIR, GLOBAL_MEMORY_DIR,
+  DATA_DIR, SKILLS_DIR, GLOBAL_MEMORY_DIR, adoptLegacyStore,
   browser, projects, agentEnv,
   ensureGateway, prewarmGateway,
   resolveModels, resolveModelsLive, listModels, defaultFallbacks, invalidateModels, noModelHint, providers,

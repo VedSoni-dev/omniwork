@@ -54,6 +54,7 @@
     "test:engine-fallback": "node test/engine-fallback.js",
     "test:keyless": "node test/keyless.js",
     "test:local": "node test/local.js",
+    "test:data-dir": "node test/data-dir.js",
     "mcp": "node electron/mcp-server.js",
     "acp": "node electron/acp-server.js",
     "test:regression": "node scripts/test-regression.js",
