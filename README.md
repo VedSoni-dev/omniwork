@@ -281,7 +281,9 @@ prompts, and the transcript; OmniWork does the work on free models.
 } } } } }
 ```
 
-Then `acpx omniwork "fix the flaky test"`, or spawn it as an OpenClaw subagent.
+Then `acpx omniwork "fix the flaky test"`, or spawn it as an OpenClaw subagent. `npx -y` runs the
+newest release; pin the one you've reviewed (`omniwork-acp@<version>`) if you'd rather upgrade
+deliberately.
 
 What the harness gets:
 

@@ -55,6 +55,7 @@
     "test:keyless": "node test/keyless.js",
     "test:local": "node test/local.js",
     "test:data-dir": "node test/data-dir.js",
+    "test:engine-fetch": "node test/engine-fetch.js",
     "mcp": "node electron/mcp-server.js",
     "acp": "node electron/acp-server.js",
     "test:regression": "node scripts/test-regression.js",
@@ -72,7 +73,7 @@
     "omniwork-jobs": "scripts/jobs.js"
   },
   "dependencies": {
-    "omniroute": "^3.8.50",
+    "omniroute": "3.8.50",
     "tar": "^7.5.22"
   },
   "build": {
@@ -143,6 +144,12 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "differentialPackage": false
+    }
+  },
+  "omniworkEngine": {
+    "omniroute": {
+      "version": "3.8.50",
+      "integrity": "sha512-qK6REDWQYGh8lwGwDgFMsBqAMXnxIePudr8cSuSYeB9iIlywNhDJxHKt6Cwa31lPci8jXE5bbvl+az0lvyt0Mg=="
     }
   },
   "devDependencies": {

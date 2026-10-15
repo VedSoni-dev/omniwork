@@ -7,7 +7,8 @@
 // drive: OpenClaw, acpx, Zed, Neovim — the harness owns the UI, OmniWork does
 // the work on free models via the bundled OmniRoute gateway.
 //
-// Wire it into acpx (~/.acpx/config.json or <repo>/.acpxrc.json):
+// Wire it into acpx (~/.acpx/config.json or <repo>/.acpxrc.json) — pin a
+// version you've reviewed (omniwork-acp@<version>) to upgrade deliberately:
 //   { "agents": { "omniwork": { "argv": ["npx", "-y", "omniwork-acp"] } } }
 // …or OpenClaw (openclaw.json):
 //   plugins.entries.acpx.config.agents.omniwork = { command: "npx", args: ["-y","omniwork-acp"] }

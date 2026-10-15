@@ -104,6 +104,15 @@ The practical mitigations, in order of effectiveness:
   through free-tier models** without checking the provider's terms.
 - OmniWork itself has no telemetry and phones home to nothing.
 
+### Dependencies and downloads
+
+- OmniRoute (the gateway) and OpenCode are pinned to exact versions. Both run with your
+  privileges, and both install with npm `postinstall` scripts — `npm ci` in a clone runs them.
+- Everything OmniWork downloads at runtime is checked against a hash pinned with the version
+  before it is unpacked: the OmniRoute engine in Lite builds, and the OpenCode binary.
+- `npx -y omniwork-acp` runs the newest release. To review an upgrade before it runs in your
+  editor, pin the version you checked: `npx -y omniwork-acp@<version>`.
+
 ### Unsigned builds
 
 Release binaries are not code-signed or notarized. macOS and Windows will warn you, and you have
