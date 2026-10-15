@@ -18,8 +18,11 @@ boundary is narrower than most desktop apps. Be deliberate about what you point 
 ### What is confined
 
 The file tools — `read_file`, `write_file`, `edit_file`, `list_dir` — resolve every path against
-the workspace folder you pick and reject anything that escapes it, including via `..` or an
-absolute path.
+the workspace folder you pick and reject anything that escapes it, including via `..`, an
+absolute path, or a symlink: paths are compared after resolving links, so a link committed in a
+repository (`docs/x -> ~/.ssh`) cannot carry a read or write outside. Writes never go through a
+symlink at all, even one that points back inside. Approval previews and ACP diffs read old file
+contents through the same check.
 
 ### What is not confined
 

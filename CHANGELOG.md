@@ -10,6 +10,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Bounded metadata-only request/tool traces for durable workers, with paged retrieval, repeated-read fingerprints, usage coverage and phase timings. Benchmarks retain trace artifacts.
 - Opt-in token/time reserves stop restricted OpenCode workers, confirm idle, and verify their patches before the hard limit. Failed checks use the existing bounded repair; hard budgets, errors, cancellation and ownership remain authoritative.
 
+### Security
+- File tools compare real paths, so a symlink inside a workspace no longer carries `read_file`, `write_file`, `edit_file` or `list_dir` outside it. Writes refuse any symlink as the final path component (use the link's target path instead). Approval previews, ACP diffs and `/undo` use the same check.
+
 ### Added
 - Optional scoped OpenCode workers using the supported custom-agent API: model-specific instructions, local tools, preserved repository rules, no automatic skills catalog, and a fixed 24-step limit. The full `standard` agent remains the default; `focused` adds an experimental compact prompt.
 - Separate engine uncached/cache-read/cache-write/reasoning/request metrics, accumulated across repairs. Paired repository-regression benchmark with withheld evaluator checks and a real-engine local request-size probe.

@@ -23,6 +23,7 @@ const path = require("node:path");
 const { ensureShellPath } = require("./shell-path");
 const { agentEnv, ensureGateway, prewarmGateway, resolveModels, resolveModelsLive, listModels, invalidateModels, noModelHint, providers, makeAgent, isNoModelFailure, engineFallbackModel, opencode, DATA_DIR, SKILLS_DIR } = require("./headless");
 const skillsApi = require("./skills");
+const { previewEdit } = require("./tools");
 
 ensureShellPath(); // ACP clients can launch us with a minimal environment too
 
@@ -81,18 +82,11 @@ function toolTitle(name, args = {}) {
 // ACP renders `diff` tool content natively, so edits show up as real diffs in the
 // client instead of "Wrote 412 bytes". Computed at tool_call time — before the
 // write lands — because that's the only moment the old content still exists.
+// previewEdit applies the tools' confinement: a path the write would refuse
+// (a symlink out of the workspace) never has its contents sent to the client.
 function diffFor(workspace, name, args = {}) {
-  if (name !== "write_file" && name !== "edit_file") return null;
-  try {
-    if (!args.path) return null;
-    const abs = path.resolve(workspace, args.path);
-    const old = fs.existsSync(abs) ? fs.readFileSync(abs, "utf8") : null;
-    if (name === "write_file") return [{ type: "diff", path: abs, oldText: old, newText: String(args.content ?? "") }];
-    if (old != null && args.old_string != null && old.includes(args.old_string)) {
-      return [{ type: "diff", path: abs, oldText: old, newText: old.replace(args.old_string, args.new_string ?? "") }];
-    }
-  } catch {}
-  return null;
+  const p = previewEdit(workspace, name, args);
+  return p ? [{ type: "diff", path: p.path, oldText: p.oldText, newText: p.newText }] : null;
 }
 
 function locationsFor(workspace, args = {}) {

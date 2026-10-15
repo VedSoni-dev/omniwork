@@ -6,7 +6,7 @@
 // `spawn_subagents` tool — the "Agent Deck". Subagents run concurrently, each
 // with its own context/tool-loop, and report a summary back to the parent.
 
-const { TOOL_SCHEMA, executeToolResult } = require("./tools");
+const { TOOL_SCHEMA, executeToolResult, confine, writeConfined, previewEdit } = require("./tools");
 const { ToolOutputStore, OUTPUT_TOOL } = require("./tool-output");
 const { mapLimit } = require("./execution");
 const cooldowns = new Map();
@@ -222,17 +222,17 @@ class Agent {
     return mem.trim();
   }
 
-  // Restore files changed during the last turn.
+  // Restore files changed during the last turn. Same confinement as the
+  // write: a command may have swapped a symlink in since.
   undo() {
     const fs = require("node:fs");
-    const path = require("node:path");
     if (!this.turnUndo.size) return "Nothing to undo.";
     let n = 0;
     for (const [rel, original] of this.turnUndo.entries()) {
-      const abs = path.resolve(this.workspace, rel);
       try {
+        const abs = confine(this.workspace, rel, { write: true });
         if (original === null) { if (fs.existsSync(abs)) fs.unlinkSync(abs); }
-        else fs.writeFileSync(abs, original, "utf8");
+        else writeConfined(abs, original);
         n++;
       } catch {}
     }
@@ -497,18 +497,15 @@ class Agent {
     return { message: { role: "assistant", content: content || "", tool_calls: calls.length ? calls : undefined }, usage };
   }
 
-  // Build a diff preview for the approval prompt (file writes/edits).
+  // Build a diff preview for the approval prompt (file writes/edits). The old
+  // content comes through the tools' own confinement, so a path the write
+  // would refuse never has its contents shown.
   #approvalPreview(name, args) {
-    const fs = require("node:fs");
-    const path = require("node:path");
-    try {
-      if (name === "edit_file") return { kind: "diff", path: args.path, old: args.old_string || "", new: args.new_string || "" };
-      if (name === "write_file") {
-        const abs = path.resolve(this.workspace, args.path || "");
-        const cur = fs.existsSync(abs) ? fs.readFileSync(abs, "utf8") : null;
-        return { kind: "diff", path: args.path, old: cur || "", new: args.content || "", created: cur === null };
-      }
-    } catch {}
+    if (name === "edit_file") return { kind: "diff", path: args.path, old: args.old_string || "", new: args.new_string || "" };
+    if (name === "write_file") {
+      const p = previewEdit(this.workspace, name, args);
+      return p ? { kind: "diff", path: args.path, old: p.oldText || "", new: p.newText, created: p.created } : null;
+    }
     return null;
   }
 
