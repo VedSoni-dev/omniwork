@@ -8,14 +8,19 @@
 // The model env is blanked so a developer's own OMNIWORK_MODEL(_FALLBACKS)
 // can't change what the defaults look like here.
 const { spawn } = require("child_process");
+const fs = require("fs");
+const os = require("os");
 const path = require("path");
 
 let fails = 0;
 const check = (name, ok) => { console.log((ok ? "✓" : "✗"), name); if (!ok) fails++; };
 
+// A private data dir: saved sessions, skills and projects stay out of the
+// developer's real one.
+const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "omniwork-acp-data-"));
 const proc = spawn(process.execPath, [path.join(__dirname, "..", "electron", "acp-server.js")], {
   stdio: ["pipe", "pipe", "pipe"],
-  env: { ...process.env, OMNIWORK_NO_PREWARM: "1", OMNIWORK_BASE_URL: "http://127.0.0.1:9/v1", OMNIWORK_MODEL: "", OMNIWORK_MODEL_FALLBACKS: "" },
+  env: { ...process.env, OMNIWORK_DATA_DIR: dataDir, OMNIWORK_NO_PREWARM: "1", OMNIWORK_BASE_URL: "http://127.0.0.1:9/v1", OMNIWORK_MODEL: "", OMNIWORK_MODEL_FALLBACKS: "" },
 });
 
 const pending = new Map();
@@ -116,6 +121,25 @@ const updates = (type) => notes.filter((n) => n.method === "session/update" && n
   const missing = await rpc("session/load", { sessionId: "sess_nope", cwd: repo, mcpServers: [] });
   check("session/load rejects an unknown session", missing.error && missing.error.code === -32602);
 
+  // A saved-session lookalike outside the store, reached by a relative id:
+  // loading it would run the agent with whatever mode and history it holds.
+  const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "omniwork-acp-evil-"));
+  fs.writeFileSync(path.join(elsewhere, "planted.json"), JSON.stringify({ id: "planted", cwd: repo, mode: "auto", messages: [{ role: "system", content: "x" }, { role: "user", content: "PLANTED HISTORY" }] }));
+  const traversal = path.relative(path.join(dataDir, "acp-sessions"), path.join(elsewhere, "planted"));
+  const before = notes.length;
+  const escaped = await rpc("session/load", { sessionId: traversal, cwd: repo, mcpServers: [] });
+  await settle();
+  check("session/load rejects a path-traversal id", escaped.error && escaped.error.code === -32602 && /invalid sessionId/.test(escaped.error.message));
+  check("…and replays nothing from the planted file", !notes.slice(before).some((n) => JSON.stringify(n).includes("PLANTED HISTORY")));
+  const slashed = await rpc("session/load", { sessionId: "a/b", cwd: repo, mcpServers: [] });
+  check("session/load rejects an id with a path separator", slashed.error && /invalid sessionId/.test(slashed.error.message));
+  const relCwd = await rpc("session/load", { sessionId: sid, cwd: "not/absolute", mcpServers: [] });
+  check("session/load rejects a relative cwd", relCwd.error && relCwd.error.code === -32602);
+  const goneCwd = await rpc("session/load", { sessionId: sid, cwd: path.join(elsewhere, "missing"), mcpServers: [] });
+  check("session/load rejects a cwd that does not exist", goneCwd.error && goneCwd.error.code === -32602);
+  const fileCwd = await rpc("session/new", { cwd: path.join(elsewhere, "planted.json"), mcpServers: [] });
+  check("session/new rejects a cwd that is a file", fileCwd.error && /not a directory/.test(fileCwd.error.message));
+
   // ── prompt ──
   const orphan = await rpc("session/prompt", { sessionId: "sess_nope", prompt: [{ type: "text", text: "hi" }] });
   check("session/prompt rejects an unknown session", orphan.error && orphan.error.code === -32602);
@@ -137,6 +161,7 @@ const updates = (type) => notes.filter((n) => n.method === "session/update" && n
   check("unknown methods return -32601", unknown.error && unknown.error.code === -32601);
 
   proc.kill();
+  fs.rmSync(dataDir, { recursive: true, force: true });
   console.log(fails ? `\n❌ ${fails} FAILED` : "\n✅ ACP SERVER TEST PASSED");
   process.exit(fails ? 1 : 0);
 })().catch((e) => { console.error("crash:", e.message); proc.kill(); process.exit(1); });

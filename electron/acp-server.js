@@ -135,7 +135,24 @@ const sessions = new Map();
 let sessionSeq = 0;
 let msgReplaySeq = 0;
 
-function sessionFile(id) { return path.join(STORE_DIR, id + ".json"); }
+// Session ids name files under STORE_DIR, and session/load takes them from the
+// client: only the shape this server mints is accepted, so an id can never
+// carry a path ("../../somewhere/else") out of the store.
+const SESSION_ID = /^[A-Za-z0-9_-]{1,64}$/;
+function sessionFile(id) {
+  if (typeof id !== "string" || !SESSION_ID.test(id)) throw new RpcError(-32602, "invalid sessionId");
+  return path.join(STORE_DIR, id + ".json");
+}
+
+// A working directory from the client: absolute, and an existing directory.
+function checkCwd(cwd) {
+  if (typeof cwd !== "string" || !path.isAbsolute(cwd)) throw new RpcError(-32602, "cwd must be an absolute path");
+  let stat = null;
+  try { stat = fs.statSync(cwd); } catch {}
+  if (!stat) throw new RpcError(-32602, `cwd does not exist: ${cwd}`);
+  if (!stat.isDirectory()) throw new RpcError(-32602, `cwd is not a directory: ${cwd}`);
+  return cwd;
+}
 
 function persist(sess) {
   try {
@@ -154,7 +171,7 @@ async function buildSession({ id, cwd, mode, messages, model, fallbackModels, en
   const gw = opencode.isEngineModel(selected.model) ? { baseUrl: "http://127.0.0.1", apiKey: "" } : await ensureGateway(log);
   const models = opencode.isEngineModel(selected.model) ? selected : await resolveModelsLive(gw, { model, fallbackModels });
   const sess = {
-    id, cwd, mode: mode || DEFAULT_MODE,
+    id, cwd, mode: MODES.some((m) => m.id === mode) ? mode : DEFAULT_MODE,
     sink: () => {},                 // replaced per turn
     approve: async () => false,     // replaced per turn
     pendingPermissions: new Set(),
@@ -521,9 +538,7 @@ const handlers = {
   },
 
   async "session/new"(params) {
-    const cwd = params && params.cwd;
-    if (!cwd || !path.isAbsolute(cwd)) throw new RpcError(-32602, "cwd must be an absolute path");
-    if (!fs.existsSync(cwd)) throw new RpcError(-32602, `cwd does not exist: ${cwd}`);
+    const cwd = checkCwd(params && params.cwd);
     const id = `sess_${Date.now().toString(36)}_${++sessionSeq}`;
     const meta = (params && params._meta) || {};
     const sess = await buildSession({
@@ -542,15 +557,16 @@ const handlers = {
 
   async "session/load"(params) {
     const id = params && params.sessionId;
-    const cwd = params && params.cwd;
     if (!id) throw new RpcError(-32602, "sessionId is required");
+    const file = sessionFile(id);
+    const cwd = params && params.cwd != null ? checkCwd(params.cwd) : null;
     let sess = sessions.get(id);
     if (!sess) {
       let saved = null;
-      try { saved = JSON.parse(fs.readFileSync(sessionFile(id), "utf8")); } catch {}
+      try { saved = JSON.parse(fs.readFileSync(file, "utf8")); } catch {}
       if (!saved) throw new RpcError(-32602, `unknown session: ${id}`);
       sess = await buildSession({
-        id, cwd: cwd || saved.cwd, mode: saved.mode, messages: saved.messages,
+        id, cwd: cwd || checkCwd(saved.cwd), mode: saved.mode, messages: saved.messages,
         model: saved.model, fallbackModels: saved.fallbackModels, engineSession: saved.engineSession,
       });
     }
