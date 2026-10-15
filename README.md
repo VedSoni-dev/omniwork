@@ -42,7 +42,7 @@ delegate** *inside* Claude Code or Codex.
 | 🖥️ **Claude Code UI** | A clean terminal: `⏺`/`⎿` tool calls, `✻` thinking, `>` prompt, `@`-file mentions, per-turn time + token counts. |
 | 📁 **Projects & memory** | Sessions live under projects. Durable `MEMORY.md` per project plus a global scope — it remembers what you teach it. |
 | 🎓 **Skills** | Claude Code–compatible `SKILL.md` packs, loaded on demand. Ships with Anthropic's public set; the agent can write and install more. |
-| 🛡️ **Approval modes** | Shift+Tab through `auto` · `ask` · `edits` · `plan`. Plan mode is read-only, blocked at the tool layer. |
+| 🛡️ **Approval modes** | Shift+Tab through `auto` · `ask` · `edits` · `plan`. Plan mode is read-only, blocked at the tool layer. `ask` also gates web access, subagents and MCP tools; memory and skill writes ask even in `auto`. |
 | 🤝 **Cowork** | Spawn many agent sessions and run them **in parallel**, each with its own folder + task. |
 | 🃏 **Agent Deck** | One agent **fans work out to parallel subagents** — watch them live as a deck of cards. |
 | 🌐 **Browsing built in** | `web_search` + `browse_page` render in a real Chromium window — JavaScript pages work, no API key. |
@@ -405,6 +405,7 @@ encrypted, locally). Pick a specific model in the status bar.
 | `OMNIWORK_BASE_URL` | — | Run headless servers against another OpenAI-compatible endpoint |
 | `OMNIWORK_API_KEY` | `omniwork` | Key for `OMNIWORK_BASE_URL` |
 | `OMNIWORK_ACP_MODE` | `ask` | Starting approval mode for ACP sessions |
+| `OMNIWORK_AUTO_PERSIST` | off | `1` lets `auto` mode save global memory and skills without asking (the earlier behaviour; kept for one release) |
 | `OMNIWORK_DELEGATE_TIMEOUT_MS` | `600000` | Backstop before a stalled delegate returns partial work |
 | `OMNIWORK_NODE` | — | Node binary used to run the gateway in dev |
 | `OMNIWORK_NODE_VERSION` | build host's | Node version staged into packaged builds |

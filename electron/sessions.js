@@ -149,8 +149,9 @@ class SessionManager {
     }
   }
 
+  // An unrecognised mode changes nothing — it must never widen to auto.
   setApprovalMode(mode) {
-    this.approvalMode = ["auto", "ask", "edits", "plan"].includes(mode) ? mode : "auto";
+    if (["auto", "ask", "edits", "plan"].includes(mode)) this.approvalMode = mode;
     for (const s of this.sessions.values()) if (s.agent) s.agent.approvalMode = this.approvalMode;
     return this.approvalMode;
   }

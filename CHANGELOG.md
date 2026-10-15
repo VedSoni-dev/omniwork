@@ -11,6 +11,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Opt-in token/time reserves stop restricted OpenCode workers, confirm idle, and verify their patches before the hard limit. Failed checks use the existing bounded repair; hard budgets, errors, cancellation and ownership remain authoritative.
 
 ### Security
+- Approval modes fail closed. An unknown or misspelled mode blocks every tool instead of running as `auto`, and an unclassified tool is blocked. `ask`, `edits` and `plan` now ask before `web_fetch`, `web_search`, `browse_page`, `open_url`, `spawn_subagents` and MCP tools. `save_skill`, `install_skills` and global `save_memory` ask even in `auto` and are blocked in `plan`; `OMNIWORK_AUTO_PERSIST=1` restores the previous `auto` behaviour for one release. The desktop ignores an unknown mode instead of switching to `auto`.
 - File tools compare real paths, so a symlink inside a workspace no longer carries `read_file`, `write_file`, `edit_file` or `list_dir` outside it. Writes refuse any symlink as the final path component (use the link's target path instead). Approval previews, ACP diffs and `/undo` use the same check.
 
 ### Added

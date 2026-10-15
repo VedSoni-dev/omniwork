@@ -349,7 +349,7 @@ async function runTurn(sess, blocks) {
           const t = tools.get(p.id);
           if (!t) break;
           const out = String(p.result ?? "");
-          const failed = /^(Error in |Failed to |❌ Denied|⏸ Plan mode|Search failed|Browse failed|Install failed)/.test(out);
+          const failed = /^(Error in |Failed to |Unknown tool:|❌ Denied|⏸ Plan mode|Search failed|Browse failed|Install failed)/.test(out);
           up({
             sessionUpdate: "tool_call_update", toolCallId: t.acpId,
             status: failed ? "failed" : "completed",

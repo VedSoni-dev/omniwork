@@ -74,16 +74,32 @@ File writes and edits are disabled; commands require the user's approval, so run
 End your reply with a clear, numbered plan and ask the user to switch modes (Shift+Tab) to execute it.`;
 
 // Pure: what happens to a tool call under each approval mode.
-// Returns "allow" | "ask" | "block".
-function approvalDecision(mode, name, isMcpTool = false) {
-  const isEdit = name === "write_file" || name === "edit_file";
-  const isCmd = name === "run_command" || name === "install_skills" || isMcpTool;
-  switch (mode) {
-    case "ask": return isEdit || isCmd ? "ask" : "allow";
-    case "edits": return isCmd ? "ask" : "allow";           // auto-accept file edits
-    case "plan": return isEdit || name === "install_skills" ? "block" : (isCmd ? "ask" : "allow");
-    default: return "allow";                                  // "auto"
+// Returns "allow" | "ask" | "block". Fails closed: an unknown (or misspelled)
+// mode, or a tool nobody classified, blocks rather than running unasked.
+const APPROVAL_MODES = ["auto", "ask", "edits", "plan"];
+const READ_TOOLS = new Set(["list_dir", "read_file", "read_output", "read_knowledge", "use_skill"]);
+const EDIT_TOOLS = new Set(["write_file", "edit_file"]);
+// Tools that reach past the workspace: the network (where a prompt-injected
+// call sends data out), the user's browser, new agents, and the shell.
+const OUTWARD_TOOLS = new Set(["run_command", "web_fetch", "web_search", "browse_page", "open_url", "spawn_subagents"]);
+// Writes that outlive the session. Memory and skills load into future
+// sessions — global ones into every project — so an injected save persists
+// the injection. They ask even in auto; a project-scoped memory note is the
+// exception. OMNIWORK_AUTO_PERSIST=1 restores auto mode's earlier behaviour.
+const PERSIST_TOOLS = new Set(["save_memory", "save_skill", "install_skills"]);
+function approvalDecision(mode, name, isMcpTool = false, args = {}) {
+  if (!APPROVAL_MODES.includes(mode)) return "block";
+  if (isMcpTool) return mode === "auto" ? "allow" : "ask";
+  if (READ_TOOLS.has(name)) return "allow";
+  if (EDIT_TOOLS.has(name)) return mode === "plan" ? "block" : mode === "ask" ? "ask" : "allow";
+  if (OUTWARD_TOOLS.has(name)) return mode === "auto" ? "allow" : "ask";
+  if (PERSIST_TOOLS.has(name)) {
+    if (mode === "plan") return "block";
+    if (mode !== "auto") return "ask";
+    const projectNote = name === "save_memory" && (args || {}).scope !== "global";
+    return projectNote || /^(1|true|yes|on)$/i.test(process.env.OMNIWORK_AUTO_PERSIST || "") ? "allow" : "ask";
   }
+  return "block";
 }
 
 function subLabel(name, args) {
@@ -633,9 +649,13 @@ class Agent {
         this.emit("tool_call", { id: call.id, name, args: parsedArgs });
 
         // Approval gate (top-level agents only): mode decides per tool.
-        const decision = this.allowedTools && !this.allowedTools.has(name) ? "block" : approvalDecision(this.approvalMode, name, !!(this.mcp && this.mcp.isMcpTool(name)));
+        const isMcp = !!(this.mcp && this.mcp.isMcpTool(name));
+        const decision = this.allowedTools && !this.allowedTools.has(name) ? "block" : approvalDecision(this.approvalMode, name, isMcp, parsedArgs);
         if (decision === "block") {
-          const blocked = this.allowedTools && !this.allowedTools.has(name) ? `Error in ${name}: tool is not available for this worker.` : "⏸ Plan mode — changes are disabled. Present your plan instead; the user can switch modes to execute it.";
+          const blocked = this.allowedTools && !this.allowedTools.has(name) ? `Error in ${name}: tool is not available for this worker.`
+            : !APPROVAL_MODES.includes(this.approvalMode) ? `Error in ${name}: approval mode "${this.approvalMode}" is not recognized, so no tool runs. Use one of: ${APPROVAL_MODES.join(", ")}.`
+            : this.approvalMode === "plan" && !isMcp && (EDIT_TOOLS.has(name) || PERSIST_TOOLS.has(name)) ? "⏸ Plan mode — changes are disabled. Present your plan instead; the user can switch modes to execute it."
+            : `Unknown tool: ${name}`;
           this.emit("tool_result", { id: call.id, name, result: blocked });
           this.messages.push({ role: "tool", tool_call_id: call.id, content: blocked });
           continue;
@@ -644,7 +664,7 @@ class Agent {
           const preview = this.#approvalPreview(name, parsedArgs);
           const ok = this.approver ? await this.approver(call.id, name, parsedArgs, preview) : false;
           if (!ok) {
-            const denied = "❌ Denied by user.";
+            const denied = this.approver ? "❌ Denied by user." : "❌ Denied — this tool needs the user's approval, and this run has no one to ask.";
             this.emit("tool_result", { id: call.id, name, result: denied });
             this.messages.push({ role: "tool", tool_call_id: call.id, content: denied });
             continue;

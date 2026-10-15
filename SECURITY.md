@@ -37,11 +37,22 @@ Practically: the agent can do anything you could do from a terminal.
 ### Approval mode defaults to automatic
 
 By default OmniWork runs tools **without asking**. Click the 🛡 toggle in the status bar (or run
-`/approve ask`) to require confirmation before every command, file write, and MCP call. Approval
+`/approve ask`) to require confirmation before every command, file write, web request
+(`web_fetch`, `web_search`, `browse_page`, `open_url`), subagent fan-out, and MCP call. Approval
 prompts show a diff for file changes and the full command line for shell calls.
 
 Turn this on when working in a repository you care about, or when running a task you have not
 run before.
+
+Two rules hold in every mode:
+
+- **Writes that outlive the session ask first.** `save_skill`, `install_skills` and global
+  `save_memory` load into every future session in every project, so a prompt-injected save would
+  persist the injection. They ask even in `auto` (a project-scoped memory note is the exception),
+  are blocked in `plan`, and are refused in headless runs that have nobody to ask.
+  `OMNIWORK_AUTO_PERSIST=1` restores the old `auto` behaviour for one release.
+- **Unknown means no.** An unrecognised approval mode blocks every tool, and a tool name the agent
+  does not know is blocked rather than dispatched.
 
 ### Prompt injection is a live risk
 
