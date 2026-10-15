@@ -28,6 +28,10 @@ ensureShellPath(); // MCP clients can launch us with a minimal environment too
 
 const log = (...a) => process.stderr.write("[omniwork-mcp] " + a.join(" ") + "\n");
 
+// MCP revisions this server implements (tools, progress, cancellation,
+// structuredContent), oldest first.
+const PROTOCOL_VERSIONS = ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"];
+
 // A backstop, not a work budget: a free model that stalls mid-turn used to hang
 // the caller until *its* client timeout, with nothing to show for it. On expiry
 // we abort the agent and return whatever it managed to finish.
@@ -268,7 +272,11 @@ async function handle(msg) {
     // or an engine download on lite builds) before any work began. Starting here
     // overlaps it with the host reading our tool list and deciding what to do.
     prewarmGateway(log);
-    reply(id, { protocolVersion: "2024-11-05", capabilities: { tools: { listChanged: false } }, serverInfo: { name: "omniwork", version: require("../package.json").version } });
+    // Negotiated: the client's version when this server speaks it, else the
+    // newest it does — what the spec asks of a server.
+    const wanted = params && params.protocolVersion;
+    const protocolVersion = PROTOCOL_VERSIONS.includes(wanted) ? wanted : PROTOCOL_VERSIONS[PROTOCOL_VERSIONS.length - 1];
+    reply(id, { protocolVersion, capabilities: { tools: { listChanged: false } }, serverInfo: { name: "omniwork", version: require("../package.json").version } });
   } else if (method === "notifications/initialized") {
     // no-op
   } else if (method === "tools/list") {
