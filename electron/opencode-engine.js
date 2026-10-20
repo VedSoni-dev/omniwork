@@ -18,6 +18,7 @@
 const { spawn, execFileSync } = require("node:child_process");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
+const http = require("node:http");
 const os = require("node:os");
 const path = require("node:path");
 
@@ -369,11 +370,33 @@ class Engine {
     const s = await this.#req("POST", "/session", { body, directory });
     return s.id;
   }
+  // A prompt holds one request open for the whole turn. fetch (undici) gives up
+  // when response headers take longer than 300 s, which a long turn does; the
+  // turn then kept running in the engine while the caller collected its patch
+  // mid-edit. node:http has no headers timeout, so the request lasts as long as
+  // the turn, and abort still ends it.
   async prompt(sessionID, { directory, providerID, modelID, text, signal, agent }) {
     this.lastUsed = Date.now();
-    return await this.#req("POST", `/session/${sessionID}/message`, {
-      body: { model: { providerID, modelID }, ...(agent ? { agent } : {}), parts: [{ type: "text", text }] },
-      directory, signal, timeoutMs: 0,
+    const base = await this.start();
+    const body = Buffer.from(JSON.stringify({ model: { providerID, modelID }, ...(agent ? { agent } : {}), parts: [{ type: "text", text }] }));
+    const url = new URL(`${base}/session/${sessionID}/message`);
+    return await new Promise((resolve, reject) => {
+      const req = http.request({ hostname: url.hostname, port: url.port, path: url.pathname, method: "POST",
+        headers: { "Content-Type": "application/json", "Content-Length": body.length, Authorization: this.#auth(), ...(directory ? { "x-opencode-directory": encodeURIComponent(directory) } : {}) } }, (res) => {
+        let text = "";
+        res.setEncoding("utf8");
+        res.on("data", (c) => { text += c; });
+        res.on("error", reject);
+        res.on("end", () => {
+          let json = null; try { json = JSON.parse(text); } catch {}
+          if (res.statusCode >= 200 && res.statusCode < 300) resolve(json);
+          else reject(new Error(`opencode POST ${url.pathname}: ${res.statusCode} ${(json && json.error && (json.error.message || json.error.type)) || text.slice(0, 200)}`));
+        });
+      });
+      req.on("error", reject);
+      if (signal?.aborted) req.destroy(new Error("This operation was aborted"));
+      else signal?.addEventListener("abort", () => req.destroy(new Error("This operation was aborted")), { once: true });
+      req.end(body);
     });
   }
   async abort(sessionID, directory) { return await this.#req("POST", `/session/${sessionID}/abort`, { directory, timeoutMs: 5000 }).catch(() => false); }
