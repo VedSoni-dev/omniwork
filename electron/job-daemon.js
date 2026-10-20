@@ -9,6 +9,7 @@ const { JobService } = require("./job-service");
 const { executeTask } = require("./execution");
 const { executeToolResult } = require("./tools");
 const { ensureShellPath } = require("./shell-path");
+const engineHarness = require("./engine-harness");
 ensureShellPath();
 const root = location(), lock = path.join(root, "service.lock");
 fs.mkdirSync(root, { recursive: true, mode: 0o700 });
@@ -61,16 +62,17 @@ const service = new JobService({
   },
   runCheck: (command, cwd, signal) => executeToolResult("run_command", { command }, { workspace: cwd, signal }),
   run: async opts => executeTask({ task: opts.task, signal: opts.signal, timeoutMs: opts.timeoutMs,
-    trace: true, verificationReserveTokens: opts.verification_reserve_tokens || 0,
+    trace: true, trajectory: Boolean(opts.trajectory), verificationReserveTokens: opts.verification_reserve_tokens || 0,
     verificationReserveMs: opts.verification_reserve_ms || 0,
     checks: opts.checks, repairAttempts: opts.repair_attempts, maxTokens: opts.max_tokens, progress: opts.progress,
     createAgent: async emit => {
       const isEngine = headless.opencode.isEngineModel(opts.model);
+      const harness = opts.harness ? engineHarness.prepare(opts.harness, path.join(root, "harnesses")) : null;
       const gw = isEngine ? null : await headless.ensureGateway(log);
       const resolved = isEngine ? {} : await headless.resolveModelsLive(gw, { model: opts.model, fallbackModels: [] });
       const agent = headless.makeAgent({ ...resolved, baseUrl: gw?.baseUrl, apiKey: gw?.apiKey, model: opts.model, fallbackModels: [],
         workspace: opts.cwd, ...headless.agentEnv(opts.sourceCwd), emit, streaming: false, canSpawn: false,
-        engineProfile: opts.engine_profile, utilityModel: opts.model, tiers: false, maxSteps: opts.max_steps, maxOutputTokens: 4096,
+        engineProfile: opts.engine_profile, harness, utilityModel: opts.model, tiers: false, maxSteps: opts.max_steps, maxOutputTokens: 4096,
         allowedTools: ["list_dir", "read_file", "write_file", "edit_file", "run_command", "read_output", "use_skill", "read_knowledge"],
         beforeRequest: opts.beforeRequest, onRateLimit: opts.onRateLimit,
       });
@@ -123,7 +125,7 @@ server.listen(0, "127.0.0.1", () => {
 const idle = setInterval(() => { if (!service.active.size && ![...service.jobs.values()].some(j => j.status === "queued") && Date.now() - lastActivity > 15 * 60000) shutdown(); }, 60000); idle.unref();
 async function shutdown() {
   if (shutdownStarted) return; shutdownStarted = true;
-  await service.stop(); headless.opencode.getEngine().stop();
+  await service.stop(); headless.opencode.stopAll();
   server.close(); server.closeAllConnections();
   fs.rmSync(path.join(root, "service.json"), { force: true }); fs.rmSync(lock, { recursive: true, force: true }); process.exit(0);
 }

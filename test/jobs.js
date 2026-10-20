@@ -58,6 +58,19 @@ const model = { id: "local/coder", provider: "local", free: true, tools: true };
     assert.throws(() => normalize({ ...reserved, verification_reserve_ms: 180000 }), /smaller/);
     assert.throws(() => normalize({ ...reserved, verification_reserve_tokens: 200000 }), /smaller/);
   });
+  check("harnesses are fingerprinted at admission, need a pinned engine model and replace profiles", () => {
+    const dir = path.join(root, "harness"); fs.mkdirSync(dir); fs.writeFileSync(path.join(dir, "systemprompt.md"), "Prefer minimal diffs.\n");
+    const pinned = { ...spec(1), model: "opencode/big-pickle", harness_dir: dir };
+    const admitted = normalize(pinned);
+    assert.equal(admitted.engine_profile, "harness"); assert.equal(admitted.harness.dir, fs.realpathSync(dir)); assert.match(admitted.harness.fingerprint, /^[a-f0-9]{64}$/);
+    assert.throws(() => normalize({ ...pinned, model: undefined }), /pinned OpenCode model/);
+    assert.throws(() => normalize({ ...pinned, model: "local/coder" }), /pinned OpenCode model/);
+    assert.throws(() => normalize({ ...pinned, engine_profile: "scoped" }), /replaces engine_profile/);
+    assert.throws(() => normalize({ ...spec(1), engine_profile: "harness" }), /engine_profile must be/);
+    assert.throws(() => normalize({ ...pinned, harness_dir: path.join(root, "nowhere") }), /existing absolute directory/);
+    assert.equal(normalize({ ...pinned, engine_profile: "harness", trajectory: true }).trajectory, true);
+    assert.deepEqual(Object.keys(normalize(spec(1))).filter(k => ["harness", "trajectory"].includes(k)), [], "unchanged specs keep their fingerprints");
+  });
   const save = service.save;
   service.save = () => { throw new Error("fixture disk full"); };
   check("failed persistence cannot admit an executable job", () => {

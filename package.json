@@ -62,8 +62,11 @@
     "test:reliability": "node test/reliability.js",
     "jobs": "node scripts/jobs.js",
     "test:jobs": "node test/jobs.js",
+    "test:engine-harness": "node test/engine-harness.js",
+    "test:execution-trajectory": "node test/execution-trajectory.js",
     "benchmark:coding": "node scripts/benchmark-coding.js",
-    "benchmark:engine-prompt": "node scripts/measure-engine-prompt.js"
+    "benchmark:engine-prompt": "node scripts/measure-engine-prompt.js",
+    "benchmark:engine-harness": "node scripts/probe-engine-harness.js"
   },
   "bin": {
     "omniwork-mcp": "electron/mcp-server.js",
