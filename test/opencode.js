@@ -63,6 +63,19 @@ function rpcClient(file, env) {
   check("reasoning streams on its own lane, never as reply text", plain.events.some((e) => e.type === "reasoning_delta" && /thinking/.test(e.chunk)) && !plain.events.some((e) => e.type === "assistant_delta" && /thinking/.test(e.chunk)));
   check("…and records the exchange in messages", plain.agent.messages.filter((m) => m.role === "assistant").length === 1);
 
+  // fetch gives up when response headers take longer than its headersTimeout
+  // (300 s by default), and a prompt's headers arrive only when the turn ends.
+  // Scaled down: a 300 ms limit against a 2 s turn.
+  let undici = null; try { undici = require("undici"); } catch {}
+  if (undici) {
+    const previous = undici.getGlobalDispatcher();
+    undici.setGlobalDispatcher(new undici.Agent({ headersTimeout: 300 }));
+    try {
+      const slow = await run("SLOW then say READY");
+      check("a turn that outlasts fetch's header timeout still completes", /^READY/.test(slow.agent.lastText) && !slow.events.some((e) => e.type === "error"));
+    } finally { undici.setGlobalDispatcher(previous); }
+  }
+
   const tool = await run("TOOL then say READY");
   const call = tool.events.find((e) => e.type === "tool_call"); const result = tool.events.find((e) => e.type === "tool_result");
   check("tool parts map to tool_call / tool_result, announced once the input exists", call && call.name === "bash" && call.args.command === "echo hi" && result && result.id === call.id && result.result === "hi\n" && tool.events.filter((e) => e.type === "tool_call").length === 1);
