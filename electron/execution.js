@@ -14,9 +14,10 @@ async function mapLimit(items, limit, run) {
 }
 
 // Observed outcomes, not the model's description of what it intended to do.
-async function executeTask({ task, createAgent, recover, checks = [], runCheck, repairAttempts = 0, maxTokens = Infinity, timeoutMs = 600_000, signal, progress = () => {}, trace = false, verificationReserveTokens = 0, verificationReserveMs = 0 }) {
+async function executeTask({ task, createAgent, recover, checks = [], runCheck, repairAttempts = 0, maxTokens = Infinity, timeoutMs = 600_000, signal, progress = () => {}, trace = false, trajectory = false, verificationReserveTokens = 0, verificationReserveMs = 0 }) {
   const started = Date.now();
   const telemetry = trace ? new (require("./execution-trace").ExecutionTrace)() : null;
+  const record = trajectory ? new (require("./execution-trajectory").ExecutionTrajectory)() : null;
   const controller = new AbortController();
   let agent, error = null, completed = false, timedOut = false, steps = 0, budgetReason = null;
   let turn = 0, inModelTurn = false, checkpointPromise = null, completionSource = "model";
@@ -36,6 +37,7 @@ async function executeTask({ task, createAgent, recover, checks = [], runCheck, 
   const emit = (type, p) => {
     if (controller.signal.aborted) return;
     telemetry?.event(type, p, turn);
+    if (type !== "subagent") record?.event(type, p, turn);
     if (verificationReserveMs > 0 && Date.now() - started >= timeoutMs - verificationReserveMs) requestCheckpoint("time");
     if (type === "subagent" && (p.kind === "tool_call" || p.kind === "tool_result")) {
       emit(p.kind, { ...p.payload, id: `${p.subId}:${p.payload.id}` });
@@ -75,6 +77,7 @@ async function executeTask({ task, createAgent, recover, checks = [], runCheck, 
   if (signal?.aborted) cancel();
   const send = async prompt => {
     turn++; inModelTurn = true;
+    record?.prompt(prompt, turn);
     try { await agent.send(prompt); } finally { inModelTurn = false; }
   };
   const work = async () => {
@@ -141,6 +144,7 @@ async function executeTask({ task, createAgent, recover, checks = [], runCheck, 
     status, reason: stopped, summary: agent?.lastText || (status === "completed" && completionSource === "checkpoint" ? "Acceptance checks passed after a confirmed engine stop." : ""), changes, attempts, toolCalls: calls.size, checkHistory,
     ...(reserveEnabled ? { completion: { source: completionSource, checkpoint: { ...checkpoint } } } : {}),
     ...(telemetry ? { trace: telemetry.snapshot() } : {}),
+    ...(record ? { trajectory: record.snapshot() } : {}),
     model: agent?.effectiveModel || agent?.model || null, verification: { status: verification.length ? (verification.every(c => c.ok) ? "passed" : "failed") : "unverified", checks: verification },
     usage: usage.available ? usage : { inTokens: null, outTokens: null, estimated: true, available: false }, elapsedMs: Date.now() - started,
   };

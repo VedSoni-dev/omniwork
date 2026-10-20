@@ -10,6 +10,14 @@ const args = process.argv.slice(2);
 const value = (key, otherwise) => args.includes(key) ? args[args.indexOf(key) + 1] : otherwise;
 const resume = value("--resume", null);
 const live = args.includes("--live") || Boolean(resume);
+const exportDir = value("--export-tasks", null);
+if (exportDir && live) throw Error("--export-tasks writes task files offline; it cannot be combined with --live or --resume");
+// The worker's task wording, shared by live runs and exported tasks.
+const TASK_SUFFIX = " Work only in the owned modules. Public smoke tests are in public.cjs; additional evaluator checks cover the stated behavior.";
+// A profile is a named engine profile or a Harness² harness directory.
+const PROFILES = ["standard", "focused", "scoped"];
+const isHarness = p => p.startsWith("harness=");
+const label = p => isHarness(p) ? "harness-" + crypto.createHash("sha256").update(p.slice(8)).digest("hex").slice(0, 8) : p;
 const output = path.resolve(resume || value("--output", "reviews/coding-benchmark.json"));
 const checkpoint = output + ".state.json";
 let state = resume ? JSON.parse(fs.readFileSync(checkpoint, "utf8")) : null;
@@ -61,7 +69,7 @@ async function prepare() {
   if (!Number.isInteger(repeats) || repeats < 1 || repeats > 5) throw Error("--repeats must be 1–5");
   if (!Number.isInteger(timeout) || timeout < 1000 || timeout > 600000) throw Error("--timeout-ms must be 1000–600000");
   const profiles = value("--profiles", "standard,scoped").split(",");
-  if (profiles.length !== 2 || new Set(profiles).size !== 2 || profiles.some(p => !["standard", "focused", "scoped"].includes(p))) throw Error("--profiles requires two distinct supported profiles");
+  if (profiles.length !== 2 || new Set(profiles).size !== 2 || profiles.some(p => !PROFILES.includes(p) && !(isHarness(p) && path.isAbsolute(p.slice(8))))) throw Error("--profiles requires two distinct profiles: standard, focused, scoped or harness=<absolute directory>");
   const selected = value("--cases", cases.map(c => c.id).join(",")).split(",");
   if (selected.some(id => !cases.some(c => c.id === id))) throw Error("Unknown benchmark case");
   const tasks = cases.filter(c => selected.includes(c.id));
@@ -83,6 +91,7 @@ async function prepare() {
     preflight.push({ id: task.id, goldPassed: true, mutantRejected: true });
     console.log("PREFLIGHT", task.id, "gold passes, regression fails");
   }
+  if (exportDir) { await exportTasks(path.resolve(exportDir), tasks, modules, sourceHash); return; }
   if (!live) { console.log("Preflight passed. Add --live to run paired model comparisons."); return; }
   state = { root, request_id: "paired-coding-" + crypto.randomUUID(), plans: [] };
   for (let round = 0; round < repeats; round++) {
@@ -90,15 +99,16 @@ async function prepare() {
       const task = tasks[index];
       for (const profile of (round + index) % 2 ? profiles.slice().reverse() : profiles) {
         stopCheck();
-        const cwd = path.join(root, `r${round}-${task.id}-${profile}`);
+        const cwd = path.join(root, `r${round}-${task.id}-${label(profile)}`);
         populate(cwd, task, modules); mutate(cwd, task);
         await git(cwd, ["init", "-q"]);
         await git(cwd, ["config", "user.name", "OmniWork Benchmark"]);
         await git(cwd, ["config", "user.email", "benchmark@localhost"]);
         await git(cwd, ["add", "."]); await git(cwd, ["commit", "-qm", "regression fixture"]);
         state.plans.push({ case: task.id, round, profile, spec: {
-          cwd, task: task.task + " Work only in the owned modules. Public smoke tests are in public.cjs; additional evaluator checks cover the stated behavior.",
-          model, engine_profile: profile, allowed_paths: task.files, context_files: [...task.files, "public.cjs"],
+          cwd, task: task.task + TASK_SUFFIX,
+          model, ...(isHarness(profile) ? { harness_dir: profile.slice(8) } : { engine_profile: profile }),
+          ...(args.includes("--trajectories") ? { trajectory: true } : {}), allowed_paths: task.files, context_files: [...task.files, "public.cjs"],
           checks: ["node public.cjs ."], timeout_ms: timeout, max_tokens: 600000, repair_attempts: 1,
         } });
       }
@@ -109,6 +119,31 @@ async function prepare() {
     scope: "Controlled regressions in actual OmniWork modules, alternating profile order, withheld evaluator tests. Not SWE-bench or an unbiased sample of organic issues.",
     timeoutMs: timeout, preflight, rows: [], repositoryModules: modules.length };
   fs.mkdirSync(path.dirname(output), { recursive: true }); save();
+}
+// Each case as a self-contained task for external harness optimizers: the
+// mutated repository under repo/, the withheld evaluator beside it (never in
+// it), and a task.json describing how to run and judge it.
+async function exportTasks(dir, tasks, modules, sourceHash) {
+  fs.mkdirSync(dir, { recursive: true });
+  for (const task of tasks) {
+    const out = path.join(dir, task.id);
+    if (fs.existsSync(out)) throw Error(`Refusing to overwrite an exported task: ${out}`);
+    const repo = path.join(out, "repo");
+    populate(repo, task, modules); mutate(repo, task);
+    await git(repo, ["init", "-q"]);
+    await git(repo, ["config", "user.name", "OmniWork Benchmark"]);
+    await git(repo, ["config", "user.email", "benchmark@localhost"]);
+    await git(repo, ["add", "."]); await git(repo, ["commit", "-qm", "regression fixture"]);
+    fs.mkdirSync(path.join(out, "withheld"));
+    fs.writeFileSync(path.join(out, "withheld", "heldout.cjs"), program(task.hidden));
+    writeJSON(path.join(out, "task.json"), { id: task.id, family: "regression-fix", source: "omniwork-seeded-regression", sourceHash,
+      repo: "repo", commit: (await git(repo, ["rev-parse", "HEAD"])).trim(), setup: [], prompt: task.task + TASK_SUFFIX,
+      allowed_paths: task.files, context_files: [...task.files, "public.cjs"], public_checks: ["node public.cjs ."],
+      // {task} is this directory and {workspace} the checkout being judged.
+      withheld: { files: ["withheld/heldout.cjs"], command: "node {task}/withheld/heldout.cjs {workspace}", cwd: "{workspace}" },
+      preserve: [], split: "unassigned" });
+    console.log("EXPORTED", task.id, out);
+  }
 }
 async function evaluate(plan, detail) {
   const hiddenFile = path.join(root, plan.case + ".heldout.cjs");
@@ -125,11 +160,15 @@ async function evaluate(plan, detail) {
   const final = integration?.appliedAt ? await runNode(hiddenFile, plan.spec.cwd) : { passed: false };
   if (detail.artifact?.patch) {
     fs.mkdirSync(output + ".patches", { recursive: true });
-    fs.copyFileSync(detail.artifact.patch, path.join(output + ".patches", `${plan.case}-r${plan.round}-${plan.profile}.patch`));
+    fs.copyFileSync(detail.artifact.patch, path.join(output + ".patches", `${plan.case}-r${plan.round}-${label(plan.profile)}.patch`));
   }
   if (detail.trace) {
     fs.mkdirSync(output + ".traces", { recursive: true });
-    fs.copyFileSync(path.join(root, "data", "jobs", "tasks", plan.id, "trace.json"), path.join(output + ".traces", `${plan.case}-r${plan.round}-${plan.profile}.json`));
+    fs.copyFileSync(path.join(root, "data", "jobs", "tasks", plan.id, "trace.json"), path.join(output + ".traces", `${plan.case}-r${plan.round}-${label(plan.profile)}.json`));
+  }
+  if (detail.trajectory) {
+    fs.mkdirSync(output + ".trajectories", { recursive: true, mode: 0o700 });
+    fs.copyFileSync(path.join(root, "data", "jobs", "tasks", plan.id, "trajectory.jsonl"), path.join(output + ".trajectories", `${plan.case}-r${plan.round}-${label(plan.profile)}.jsonl`));
   }
   return { id: plan.id, case: plan.case, round: plan.round, profile: plan.profile, status: detail.status,
     trace: detail.trace?.summary || null, timings: detail.timings || null,

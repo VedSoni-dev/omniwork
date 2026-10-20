@@ -101,6 +101,23 @@ For independent local coding jobs, try `defaults: { "engine_profile": "scoped" }
 
 Desktop sessions and legacy delegations keep their existing default agent. Permissions still follow the selected approval mode; tool selection is not an operating-system sandbox. Existing running daemons must be stopped/restarted to load updated engine code. Explicit profiles in already admitted jobs are retained.
 
+### Harness² harnesses
+
+`harness_dir` runs a job under a [Harness²](https://github.com/google-research/harness2) harness instead of a named profile: an absolute directory holding any of `systemprompt.md`, `guardrails.md`, `LongTermMEMORY.md`, `tool_descriptions/tool_guidance.md`, `skills/<name>/SKILL.md`, `sub_agents/<name>/AGENT.md`, `scripts/<name>.py` and `plugin/<name>.ts`. It requires a pinned `opencode/…` model and replaces `engine_profile`.
+
+- The always-on files are appended to the provider prompt through OpenCode's `instructions` config, as Harness² does with `AGENTS.md`. Repository rules still load. Nothing is written to the workspace, so a harness never appears in the patch.
+- Skills, subagents and plugins load from a per-harness `OPENCODE_CONFIG_DIR`. The worker keeps the scoped tool set plus `skill` or `task` when the harness has skills or subagents. Helper scripts are staged outside the worktree, and the prompt names their path.
+- Each harness runs on its own engine, isolated from global OpenCode configuration, Claude Code instructions and external skills. Without this, `~/.claude/skills` joins the catalog of every engine session.
+- The tree is read and fingerprinted at admission. A job whose harness changed before it ran fails instead of running different instructions. Files off the surface, symlinks, misnamed skills and oversized always-on text are refused.
+
+`npm run benchmark:engine-harness` checks the real installed engine against a local synthetic model: the text, skills and subagents reach the request, and global skills do not.
+
+### Trajectories
+
+`trajectory: true` keeps the full conversation of a job as `trajectory.jsonl`: the prompts the worker received (including repair prompts), its replies, and every tool call with arguments and output. Entries use OpenCode's `run --format json` part shape, so tools that read OpenCode event streams read it unchanged. It contains repository content, so it is off by default, written owner-only, and read with `jobs_read(artifact: "trajectory")`. Fields are capped at 64,000 characters and a job at 4,000 entries. Clipping and dropped entries are counted in the job's `trajectory` summary.
+
+A daemon from an earlier version would ignore these fields, so clients refuse to use one; stop it first (`npm run jobs -- stop`).
+
 Engine usage now reports `uncachedInTokens`, `cacheReadTokens`, `cacheWriteTokens`, `reasoningTokens`, and `modelRequests` alongside existing totals. `inTokens` includes uncached input plus cache reads/writes; `outTokens` includes output plus reasoning. Repeated usage events are deduplicated by message, and repair turns accumulate usage. These measure the observed session; independently running engine background/child sessions are not a complete account billing ledger. Missing detailed fields mean unavailable, not zero.
 
 ## Request traces and verification reserves

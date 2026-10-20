@@ -7,6 +7,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- **Harness² harnesses for durable workers.** `harness_dir` runs a job under a [Harness²](https://github.com/google-research/harness2) component tree (system prompt, guardrails, memory, tool guidance, skills, subagents, scripts, plugins) instead of a named profile, on a pinned `opencode/…` model. Always-on text is appended to the provider prompt through OpenCode's `instructions`; skills, subagents and plugins load from a per-harness config directory; nothing is written to the workspace. Each harness gets its own engine, isolated from global OpenCode configuration, Claude Code instructions and external skills, and the tree is fingerprinted at admission so a changed harness fails instead of running different instructions. `npm run benchmark:engine-harness` checks the real engine's requests against a local synthetic model.
+- **Opt-in trajectories.** `trajectory: true` keeps a job's full conversation (prompts, replies, tool arguments and outputs) as an owner-only `trajectory.jsonl` in OpenCode's part shape, read with `jobs_read(artifact: "trajectory")`. Off by default; it contains repository content.
+- The coding benchmark accepts `harness=<dir>` arms, keeps `--trajectories`, and `--export-tasks <dir>` writes each case as a repository, a withheld evaluator beside it, and a `task.json` for external harness optimizers.
+- Clients refuse a worker daemon from an earlier version, which would silently ignore these fields. Stop it with `npm run jobs -- stop`.
+
 - Bounded metadata-only request/tool traces for durable workers, with paged retrieval, repeated-read fingerprints, usage coverage and phase timings. Benchmarks retain trace artifacts.
 - Opt-in token/time reserves stop restricted OpenCode workers, confirm idle, and verify their patches before the hard limit. Failed checks use the existing bounded repair; hard budgets, errors, cancellation and ownership remain authoritative.
 

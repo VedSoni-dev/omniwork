@@ -42,6 +42,21 @@ The public smoke test is available to workers. Additional evaluator programs rem
 
 Task/profile ordering alternates between repetitions to reduce systematic order bias. A shared queue runs at most two jobs per provider, preserving a realistic concurrent workload. Each job gets 180 seconds by default (`--timeout-ms` can set the same deadline for both profiles), 600,000 observed tokens, and one repair. A full two-repetition run submits 24 jobs; provider quotas and real latency apply. The benchmark uses only the requested model if the catalog marks it free. It never silently falls back to a paid model.
 
+### Harness arms and exported tasks
+
+A profile can also be a [Harness²](https://github.com/google-research/harness2) harness directory, compared against a named profile or another harness:
+
+```sh
+npm run benchmark:coding -- --live --profiles scoped,harness=/abs/path/to/harness --trajectories --output reviews/harness.json
+```
+
+`--trajectories` keeps each job's full conversation under `.trajectories/` (see [trajectories](worker-service.md#trajectories)). Harness arms run on an engine isolated from global OpenCode and Claude Code configuration, while named profiles do not. To compare like with like, encode the baseline as a harness too: an empty `systemprompt.md` reproduces `scoped` on an isolated engine.
+
+`--export-tasks <dir>` runs the offline preflight, then writes each case for external harness optimizers:
+- `<id>/repo/`: the mutated repository as its own Git repository
+- `<id>/withheld/heldout.cjs`: the withheld evaluator, beside the repository and never in it
+- `<id>/task.json`: the prompt, owned paths, context files, public checks, the withheld command (`{task}` and `{workspace}` placeholders), and an unassigned train/held-out `split`
+
 ## Read the report
 
 The JSON records the source hash, engine version, model, preflight, per-task results, patches, verification, usage and elapsed time. Companion `.patches/` files make solutions inspectable. New runs also retain `.traces/` metadata with per-message usage, tool timing/output sizes, and repeated-read fingerprints. Timings include queue, preparation, execution and collection; engine message lifetimes are not pure inference time. Temporary service/worktrees are removed after complete runs. A transient read timeout is retried without replaying mutations. After an interruption or unrecoverable transport error, the service is stopped and an atomic checkpoint plus worktrees are retained. Resume with `node scripts/benchmark-coding.js --resume <report.json>`; existing job IDs are recovered, interrupted execution is not silently replayed, and an already recorded application is verified rather than applied again. Logical job failures remain scored failures. Use `--cases` with comma-separated task IDs for a smaller diagnostic run. The report has an explicit `complete` flag and unfinished IDs. The runner exits nonzero if any task is unaccepted or unfinished, but retains the report so failures remain part of the comparison.

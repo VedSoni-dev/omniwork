@@ -24,8 +24,18 @@ function normalize(input) {
   if (model != null && (typeof model !== "string" || !model.trim() || model.length > 300)) throw new Error("model must be a model ID");
   if (model && /^auto(?:\/|$)/.test(model)) throw new Error("Omit model for managed selection, or pin a concrete model; opaque auto routes cannot enforce the job policy");
   if (policy === "allow_paid" && !model) throw new Error("allow_paid requires an explicit model");
-  const engine_profile = input.engine_profile || "standard";
-  if (!["focused", "scoped", "standard"].includes(engine_profile)) throw new Error("engine_profile must be focused, scoped or standard");
+  // A harness is read and fingerprinted at admission; the run refuses a tree
+  // that changed since, so a job always runs the harness it was submitted with.
+  let harness = null;
+  if (input.harness_dir != null) {
+    if (!model?.startsWith("opencode/")) throw new Error("harness_dir requires a pinned OpenCode model (opencode/…): a harness configures the OpenCode engine");
+    if (input.engine_profile != null && input.engine_profile !== "harness") throw new Error("harness_dir replaces engine_profile; omit engine_profile");
+    const read = require("./engine-harness").read(input.harness_dir);
+    harness = { dir: read.dir, fingerprint: read.fingerprint };
+  }
+  const engine_profile = harness ? "harness" : input.engine_profile || "standard";
+  if (!harness && !["focused", "scoped", "standard"].includes(engine_profile)) throw new Error("engine_profile must be focused, scoped or standard");
+  if (input.trajectory != null && typeof input.trajectory !== "boolean") throw new Error("trajectory must be a boolean");
   const isolation = input.isolation || "worktree";
   if (!["worktree", "shared"].includes(isolation)) throw new Error("isolation must be worktree or shared");
   const verification_reserve_tokens = integer(input.verification_reserve_tokens, 0, 0, 1000000);
@@ -36,6 +46,7 @@ function normalize(input) {
   }
   return { task: input.task, cwd: fs.realpathSync(input.cwd), model, policy, isolation, engine_profile,
     ...(verification_reserve_tokens || verification_reserve_ms ? { verification_reserve_tokens, verification_reserve_ms } : {}),
+    ...(harness ? { harness } : {}), ...(input.trajectory ? { trajectory: true } : {}),
     checks: strings(input.checks, 10), setup: strings(input.setup, 4),
     allowed_paths: strings(input.allowed_paths, 100, 1000).map(workspace.relativeFile),
     context_files: strings(input.context_files, 20, 1000).map(workspace.relativeFile),
@@ -48,7 +59,7 @@ function normalize(input) {
 function atomic(file, data) {
   const tmp = file + ".tmp";
   const fd = fs.openSync(tmp, "w", 0o600);
-  try { fs.writeFileSync(fd, JSON.stringify(data)); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+  try { fs.writeFileSync(fd, typeof data === "string" ? data : JSON.stringify(data)); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
   fs.renameSync(tmp, file);
 }
 function providerKey(model) {
@@ -114,7 +125,7 @@ class JobService extends EventEmitter {
       createdAt: job.createdAt, updatedAt: job.updatedAt, reason: job.reason || job.result?.reason || null,
       progress: job.progress, verification: job.result?.verification?.status || "unverified",
       summary: job.result?.summary?.slice(0, 1600) || "", usage: job.result?.usage || null,
-      trace: job.trace?.summary || null,
+      trace: job.trace?.summary || null, trajectory: job.trajectory?.summary || null, harness: job.spec.harness?.fingerprint || null,
       timings: job.timings || null,
       files: job.artifact?.files || [], outsideScope: job.artifact?.outsideScope || [],
       workspace: job.workspace?.cwd || null, patch: job.artifact?.patch || null, appliedAt: job.appliedAt || null, integration: job.integration?.status || null };
@@ -225,6 +236,12 @@ class JobService extends EventEmitter {
           job.trace = { summary: job.result.trace.summary };
           delete job.result.trace;
         }
+        if (job.result?.trajectory) {
+          // Content-bearing and opt-in: JSONL in OpenCode's part shape, owner-only.
+          atomic(path.join(dir, "trajectory.jsonl"), job.result.trajectory.entries.map(e => JSON.stringify(e) + "\n").join(""));
+          job.trajectory = { summary: job.result.trajectory.summary };
+          delete job.result.trajectory;
+        }
         if (job.result) atomic(path.join(dir, "result.json"), job.result);
         job.status = this.stopping ? "interrupted" : ctl.signal.aborted && ctl.signal.reason?.message !== "Job deadline exceeded" ? "cancelled" : outcome;
         // Retry only native provider failures before ANY tool ran. Never replay
@@ -280,8 +297,9 @@ class JobService extends EventEmitter {
   }
   async read({ id, artifact = "patch", offset = 0, limit = 12000 }) {
     const job = this.job(id);
-    if (!["patch", "result", "trace"].includes(artifact)) throw new Error("artifact must be patch, result or trace");
-    const file = artifact === "patch" ? job.artifact?.patch : artifact === "trace" ? job.trace && path.join(this.dir, id, "trace.json") : job.result && path.join(this.dir, id, "result.json");
+    if (!["patch", "result", "trace", "trajectory"].includes(artifact)) throw new Error("artifact must be patch, result, trace or trajectory");
+    const file = artifact === "patch" ? job.artifact?.patch : artifact === "trace" ? job.trace && path.join(this.dir, id, "trace.json")
+      : artifact === "trajectory" ? job.trajectory && path.join(this.dir, id, "trajectory.jsonl") : job.result && path.join(this.dir, id, "result.json");
     if (!file) throw new Error("Artifact is not available yet");
     const text = await fs.promises.readFile(file, "utf8");
     const start = integer(offset, 0, 0, text.length), count = integer(limit, 12000, 1, 24000);

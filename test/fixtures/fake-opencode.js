@@ -8,6 +8,8 @@
 //   "PERMISSION" — ask permission for a tool first (reply decides the answer)
 //   "FAIL"       — finish with a session error
 //   "SLOW"       — take 2s (for abort tests)
+//   "APPEND <path>" — append a line to that workspace file (to produce a patch)
+//   "HARNESS?"   — answer with the harness configuration the server started with
 const http = require("node:http");
 if (process.argv[2] !== "serve") { console.log("fake-opencode 0.0.0-test"); process.exit(0); }
 
@@ -65,11 +67,26 @@ const server = http.createServer(async (req, res) => {
     if (m[2].startsWith("permissions/")) { const b = await read(req); const r = pending.get(m[3]); if (r) { r(b.response); pending.delete(m[3]); } return json(res, 200, true); }
     // message
     const b = await read(req);
+    const config = JSON.parse(process.env.OPENCODE_CONFIG_CONTENT || "{}");
     if (b.agent) {
-      const configured = JSON.parse(process.env.OPENCODE_CONFIG_CONTENT || "{}").agent?.[b.agent];
-      if (!configured || configured.steps !== 24 || configured.permission?.skill === "allow" || configured.permission?.["*"] !== "deny" || !s.permission.some(p=>p.permission === "*" && p.action === "deny")) return json(res, 400, { error: { message: "Worker profile missing or unbounded" } });
+      const configured = config.agent?.[b.agent];
+      // Harness agents may load their own skills and choose a step limit; both stay bounded.
+      const harness = b.agent === "omniwork-harness";
+      if (!configured || (harness ? !Number.isInteger(configured.steps) : configured.steps !== 24 || configured.permission?.skill === "allow") || configured.permission?.["*"] !== "deny" || !s.permission.some(p=>p.permission === "*" && p.action === "deny")) return json(res, 400, { error: { message: "Worker profile missing or unbounded" } });
     }
     const text = (b.parts || []).map((p) => p.text || "").join("\n");
+    // "APPEND <path>" — edit that workspace file, so a job produces a patch.
+    const append = /APPEND ([\w./-]+)/.exec(text);
+    if (append && s.directory) require("node:fs").appendFileSync(require("node:path").join(s.directory, append[1]), "// edited by fake-opencode\n");
+    // "HARNESS?" — report the configuration this server was started with.
+    if (/HARNESS\?/.test(text)) {
+      const fs = require("node:fs"), path = require("node:path");
+      const instructions = (config.instructions || []).map(f => fs.readFileSync(f, "utf8").split("\n")[0]).join("|");
+      const dir = process.env.OPENCODE_CONFIG_DIR && path.join(process.env.OPENCODE_CONFIG_DIR, "skills");
+      const skills = dir && fs.existsSync(dir) ? fs.readdirSync(dir, { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name).join(",") : "";
+      const answer = `HARNESS agent=${b.agent} instructions=${instructions} skills=${skills} isolated=${process.env.OPENCODE_DISABLE_CLAUDE_CODE === "1" && process.env.OPENCODE_DISABLE_EXTERNAL_SKILLS === "1" && Boolean(process.env.XDG_CONFIG_HOME)} rules=${s.permission.map(p => `${p.permission}:${p.action}`).join(",")}`;
+      return json(res, 200, { info: { id: nid("msg_"), sessionID: s.id, role: "assistant", time: { created: Date.now(), completed: Date.now() }, modelID: b.model.modelID, providerID: b.model.providerID }, parts: [{ id: nid("prt_"), sessionID: s.id, type: "text", text: answer }] });
+    }
     s.forceBusy = text.includes("BUSY_AFTER_ABORT");
     const messageID = nid("msg_");
     const created = Date.now(); s.busy = true;

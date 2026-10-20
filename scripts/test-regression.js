@@ -1,7 +1,7 @@
 "use strict";
 const { spawnSync } = require("node:child_process");
 const path = require("node:path");
-const suites = ["confine", "env", "project-context", "skills", "tuning", "compact", "fallback", "providers", "opencode", "acp", "acp-completion", "acp-permissions", "complete", "json-schema", "mcp", "modes", "approvals", "persist", "sidecar", "storage", "gateway-auth", "logging", "engine-fallback", "keyless", "local", "data-dir", "engine-fetch", "reliability", "jobs", "jobs-daemon", "coding-benchmark", "execution-trace"];
+const suites = ["confine", "env", "project-context", "skills", "tuning", "compact", "fallback", "providers", "opencode", "acp", "acp-completion", "acp-permissions", "complete", "json-schema", "mcp", "modes", "approvals", "persist", "sidecar", "storage", "gateway-auth", "logging", "engine-fallback", "keyless", "local", "data-dir", "engine-fetch", "reliability", "jobs", "jobs-daemon", "coding-benchmark", "execution-trace", "execution-trajectory", "engine-harness"];
 let failed = false;
 for (const suite of suites) {
   const run = spawnSync(process.execPath, [path.join(__dirname, "..", "test", suite + ".js")], { encoding: "utf8", timeout: 120_000, env: { ...process.env, OMNIWORK_NO_PREWARM: "1", OMNIWORK_MODEL: "", OMNIWORK_MODEL_FALLBACKS: "" } });

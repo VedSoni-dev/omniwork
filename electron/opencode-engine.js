@@ -24,6 +24,7 @@ const path = require("node:path");
 const PROVIDER_IDS = ["opencode", "opencode-go"];
 const PREFIX = "opencode/";
 const workerProfile = require("./engine-profile");
+const engineHarness = require("./engine-harness");
 
 // ── locating / getting the binary ────────────────────────────────
 // Nobody should have to touch their PATH. The binary is looked for where each
@@ -170,9 +171,14 @@ async function install({ log = () => {} } = {}) {
 
 // ── the server ────────────────────────────────────────────────────
 class Engine {
-  constructor({ bin = findBinary(), log = () => {} } = {}) {
+  // `config` and `env` give one server its own configuration (a harness);
+  // config is merged over the defaults, env over the process's.
+  constructor({ bin = findBinary(), log = () => {}, config = null, env = null } = {}) {
     this.bin = bin;
     this.log = log;
+    this.config = config;
+    this.env = env;
+    this.lastUsed = Date.now();
     this.proc = null;
     this.baseUrl = null;
     this.starting = null;
@@ -198,8 +204,14 @@ class Engine {
       let extra = { snapshot: false };
       if (process.env.OPENCODE_CONFIG_CONTENT) { try { extra = { ...JSON.parse(process.env.OPENCODE_CONFIG_CONTENT), ...extra }; } catch {} }
       extra.agent = { ...(extra.agent || {}), [workerProfile.NAME]: workerProfile.config(), [workerProfile.SCOPED_NAME]: workerProfile.config({ compact: false }) };
+      if (this.config) {
+        const { agent, instructions, ...rest } = this.config;
+        extra = { ...extra, ...rest, agent: { ...extra.agent, ...agent } };
+        if (instructions) extra.instructions = [...(extra.instructions || []), ...instructions];
+      }
       const env = {
         ...process.env,
+        ...(this.env || {}),
         OPENCODE_DISABLE_AUTOUPDATE: "1",
         OPENCODE_DISABLE_TERMINAL_TITLE: "1",
         OPENCODE_DISABLE_PRUNE: "1",
@@ -358,6 +370,7 @@ class Engine {
     return s.id;
   }
   async prompt(sessionID, { directory, providerID, modelID, text, signal, agent }) {
+    this.lastUsed = Date.now();
     return await this.#req("POST", `/session/${sessionID}/message`, {
       body: { model: { providerID, modelID }, ...(agent ? { agent } : {}), parts: [{ type: "text", text }] },
       directory, signal, timeoutMs: 0,
@@ -385,22 +398,53 @@ function rank(id) { const i = RANK.findIndex((r) => id.startsWith(r)); return i 
 // The server must not outlive the process that started it. `exit` covers a
 // normal end; a SIGTERM/SIGINT (a harness killing its agent, Ctrl-C) skips the
 // exit hook unless we turn it into one.
-let shared = null;
-function getEngine(opts) {
-  if (!shared) {
-    shared = new Engine(opts);
-    process.on("exit", () => shared && shared.stop());
-    // Electron's app.quit path runs "exit" itself; a raw signal handler there
-    // would skip its cleanup. Headless servers get one that exits the way the
-    // shell expects (128 + signal number).
-    if (!process.versions.electron) {
-      const codes = { SIGHUP: 129, SIGINT: 130, SIGTERM: 143 };
-      for (const sig of Object.keys(codes)) {
-        if (process.listenerCount(sig) === 0) process.on(sig, () => { if (shared) shared.stop(); process.exit(codes[sig]); });
-      }
+let shared = null, hooked = false;
+const harnessEngines = new Map(); // `${fingerprint}:${steps}` -> Engine, least recently used first
+const HARNESS_ENGINES = 8, HARNESS_IDLE_MS = 10 * 60_000;
+function stopAll() {
+  if (shared) shared.stop();
+  for (const e of harnessEngines.values()) e.stop();
+  harnessEngines.clear();
+}
+function hookExit() {
+  if (hooked) return;
+  hooked = true;
+  process.on("exit", stopAll);
+  // Electron's app.quit path runs "exit" itself; a raw signal handler there
+  // would skip its cleanup. Headless servers get one that exits the way the
+  // shell expects (128 + signal number).
+  if (!process.versions.electron) {
+    const codes = { SIGHUP: 129, SIGINT: 130, SIGTERM: 143 };
+    for (const sig of Object.keys(codes)) {
+      if (process.listenerCount(sig) === 0) process.on(sig, () => { stopAll(); process.exit(codes[sig]); });
     }
   }
+  setInterval(() => {
+    for (const [key, e] of harnessEngines) if (!e.listeners.size && Date.now() - e.lastUsed > HARNESS_IDLE_MS) { e.stop(); harnessEngines.delete(key); }
+  }, 60_000).unref();
+}
+function getEngine(opts) {
+  if (!shared) { shared = new Engine(opts); hookExit(); }
   return shared;
+}
+// A harness's configuration is fixed when its server starts, so each harness
+// (and step limit) gets its own server, reused by every job that runs it.
+// Idle servers beyond the cap are stopped; busy ones never are.
+function getHarnessEngine(staged, { steps = 24, log } = {}) {
+  const key = `${staged.fingerprint}:${steps}`;
+  let engine = harnessEngines.get(key);
+  if (engine) harnessEngines.delete(key);
+  else {
+    for (const [k, e] of harnessEngines) {
+      if (harnessEngines.size < HARNESS_ENGINES) break;
+      if (!e.listeners.size) { e.stop(); harnessEngines.delete(k); }
+    }
+    engine = new Engine({ log, config: engineHarness.engineConfig(staged, { steps }), env: engineHarness.engineEnv(staged) });
+    hookExit();
+  }
+  engine.lastUsed = Date.now();
+  harnessEngines.set(key, engine);
+  return engine;
 }
 
 // ── the agent ─────────────────────────────────────────────────────
@@ -410,9 +454,12 @@ function getEngine(opts) {
 // → error. What OmniWork can't offer here is its own skills and memory —
 // OpenCode runs its own tools — which is the honest price of the free tier.
 class OpenCodeAgent {
-  constructor({ model, workspace, emit, approvalMode = "auto", approver = null, engine = getEngine(), fallbackModels = [], messages = null, sessionID = null, engineProfile = "standard" }) {
-    this.engine = engine;
-    if (!["standard", "focused", "scoped"].includes(engineProfile)) throw new Error("Unknown engine profile");
+  constructor({ model, workspace, emit, approvalMode = "auto", approver = null, engine = null, fallbackModels = [], messages = null, sessionID = null, engineProfile = "standard", harness = null, maxSteps = 24 }) {
+    if (!["standard", "focused", "scoped", "harness"].includes(engineProfile)) throw new Error("Unknown engine profile");
+    // A staged harness (engine-harness.js) runs on its own isolated server.
+    if ((engineProfile === "harness") !== Boolean(harness)) throw new Error("The harness engine profile requires a staged harness, and a harness requires that profile");
+    this.harness = harness;
+    this.engine = engine || (harness ? getHarnessEngine(harness, { steps: maxSteps }) : getEngine());
     this.engineProfile = engineProfile;
     this.model = model || `${PREFIX}nemotron-3.5-lightning-free`;
     this.fallbackModels = fallbackModels; // accepted for interface parity; the engine picks its own
@@ -472,6 +519,7 @@ class OpenCodeAgent {
   // OpenCode's per-session ruleset: an ordered list of {permission, pattern,
   // action}, mirroring OmniWork's approval modes.
   #permission() {
+    if (this.harness) return engineHarness.permissions(this.harness, this.approvalMode);
     if (this.engineProfile !== "standard") return workerProfile.permissions(this.approvalMode);
     const rule = (permission, action) => ({ permission, pattern: "*", action });
     if (this.approvalMode === "auto") return [rule("*", "allow")];
@@ -572,7 +620,7 @@ class OpenCodeAgent {
         }
       }, this.workspace);
 
-      const res = await this.engine.prompt(sid, { directory: this.workspace, providerID, modelID, text, signal: this.abortCtl.signal, agent: this.engineProfile === "scoped" ? workerProfile.SCOPED_NAME : this.engineProfile === "focused" ? workerProfile.NAME : undefined });
+      const res = await this.engine.prompt(sid, { directory: this.workspace, providerID, modelID, text, signal: this.abortCtl.signal, agent: this.harness ? engineHarness.AGENT : this.engineProfile === "scoped" ? workerProfile.SCOPED_NAME : this.engineProfile === "focused" ? workerProfile.NAME : undefined });
       this.emit("request", { id: res?.info?.id, model: `${providerID}/${modelID}`, startedAt: res?.info?.time?.created, completedAt: res?.info?.time?.completed, failed: Boolean(res?.info?.error) });
       recordUsage(res?.info?.id, res?.info?.tokens);
       if (this.aborted) { this.emit("aborted", this.#stats()); return; }
@@ -644,4 +692,4 @@ function textOf(res) {
 
 const isEngineModel = (id) => typeof id === "string" && id.startsWith(PREFIX);
 
-module.exports = { PREFIX, findBinary, candidates, available, version, install, download, lockEntry, platformPackage, pinnedVersion, target, DOWNLOAD_DIR, INSTALL_COMMAND, INSTALL_SCRIPT, Engine, getEngine, OpenCodeAgent, isEngineModel };
+module.exports = { PREFIX, findBinary, candidates, available, version, install, download, lockEntry, platformPackage, pinnedVersion, target, DOWNLOAD_DIR, INSTALL_COMMAND, INSTALL_SCRIPT, Engine, getEngine, getHarnessEngine, stopAll, OpenCodeAgent, isEngineModel };
