@@ -8,6 +8,8 @@
 //   "PERMISSION" — ask permission for a tool first (reply decides the answer)
 //   "FAIL"       — finish with a session error
 //   "SLOW"       — take 2s (for abort tests)
+//   "APPEND <path>" — append a line to that workspace file (to produce a patch)
+//   "HARNESS?"   — answer with the harness configuration the server started with
 const http = require("node:http");
 if (process.argv[2] !== "serve") { console.log("fake-opencode 0.0.0-test"); process.exit(0); }
 
@@ -73,6 +75,9 @@ const server = http.createServer(async (req, res) => {
       if (!configured || (harness ? !Number.isInteger(configured.steps) : configured.steps !== 24 || configured.permission?.skill === "allow") || configured.permission?.["*"] !== "deny" || !s.permission.some(p=>p.permission === "*" && p.action === "deny")) return json(res, 400, { error: { message: "Worker profile missing or unbounded" } });
     }
     const text = (b.parts || []).map((p) => p.text || "").join("\n");
+    // "APPEND <path>" — edit that workspace file, so a job produces a patch.
+    const append = /APPEND ([\w./-]+)/.exec(text);
+    if (append && s.directory) require("node:fs").appendFileSync(require("node:path").join(s.directory, append[1]), "// edited by fake-opencode\n");
     // "HARNESS?" — report the configuration this server was started with.
     if (/HARNESS\?/.test(text)) {
       const fs = require("node:fs"), path = require("node:path");
