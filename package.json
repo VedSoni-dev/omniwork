@@ -162,6 +162,6 @@
     "electron-builder": "^25.1.8"
   },
   "optionalDependencies": {
-    "opencode-ai": "1.18.31"
+    "opencode-ai": "1.18.35"
   }
 }

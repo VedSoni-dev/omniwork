@@ -139,6 +139,25 @@ function rpcClient(file, env) {
   check("a clone's node_modules binary and the data-dir download are looked for by absolute path", opencode.candidates().some((c) => /node_modules\/opencode-(darwin|linux|windows)-(arm64|x64)\/bin\/opencode/.test(c)) && opencode.candidates().includes(path.join(opencode.DOWNLOAD_DIR, process.platform === "win32" ? "opencode.exe" : "opencode")));
   check("the platform package and its lockfile integrity are pinned", /^opencode-(darwin|linux|windows)-(arm64|x64)$/.test(opencode.platformPackage()) && /^sha512-/.test(opencode.lockEntry(opencode.platformPackage()).integrity) && /^\d+\.\d+\.\d+$/.test(opencode.pinnedVersion()));
   {
+    // Installs OmniWork didn't ship must carry the security fixes: 1.18.33
+    // closed the Windows/WSL MCP sign-in injection.
+    const { atLeast, MIN_VERSION } = opencode;
+    check("the pinned version meets the minimum", atLeast(opencode.pinnedVersion()) && opencode.lockEntry(opencode.platformPackage()).version === opencode.pinnedVersion());
+    check("versions compare numerically against the minimum", MIN_VERSION === "1.18.33" && atLeast("1.18.33") && atLeast("1.18.100") && atLeast("1.19.0") && atLeast("2.0.0") && !atLeast("1.18.32") && !atLeast("1.0.216") && !atLeast("0.0.0-test"));
+    check("an unreadable version never passes", !atLeast(null) && !atLeast("installed") && !atLeast(""));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "oc-versions-"));
+    const fake = (name, body) => { const p = path.join(dir, name); fs.writeFileSync(p, `#!/bin/sh\n${body}\n`); fs.chmodSync(p, 0o755); return p; };
+    const old = fake("old", "echo 1.18.31"), fresh = fake("fresh", "echo 1.18.35"), broken = fake("broken", "exit 1"), missing = path.join(dir, "missing");
+    check("an older install is passed over for a newer one further down the list", opencode.findBinary([missing, old, broken, fresh]) === fresh);
+    check("with only old or unreadable installs there is no binary", opencode.findBinary([old, broken]) === null);
+    const stale = opencode.staleBinaries([old, broken, fresh, old]);
+    check("…and the skipped ones are reported with their versions", stale.length === 2 && stale[0].path === old && stale[0].version === "1.18.31" && stale[1].path === broken && stale[1].version === "unknown version");
+    check("the explicit override is used whatever version it reports", opencode.findBinary([FAKE]) === FAKE && !opencode.staleBinaries([FAKE]).length);
+    fs.writeFileSync(old, "#!/bin/sh\necho 1.18.36\n");
+    check("a binary replaced in place is asked again", opencode.findBinary([old]) === old);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+  {
     // A fake npm registry: a .tgz laid out like the real platform package
     // (package/bin/opencode) whose sha512 we know — and one we lie about.
     const relDir = fs.mkdtempSync(path.join(os.tmpdir(), "oc-release-"));

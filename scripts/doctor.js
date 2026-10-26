@@ -107,7 +107,8 @@ function checkOpenCode() {
   try { oc = require(path.join(ROOT, "electron", "opencode-engine.js")); } catch (e) { warn(`could not load electron/opencode-engine.js: ${e.message}`); return; }
   const bin = oc.findBinary();
   if (bin) ok(`opencode binary: ${bin}`);
-  else warn(`not present yet — ${oc.INSTALL_COMMAND} downloads OpenCode v${oc.pinnedVersion()} (~45 MB), or the app offers it on first use`);
+  for (const old of oc.staleBinaries()) warn(`skipping ${old.path} (${old.version}) — older than ${oc.MIN_VERSION}, the first OpenCode with its security fixes`);
+  if (!bin) warn(`not present yet — ${oc.INSTALL_COMMAND} downloads OpenCode v${oc.pinnedVersion()} (~45 MB), or the app offers it on first use`);
 }
 
 function checkIcon() {
