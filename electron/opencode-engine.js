@@ -73,11 +73,62 @@ function candidates() {
   return list;
 }
 
-function findBinary() {
-  for (const c of candidates()) { try { fs.accessSync(c, fs.constants.X_OK); return c; } catch {} }
+// The oldest OpenCode OmniWork will run. 1.18.33 fixed command injection
+// through a remote MCP server's sign-in URL on Windows and WSL (Pillar
+// Security, no CVE); earlier releases also served `opencode serve` without
+// authentication (CVE-2026-22812) and let a web page reach it (CVE-2026-22813).
+const MIN_VERSION = "1.18.33";
+
+function atLeast(version, min = MIN_VERSION) {
+  const parse = (v) => { const m = /(\d+)\.(\d+)\.(\d+)/.exec(String(v || "")); return m && m.slice(1).map(Number); };
+  const a = parse(version), b = parse(min);
+  if (!a) return false;
+  for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] > b[i];
+  return true;
+}
+
+// `--version` of one binary, asked once per file. ctime, not mtime: npm tarballs
+// stamp every file 1985-10-26, so an upgrade unpacked over a download keeps
+// the old mtime.
+const versions = new Map();
+function binaryVersion(bin) {
+  let key;
+  try { const st = fs.statSync(bin); key = `${st.ctimeMs}:${st.size}`; } catch { return null; }
+  const hit = versions.get(bin);
+  if (hit && hit.key === key) return hit.version;
+  let version = null;
+  try { version = execFileSync(bin, ["--version"], { encoding: "utf8", timeout: 15_000, stdio: ["ignore", "pipe", "ignore"] }).trim().split("\n").pop(); } catch {}
+  versions.set(bin, { key, version });
+  return version;
+}
+
+// An explicit override and the runtime packaged with this build are taken as
+// they are. Anything else — a user's own install, a clone's node_modules, a
+// download an earlier OmniWork made — must report MIN_VERSION or later; an
+// install whose version can't be read is passed over too.
+function trusted(bin) {
+  if (process.env.OMNIWORK_OPENCODE_BIN && bin === process.env.OMNIWORK_OPENCODE_BIN) return true;
+  return Boolean(process.resourcesPath) && bin === path.join(process.resourcesPath, "runtime", "opencode", exeName());
+}
+const executable = (c) => { try { fs.accessSync(c, fs.constants.X_OK); return true; } catch { return false; } };
+
+function findBinary(list = candidates()) {
+  for (const c of list) if (executable(c) && (trusted(c) || atLeast(binaryVersion(c)))) return c;
   return null;
 }
 const available = () => Boolean(findBinary());
+
+// The installs findBinary passed over for being too old, so "not installed"
+// can say what it found.
+function staleBinaries(list = candidates()) {
+  return [...new Set(list)].filter((c) => executable(c) && !trusted(c) && !atLeast(binaryVersion(c)))
+    .map((c) => ({ path: c, version: binaryVersion(c) || "unknown version" }));
+}
+function missingMessage() {
+  const [old] = staleBinaries();
+  if (!old) return `OpenCode is not installed — run: ${INSTALL_COMMAND}`;
+  return `OpenCode at ${old.path} (${old.version}) is older than ${MIN_VERSION}, the first release with its security fixes — update it, or run: ${INSTALL_COMMAND}`;
+}
 
 // The version OmniWork ships and downloads: whatever package.json pins for
 // opencode-ai, so a clone and a download agree.
@@ -85,8 +136,8 @@ function pinnedVersion() {
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, "package.json"), "utf8"));
     const v = (pkg.optionalDependencies || {})["opencode-ai"] || (pkg.dependencies || {})["opencode-ai"] || "";
-    return v.replace(/^[^0-9]*/, "") || "1.18.31";
-  } catch { return "1.18.31"; }
+    return v.replace(/^[^0-9]*/, "") || "1.18.35";
+  } catch { return "1.18.35"; }
 }
 function platformPackage(t = target()) { return `opencode-${t.platform}-${t.arch}`; }
 const exeFor = (pkg) => (pkg.includes("windows") ? "opencode.exe" : "opencode");
@@ -195,7 +246,7 @@ class Engine {
   async start() {
     if (this.baseUrl) return this.baseUrl;
     if (this.starting) return this.starting;
-    if (!this.bin) throw new Error(`OpenCode is not installed — run: ${INSTALL_COMMAND}`);
+    if (!this.bin) throw new Error(missingMessage());
     this.starting = new Promise((resolve, reject) => {
       // OpenCode snapshots the whole session directory with `git add --all`
       // before every message so its UI can revert. Scoped to a home folder that
@@ -715,4 +766,4 @@ function textOf(res) {
 
 const isEngineModel = (id) => typeof id === "string" && id.startsWith(PREFIX);
 
-module.exports = { PREFIX, findBinary, candidates, available, version, install, download, lockEntry, platformPackage, pinnedVersion, target, DOWNLOAD_DIR, INSTALL_COMMAND, INSTALL_SCRIPT, Engine, getEngine, getHarnessEngine, stopAll, OpenCodeAgent, isEngineModel };
+module.exports = { PREFIX, MIN_VERSION, atLeast, findBinary, staleBinaries, missingMessage, candidates, available, version, install, download, lockEntry, platformPackage, pinnedVersion, target, DOWNLOAD_DIR, INSTALL_COMMAND, INSTALL_SCRIPT, Engine, getEngine, getHarnessEngine, stopAll, OpenCodeAgent, isEngineModel };

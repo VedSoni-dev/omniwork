@@ -108,6 +108,10 @@ The practical mitigations, in order of effectiveness:
 
 - OmniRoute (the gateway) and OpenCode are pinned to exact versions. Both run with your
   privileges, and both install with npm `postinstall` scripts — `npm ci` in a clone runs them.
+- An OpenCode that OmniWork didn't ship with this build — your own install, a clone's
+  `node_modules`, a download from an earlier version — is used only if it reports 1.18.33 or
+  later, the first release with the fix for MCP sign-in command injection on Windows. Older ones
+  are skipped (`npm run doctor` lists them). `OMNIWORK_OPENCODE_BIN` is taken as given.
 - Everything OmniWork downloads at runtime is checked against a hash pinned with the version
   before it is unpacked: the OmniRoute engine in Lite builds, and the OpenCode binary.
 - `npx -y omniwork-acp` runs the newest release. To review an upgrade before it runs in your

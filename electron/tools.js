@@ -246,20 +246,35 @@ async function webFetch(url, signal) {
   }
 }
 
+// The OS opener for a URL, never through a shell. Windows used to run
+// `start <url>` under cmd.exe, which doesn't escape arguments, so a model
+// asked to open `https://x.test/?a=1&calc.exe` ran calc.exe — a command behind
+// an approval that read "Open …". rundll32's FileProtocolHandler takes the URL
+// as an argument. Only http(s) URLs are opened, re-serialized by URL, which
+// percent-encodes spaces and quotes.
+function openerCommand(url, platform = process.platform) {
+  let parsed;
+  try { parsed = new URL(String(url)); } catch { throw new Error(`not a URL: ${url}`); }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error(`only http(s) URLs can be opened, not ${parsed.protocol}`);
+  const href = parsed.href;
+  if (platform === "win32") return { href, cmd: "rundll32.exe", args: ["url.dll,FileProtocolHandler", href] };
+  return { href, cmd: platform === "darwin" ? "open" : "xdg-open", args: [href] };
+}
+
 // Open a URL in the default browser. Uses Electron's shell when we're inside the
 // app; mcp-server.js runs on plain Node, where `require("electron")` resolves to
 // a path string rather than the module, so fall back to the OS opener.
 async function openExternal(url) {
+  const { href, cmd, args } = openerCommand(url);
   try {
     const electron = require("electron");
     if (electron && electron.shell && typeof electron.shell.openExternal === "function") {
-      await electron.shell.openExternal(url);
+      await electron.shell.openExternal(href);
       return;
     }
   } catch {}
-  const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
   await new Promise((resolve) => {
-    const child = spawn(cmd, [url], { stdio: "ignore", detached: true, shell: process.platform === "win32" });
+    const child = spawn(cmd, args, { stdio: "ignore", detached: true });
     child.on("error", resolve);
     child.on("spawn", () => { child.unref(); resolve(); });
   });
@@ -338,4 +353,4 @@ async function executeToolResult(name, args, ctx) {
 async function executeTool(name, args, ctx) {
   return truncate((await executeToolResult(name, args, ctx)).text);
 }
-module.exports = { TOOL_SCHEMA, executeTool, executeToolResult, confine, writeConfined, previewEdit };
+module.exports = { TOOL_SCHEMA, executeTool, executeToolResult, confine, writeConfined, previewEdit, openerCommand };
