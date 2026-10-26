@@ -24,6 +24,7 @@
     "test:boot": "node test/boot.js",
     "test:smoke": "node test/smoke.js",
     "test:confine": "node test/confine.js",
+    "test:open-url": "node test/open-url.js",
     "test:env": "node test/env.js",
     "test:project-context": "node test/project-context.js",
     "test:cowork": "node test/cowork.js",
